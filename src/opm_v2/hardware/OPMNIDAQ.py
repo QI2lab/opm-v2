@@ -469,24 +469,29 @@ class OPMNIDAQ:
         samples_per_ch_ct = ct.c_int32()
         try:
             with daqmx.Task("ResetAO") as _task:
-                _task.CreateAOVoltageChan(self._address_ao_mirrors[0], 
-                                        "reset_ao0", 
-                                        -6.0, 6.0, daqmx.DAQmx_Val_Volts, None)
-                _task.CreateAOVoltageChan(self._address_ao_mirrors[1], 
-                                        "reset_ao1",
-                                        -1.0, 1.0, daqmx.DAQmx_Val_Volts, None)
-                _task.WriteAnalogF64(1, 
-                                    True, 
-                                    1, 
-                                    daqmx.DAQmx_Val_GroupByScanNumber, 
-                                    _ao_waveform, 
-                                    ct.byref(samples_per_ch_ct), None)
+                _task.CreateAOVoltageChan(
+                    self._address_ao_mirrors[0], 
+                    "reset_ao0", 
+                    -6.0, 6.0, daqmx.DAQmx_Val_Volts, None
+                )
+                _task.CreateAOVoltageChan(
+                    self._address_ao_mirrors[1], 
+                    "reset_ao1",
+                    -1.0, 1.0, daqmx.DAQmx_Val_Volts, None
+                )
+                _task.WriteAnalogF64(
+                    1, 
+                    True, 
+                    1, 
+                    daqmx.DAQmx_Val_GroupByScanNumber, 
+                    _ao_waveform, 
+                    ct.byref(samples_per_ch_ct), None
+                )
                 _task.StopTask()
                 _task.ClearTask()
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
       
-       
     def reset_do_channels(self):
         """Stops any running waveforms and deletes task handlers. Then sets DO lines to 0."""
         
@@ -494,18 +499,25 @@ class OPMNIDAQ:
         
         try:
             with daqmx.Task("ResetDO") as _task:
-                _task.CreateDOChan(", ".join(self._address_channel_do), 
-                                "reset_do", 
-                                daqmx.DAQmx_Val_ChanForAllLines)
-                _task.WriteDigitalLines(1, True, 1.0, daqmx.DAQmx_Val_GroupByChannel, 
-                                        np.zeros((1, len(self._address_channel_do)), dtype=np.uint8),
-                                        None, None)    
+                _task.CreateDOChan(
+                    ", ".join(self._address_channel_do), 
+                    "reset_do", 
+                    daqmx.DAQmx_Val_ChanForAllLines
+                )
+                _task.WriteDigitalLines(
+                    1, 
+                    True, 
+                    1.0, 
+                    daqmx.DAQmx_Val_GroupByChannel, 
+                    np.zeros((1, len(self._address_channel_do)), dtype=np.uint8),
+                    None, 
+                    None
+                )    
                 _task.StopTask()
                 _task.ClearTask()
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
                 
-            
     def generate_waveforms(self):
         """Generate waveforms necessary to capture 1 'scan_type'.
         
@@ -683,16 +695,20 @@ class OPMNIDAQ:
             # This should only be done at startup or after a reset occurs
             if self._task_di == None:
                 self._task_di = daqmx.Task("TaskDI")
-                self._task_di.CreateDIChan(self._channel_di_trigger_from_camera,
-                                        "DI_CameraTrigger", 
-                                        daqmx.DAQmx_Val_ChanForAllLines)
+                self._task_di.CreateDIChan(
+                    self._channel_di_trigger_from_camera,
+                    "DI_CameraTrigger", 
+                    daqmx.DAQmx_Val_ChanForAllLines
+                )
                 
                 # Configure change detection timing (from wave generator)
                 self._task_di.CfgInputBuffer(0)    # must be enforced for change-detection timing, i.e no buffer
-                self._task_di.CfgChangeDetectionTiming(self._channel_di_trigger_from_camera, 
-                                                    self._channel_di_trigger_from_camera, 
-                                                    daqmx.DAQmx_Val_ContSamps, 
-                                                    0)
+                self._task_di.CfgChangeDetectionTiming(
+                    self._channel_di_trigger_from_camera, 
+                    self._channel_di_trigger_from_camera, 
+                    daqmx.DAQmx_Val_ContSamps, 
+                    0
+                )
 
                 # Set where the starting trigger 
                 self._task_di.CfgDigEdgeStartTrig(self._channel_di_trigger_from_camera, daqmx.DAQmx_Val_Rising)
@@ -705,26 +721,32 @@ class OPMNIDAQ:
             # Create DO laser control tasks
             if self._task_do == None:
                 self._task_do = daqmx.Task("TaskDO")
-                self._task_do.CreateDOChan(", ".join(self._address_channel_do), 
-                                        "DO_LaserControl", 
-                                        daqmx.DAQmx_Val_ChanForAllLines)
+                self._task_do.CreateDOChan(
+                    ", ".join(self._address_channel_do), 
+                    "DO_LaserControl", 
+                    daqmx.DAQmx_Val_ChanForAllLines
+                )
                 
                 # Configure change timing from camera trigger task
-                self._task_do.CfgSampClkTiming(self._channel_di_change_trigger, 
-                                            self._daq_sample_rate_hz,
-                                            daqmx.DAQmx_Val_Rising,
-                                            daqmx.DAQmx_Val_ContSamps, 
-                                            self.samples_per_do_ch)
+                self._task_do.CfgSampClkTiming(
+                    self._channel_di_change_trigger, 
+                    self._daq_sample_rate_hz,
+                    daqmx.DAQmx_Val_Rising,
+                    daqmx.DAQmx_Val_ContSamps, 
+                    self.samples_per_do_ch
+                )
             
             # Write the output waveform
             samples_per_ch_ct_digital = ct.c_int32()
-            self._task_do.WriteDigitalLines(self.samples_per_do_ch, 
-                                            False, 
-                                            10.0, 
-                                            daqmx.DAQmx_Val_GroupByChannel, 
-                                            self._do_waveform, 
-                                            ct.byref(samples_per_ch_ct_digital), 
-                                            None)
+            self._task_do.WriteDigitalLines(
+                self.samples_per_do_ch, 
+                False, 
+                10.0, 
+                daqmx.DAQmx_Val_GroupByChannel, 
+                self._do_waveform, 
+                ct.byref(samples_per_ch_ct_digital), 
+                None
+            )
 
             #-------------------------------------------------#
             # Create AO tasks, dependent on acquisition scan mode
@@ -732,47 +754,82 @@ class OPMNIDAQ:
             samples_per_ch_ct = ct.c_int32()
             with daqmx.Task("TaskInitAO") as _task:
                 # Create a 2d array that sets the initial AO voltage to the start of the scan.
-                initial__ao_waveform = np.column_stack((np.full(2, self._ao_waveform[0,0]),
-                                                       np.full(2, self._ao_waveform[0,1])))
-                _task.CreateAOVoltageChan(self._address_ao_mirrors[0], 
-                                             "initialize_ao0", 
-                                             -6.0, 6.0, daqmx.DAQmx_Val_Volts, None)
-                _task.CreateAOVoltageChan(self._address_ao_mirrors[1], 
-                                             "initialize_ao1",
-                                             -1.0, 1.0, daqmx.DAQmx_Val_Volts, None)
-                _task.WriteAnalogF64(1, True, 1, daqmx.DAQmx_Val_GroupByScanNumber, 
-                                        initial__ao_waveform, ct.byref(samples_per_ch_ct), None)
+                initial__ao_waveform = np.column_stack(
+                    (np.full(2, self._ao_waveform[0,0]),
+                    np.full(2, self._ao_waveform[0,1]))
+                )
+                _task.CreateAOVoltageChan(
+                    self._address_ao_mirrors[0], 
+                    "initialize_ao0", 
+                    -6.0, 
+                    6.0, 
+                    daqmx.DAQmx_Val_Volts, 
+                    None
+                    )
+                _task.CreateAOVoltageChan(
+                    self._address_ao_mirrors[1], 
+                    "initialize_ao1",
+                    -1.0, 
+                    1.0, 
+                    daqmx.DAQmx_Val_Volts, 
+                    None
+                )
+                _task.WriteAnalogF64(
+                    1, 
+                    True, 
+                    1, 
+                    daqmx.DAQmx_Val_GroupByScanNumber, 
+                    initial__ao_waveform, 
+                    ct.byref(samples_per_ch_ct), 
+                    None
+                )
                 _task.StopTask()
                 _task.ClearTask()
                 
             # Create and configure timing for AO tasks
             if self._task_ao == None:
                 self._task_ao = daqmx.Task("TaskAO")
-                self._task_ao.CreateAOVoltageChan(self._address_ao_mirrors[0], 
-                                                "AO_ImageScanning", 
-                                                -6.0, 6.0, daqmx.DAQmx_Val_Volts, None)
-                self._task_ao.CreateAOVoltageChan(self._address_ao_mirrors[1], 
-                                                "AO_ProjectionScanning", 
-                                                -1.0, 1.0, daqmx.DAQmx_Val_Volts, None)
+                self._task_ao.CreateAOVoltageChan(
+                    self._address_ao_mirrors[0], 
+                    "AO_ImageScanning", 
+                    -6.0, 
+                    6.0, 
+                    daqmx.DAQmx_Val_Volts, 
+                    None
+                )
+                self._task_ao.CreateAOVoltageChan(
+                    self._address_ao_mirrors[1], 
+                    "AO_ProjectionScanning", 
+                    -1.0, 
+                    1.0, 
+                    daqmx.DAQmx_Val_Volts, 
+                    None
+                )
 
                 if self.scan_type=='mirror':
                     # Configure timing to change on di change trigger, matches _do_waveform shape
-                    self._task_ao.CfgSampClkTiming(self._channel_di_change_trigger,
-                                                self._daq_sample_rate_hz, 
-                                                daqmx.DAQmx_Val_Rising, 
-                                                daqmx.DAQmx_Val_ContSamps,
-                                                self.samples_per_do_ch)
+                    self._task_ao.CfgSampClkTiming(
+                        self._channel_di_change_trigger,
+                        self._daq_sample_rate_hz, 
+                        daqmx.DAQmx_Val_Rising, 
+                        daqmx.DAQmx_Val_ContSamps,
+                        self.samples_per_do_ch
+                    )
                 elif self.scan_type=="projection":
                     # Configure to run on internal clock, _ao_waveform has shape dictated by camera exposure
-                    self._task_ao.CfgSampClkTiming("",
-                                                    self._daq_sample_rate_hz,  # Define how fast the samples are output
-                                                    daqmx.DAQmx_Val_Rising,
-                                                    daqmx.DAQmx_Val_FiniteSamps,  # Output finite number of samples
-                                                    self._ao_waveform.shape[0])  # Total samples
+                    self._task_ao.CfgSampClkTiming(
+                        "",
+                        self._daq_sample_rate_hz,  # Define how fast the samples are output
+                        daqmx.DAQmx_Val_Rising,
+                        daqmx.DAQmx_Val_FiniteSamps,  # Output finite number of samples
+                        self._ao_waveform.shape[0] # Total samples
+                    )  
 
                     # Configure AO to start on the rising edge of DI signal
-                    self._task_ao.CfgDigEdgeStartTrig(self._channel_di_trigger_from_camera,
-                                                    daqmx.DAQmx_Val_Rising)
+                    self._task_ao.CfgDigEdgeStartTrig(
+                        self._channel_di_trigger_from_camera,
+                        daqmx.DAQmx_Val_Rising
+                    )
                                     
                     # Make the task retriggerable, for every exposure
                     self._task_ao.SetStartTrigRetriggerable(True)
@@ -780,15 +837,27 @@ class OPMNIDAQ:
             # Write waveforms
             if self.scan_type=='mirror':
                 # Write the output waveform
-                self._task_ao.WriteAnalogF64(self.samples_per_do_ch,
-                                             False, 10.0, daqmx.DAQmx_Val_GroupByScanNumber, 
-                                             self._ao_waveform, ct.byref(samples_per_ch_ct), None)
+                self._task_ao.WriteAnalogF64(
+                    self.samples_per_do_ch,
+                    False, 
+                    10.0, 
+                    daqmx.DAQmx_Val_GroupByScanNumber, 
+                    self._ao_waveform, 
+                    ct.byref(samples_per_ch_ct), 
+                    None
+                )
             elif self.scan_type=="projection":                
                 # Write the output waveform
                 samples_per_ch_ct = ct.c_int32()
-                self._task_ao.WriteAnalogF64(self.samples_per_ao_ch,
-                                             False, 10.0, daqmx.DAQmx_Val_GroupByScanNumber, 
-                                             self._ao_waveform, ct.byref(samples_per_ch_ct), None)                
+                self._task_ao.WriteAnalogF64(
+                    self.samples_per_ao_ch,
+                    False, 
+                    10.0, 
+                    daqmx.DAQmx_Val_GroupByScanNumber, 
+                    self._ao_waveform, 
+                    ct.byref(samples_per_ch_ct), 
+                    None
+                )                
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
      
