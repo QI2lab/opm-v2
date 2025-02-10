@@ -97,6 +97,8 @@ def main() -> None:
     win.showMaximized()
     win.show()
 
+    stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
+
     splsh = "_PYI_SPLASH_IPC" in os.environ and importlib.util.find_spec("pyi_splash")
     if splsh:  # pragma: no cover
         import pyi_splash  # pyright: ignore [reportMissingModuleSource]
@@ -110,13 +112,18 @@ def main() -> None:
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
 
-    # grab mmc instance and load config file
+    # load OPM NIDAQ and OPM AO mirror classes
+    opmNIDAQ = None
+    opmAOmirror = None
+    test = 2
+
+    # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(r"C:/Users/dpshe/Documents/GitHub/OPMv2/OPM_demo.cfg"))
 
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
-    widget = win.get_widget(WidgetAction.MDA_WIDGET)
+    mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
 
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
@@ -134,7 +141,7 @@ def main() -> None:
         """
 
         # Get the current sequence
-        sequence = widget.value()
+        sequence = mda_widget.value()
 
         # check OPM mode
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
@@ -146,13 +153,13 @@ def main() -> None:
 
         # check AO mode
         if "System-correction" in mmc.getProperty("AO-mode", "Label"):
-            print("system correction AO")
-        elif "First-run" in mmc.getProperty("AO-mode", "Label"):
-            print("first run AO")
-        elif "Always-run" in mmc.getProperty("AO-mode", "Label"):
-            print("always run AO")
-        elif "Optimize" in mmc.getProperty("AO-mode", "Label"):
-            print("optimize AO now")
+            print("Use AO system correction.")
+        elif "Before-each-XYZ" in mmc.getProperty("AO-mode", "Label"):
+            print("Run AO before each XYZ position.")
+        elif "Before-every-acq" in mmc.getProperty("AO-mode", "Label"):
+            print("Run AO optimization before every acquistion.")
+        elif "Optimize-now" in mmc.getProperty("AO-mode", "Label"):
+            print("Run AO optimization now.")
 
         # check fluidics mode
         if "None" in mmc.getProperty("Fluidics-mode", "Label"):
@@ -169,8 +176,8 @@ def main() -> None:
         # check O2-O3 autofocus
         if "Initial-only" in mmc.getProperty("O2O3focus-mode", "Label"):
             print("Run initial O2-O3 autofocus")
-        elif "After-every" in mmc.getProperty("O2O3focus-mode", "Label"):
-            print("Run O2-O3 autofocus after every sequenced acquistion")
+        elif "Before-each-XYZ" in mmc.getProperty("O2O3focus-mode", "Label"):
+            print("Run O2-O3 autofocus before each XYZ position")
         elif "After-30min" in mmc.getProperty("O2O3focus-mode", "Label"):
             print("Run O2-O3 autofocus after 30 minutes")
         elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
@@ -180,11 +187,10 @@ def main() -> None:
 
         # go nuts here, modify the sequence however you want
         # the only rule is that it has to still be an `Iterable[MDAEvent]` when you pass it in
-        widget._mmc.run_mda(sequence, output=output)
+        mda_widget._mmc.run_mda(sequence, output=output)
 
     # modify the method on the instance
-    widget.execute_mda = custom_execute_mda
-
+    mda_widget.execute_mda = custom_execute_mda
 
     # This section sets up a callback to intercept the preview mode 
     # and setup the OPM accordingly.
@@ -207,9 +213,12 @@ def main() -> None:
             # .... call our NIDAQ code to setup digital ouput
             print("standard mode")
 
-    # This line connects the above callback to the event that a continuous sequence is starting
+    # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
+
+    # Register the custom OPM MDA engine with mmc
+    #mmc.mda.set_engine(opmMDAEngine(mmc, opmNIDAQ, opmAOmirror))
 
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
