@@ -70,6 +70,18 @@ class OPMNIDAQ:
     
     Parameters
     ----------
+    scan_type: str, default = "2D"
+        scan type
+    exposure_ms: float, default = 50.0
+        exposure time in milliseconds
+    laser_blanking: bool, default = True
+        synchronize laser output to the camera rolling shutter being fully open. For fast imaging, this likely needs to be `False`
+    image_mirror_calibration: float, default = .0043
+        image mirror calibration in V/um
+    projection_mirror_calibration: float, default = .0052
+        projection mirror calibration in V/um
+    image_mirror_step_size_um: float, default = 0.4
+        image mirror step size in um. default value is Nyquist sampled for our OPM.
     """
 
     @classmethod
@@ -84,12 +96,12 @@ class OPMNIDAQ:
 
     def __init__(
         self,
-        scan_type = "2D",
+        scan_type: str = "2D",
         exposure_ms: float = 50.,
         laser_blanking: bool = True,
-        scan_mirror_calibration: float = .0043,
-        proj_mirror_calibration: float = .0052,
-        scan_step_size_um = 0.4,
+        image_mirror_calibration: float = .0043,
+        projection_mirror_calibration: float = .0052,
+        image_mirror_step_size_um = 0.4,
         verbose: bool=False
     ):
         
@@ -101,9 +113,9 @@ class OPMNIDAQ:
         self.scan_type = scan_type
         self.exposure_ms = exposure_ms
         self.laser_blanking = laser_blanking
-        self.scan_mirror_calibration = scan_mirror_calibration
-        self.proj_mirror_calibration = proj_mirror_calibration
-        self.scan_step_size_um = scan_step_size_um
+        self.image_mirror_calibration = image_mirror_calibration
+        self.projection_mirror_calibration = projection_mirror_calibration
+        self.image_mirror_step_size_um = image_mirror_step_size_um
         self.verbose = verbose
         
         # Define waveform generation parameters for projection mode
@@ -122,25 +134,38 @@ class OPMNIDAQ:
                 
         # Configure hardware pin addresses.
         self._dev_name = "Dev1"
-        self._channel_addresses = {"do_channels":["/Dev1/port0/line0", # 405
-                                                 "/Dev1/port0/line1", # 473
-                                                 "/Dev1/port0/line2", # 532
-                                                 "/Dev1/port0/line3", # 561
-                                                 "/Dev1/port0/line4"],# 638
-                                  "ao_mirrors":["/Dev1/ao0",  # image scanning galvo
-                                                "/Dev1/ao1"], # projection scanning galvo
-                                  "di_camera_trigger":"/Dev1/PFI0",
-                                  "di_start_trigger":"/Dev1/PFI1",
-                                  "di_change_trigger":"/Dev1/PFI2",
-                                  "di_start_ao_trigger":"/Dev1/PFI3"}
+        self._channel_addresses = {
+            "do_channels":[
+                "/Dev1/port0/line0", # 405
+                "/Dev1/port0/line1", # 473
+                "/Dev1/port0/line2", # 532
+                "/Dev1/port0/line3", # 561
+                "/Dev1/port0/line4", # 638
+                "/Dev1/port0/line5"  # 730
+            ],
+            "ao_mirrors":[
+                "/Dev1/ao0",  # image scanning galvo
+                "/Dev1/ao1"   # projection scanning galvo
+            ], 
+            "di_camera_trigger":"/Dev1/PFI0",
+            "di_start_trigger":"/Dev1/PFI1",
+            "di_change_trigger":"/Dev1/PFI2",
+            "di_start_ao_trigger":"/Dev1/PFI3"
+        }
         
-        self._address_channel_do = ["/Dev1/port0/line0", # 405
-                                   "/Dev1/port0/line1", # 473
-                                   "/Dev1/port0/line2", # 532
-                                   "/Dev1/port0/line3", # 561
-                                   "/Dev1/port0/line4"] # 638
-        self._address_ao_mirrors = ["/Dev1/ao0", # image scanning galvo
-                                   "/Dev1/ao1"] # projection scanning galvo
+        self._address_channel_do = [
+            "/Dev1/port0/line0", # 405
+            "/Dev1/port0/line1", # 473
+            "/Dev1/port0/line2", # 532
+            "/Dev1/port0/line3", # 561
+            "/Dev1/port0/line4", # 637
+            "/Dev1/port0/line5"  # 730
+        ]
+
+        self._address_ao_mirrors = [
+            "/Dev1/ao0", # image scanning galvo
+            "/Dev1/ao1" # projection scanning galvo
+        ]
         self._channel_di_trigger_from_camera = "/Dev1/PFI0" # camera trig port 0
         self._channel_di_start_trigger = "/Dev1/PFI1" # Empty PFI pin
         self._channel_di_change_trigger = "/Dev1/PFI2" # Empty PFI pin
@@ -233,46 +258,46 @@ class OPMNIDAQ:
             self._laser_blanking.update(value)
             
     @property
-    def scan_mirror_calibration(self) -> float:
-        """Scan mirror calibration (V/um).
+    def image_mirror_calibration(self) -> float:
+        """Image mirror calibration (V/um).
         
         Returns
         -------
-        scan_mirror_calibration: float
-            Scan mirror calibration in V/um
+        image_mirror_calibration: float
+            Image mirror calibration in V/um
         """
         
-        return getattr(self,"_scan_mirror_calibration",None)
+        return getattr(self,"_image_mirror_calibration",None)
     
-    @scan_mirror_calibration.setter
-    def scan_mirror_calibration(self, value: float):
-        """Set the scan mirror calibration (V/um).
+    @image_mirror_calibration.setter
+    def image_mirror_calibration(self, value: float):
+        """Set the image mirror calibration (V/um).
         
         Parameters
         ----------
         value: float
-            Scan mirror calibration in V/um
+            Image mirror calibration in V/um
         """
         
-        if not hasattr(self, "_scan_mirror_calibration") or self._scan_mirror_calibration is None:
-            self._scan_mirror_calibration = value
+        if not hasattr(self, "_image_mirror_calibration") or self._image_mirror_calibration is None:
+            self._image_mirror_calibration = value
         else:
-            self._scan_mirror_calibration.update(value)
+            self._image_mirror_calibration.update(value)
             
     @property
-    def proj_mirror_calibration(self) -> float:
+    def projection_mirror_calibration(self) -> float:
         """Projection mirror calibration (V/um).
         
         Returns
         -------
-        proj_mirror_calibration: float
+        projection_mirror_calibration: float
             Projection mirror calibration in V/um
         """
         
-        return getattr(self,"_proj_mirror_calibration",None)
+        return getattr(self,"_projection_mirror_calibration",None)
     
-    @proj_mirror_calibration.setter
-    def proj_mirror_calibration(self, value: float):
+    @projection_mirror_calibration.setter
+    def projection_mirror_calibration(self, value: float):
         """Set the projection mirror calibration (V/um).
         
         Parameters
@@ -281,27 +306,27 @@ class OPMNIDAQ:
             Projection mirror calibration in V/um
         """
         
-        if not hasattr(self, "_proj_mirror_calibration") or self._proj_mirror_calibration is None:
-            self._proj_mirror_calibration = value
+        if not hasattr(self, "_projection_mirror_calibration") or self._projection_mirror_calibration is None:
+            self._projection_mirror_calibration = value
         else:
-            self._proj_mirror_calibration.update(value)
+            self._projection_mirror_calibration.update(value)
             
     @property
-    def scan_step_size_um(self) -> float:
+    def image_mirror_step_size_um(self) -> float:
         """Image mirror step size in microns.
         
         This is the lateral footprint along the coverslip.
         
         Returns
         -------
-        scan_step_size_um: float
+        image_mirror_step_size_um: float
             Image mirror step size in microns.
         """
         
-        return getattr(self,"_scan_step_size_um",None)
+        return getattr(self,"_image_mirror_step_size_um",None)
     
-    @scan_step_size_um.setter
-    def scan_step_size_um(self, value: float):
+    @image_mirror_step_size_um.setter
+    def image_mirror_step_size_um(self, value: float):
         """Set the image mirror step size in microns.
         
         Parameters
@@ -310,39 +335,39 @@ class OPMNIDAQ:
             Image mirror step size in microns.
         """
         
-        if not hasattr(self, "_scan_step_size_um") or self._scan_step_size_um is None:
-            self._scan_step_size_um = value
+        if not hasattr(self, "_image_mirror_step_size_um") or self._image_mirror_step_size_um is None:
+            self._image_mirror_step_size_um = value
         else:
-            self._scan_step_size_um.update(value)
+            self._image_mirror_step_size_um.update(value)
             
     @property
-    def scan_sweep_um(self) -> float:
+    def image_mirror_sweep_um(self) -> float:
         """Image mirror sweep in microns.
         
         This is the lateral footprint of sweep, symmetric around the zero point, along the coverslip.
         
         Returns
         -------
-        scan_sweep_um: float
+        image_mirror_sweep_um: float
             Image mirror sweep in microns.
         """
         
-        return getattr(self,"_scan_sweep_um",None)
+        return getattr(self,"_image_mirror_sweep_um",None)
     
-    @scan_sweep_um.setter
-    def scan_sweep_um(self, value: float):
+    @image_mirror_sweep_um.setter
+    def image_mirror_sweep_um(self, value: float):
         """Set the image mirror sweep in microns.
         
         Parameters
         ----------
         value: float
-            Image mirror sweep in microns..
+            Image mirror sweep in microns.
         """
         
-        if not hasattr(self, "_scan_sweep_um") or self._scan_sweep_um is None:
-            self._scan_sweep_um = value
+        if not hasattr(self, "_image_mirror_sweep_um") or self._image_mirror_sweep_um is None:
+            self._image_mirror_sweep_um = value
         else:
-            self._scan_sweep_um.update(value)
+            self._image_mirror_sweep_um.update(value)
             
     @property
     def channel_states(self) -> Sequence:
@@ -379,8 +404,8 @@ class OPMNIDAQ:
         self,
         scan_type: str = None,
         channel_states: Sequence[bool] = None,
-        image_scan_step_size_um: float = None,
-        image_scan_sweep_um: float = None,
+        image_mirror_step_size_um: float = None,
+        image_mirror_sweep_um: float = None,
         laser_blanking: bool = None,
         exposure_ms: float = None
     ):
@@ -392,17 +417,17 @@ class OPMNIDAQ:
         scan_type: str
             scan type. One of "2D", "3D", "projection", or "stage"
         channel_states: Sequence[bool]
-        
-        image_scan_step_size_um: float
-        
-        image_scan_sweep_um: float
-        
+            channel states, in order of [405nm, 488nm, 561nm, 637nm, 730nm].
+        image_mirror_step_size_um: float
+            Image mirror step size in microns. This is the lateral footprint along the coverslip.
+        image_mirror_sweep_um: float
+            Image mirror sweep in microns.
         laser_blanking: bool
-        
+            Laser blanking state: Active (True) or Inactive (False) 
         exposure_ms: float
-   
-        
+            camera exposure time in milliseconds.
         """
+
         if scan_type:
             self.scan_type=scan_type
             
@@ -416,14 +441,14 @@ class OPMNIDAQ:
              self.exposure_ms = exposure_ms
                 
             if self.scan_type == "mirror" or self.scan_type == "projection":
-                if image_scan_step_size_um and image_scan_sweep_um:
+                if image_mirror_step_size_um and image_mirror_sweep_um:
                     # determine sweep footprint
-                    self.scan_mirror_min_volt = -(image_scan_step_size_um * self.scan_mirror_calibration / 2.) + self._ao_neutral_positions[0] # unit: volts
-                    self.scan_axis_step_volts = image_scan_step_size_um * self.scan_mirror_calibration 
-                    self.scan_axis_range_volts = image_scan_sweep_um * self.scan_mirror_calibration 
-                    self.image_scan_steps = np.rint(self.scan_axis_range_volts / self.scan_axis_step_volts).astype(np.int16) # galvo steps
+                    self.image_mirror_min_volt = -(image_mirror_step_size_um * self.image_mirror_calibration / 2.) + self._ao_neutral_positions[0] # unit: volts
+                    self.image_axis_step_volts = image_mirror_step_size_um * self.image_mirror_calibration 
+                    self.image_axis_range_volts = image_mirror_step_size_um * self.image_mirror_calibration 
+                    self.image_scan_steps = np.rint(self.image_axis_range_volts / self.image_axis_step_volts).astype(np.int16) # galvo steps
                     # determine projection scan range
-                    self.proj_scan_range_volts = image_scan_sweep_um * self.proj_mirror_calibration
+                    self.projection_scan_range_volts = image_mirror_step_size_um * self.projection_mirror_calibration
                     return self.image_scan_steps
             
     def reset(self):
@@ -494,8 +519,8 @@ class OPMNIDAQ:
 
         if self.scan_type == 'mirror':
             """Fire active lasers, advance image scanning galvo in a linear ramp,
-               hold the projection galvo in it's neutral position
-            """
+               hold the projection galvo in it's neutral position."""
+            
             #-----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
@@ -522,8 +547,8 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
             
             # Generate image scanning mirror voltage steps
-            max_volt = self.scan_mirror_min_volt + self.scan_axis_range_volts
-            scan_mirror_volts = np.linspace(self.scan_mirror_min_volt, max_volt, n_voltage_steps)
+            max_volt = self.image_mirror_min_volt + self.image_axis_range_volts
+            scan_mirror_volts = np.linspace(self.image_mirror_min_volt, max_volt, n_voltage_steps)
             
             # Set the last time point (when exp is off) to the first mirror positions.
             _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
@@ -569,8 +594,8 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((self.samples_per_ao_ch, 2))
             
             # Generate projection mirror linear ramp
-            self.proj_mirror_max_volt = self.proj_scan_range_volts/2
-            self.proj_mirror_min_volt = - self.proj_scan_range_volts/2
+            self.proj_mirror_max_volt = self.projection_scan_range_volts/2
+            self.proj_mirror_min_volt = - self.projection_scan_range_volts/2
             
             if self.verbose:
                 print(self.proj_mirror_min_volt)
@@ -578,8 +603,8 @@ class OPMNIDAQ:
             proj_mirror_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps)
             proj_return_sweep = np.linspace(proj_mirror_volts[-1], proj_mirror_volts[0], return_samples)
             # Generate image scanning mirror voltage steps
-            scan_mirror_max_volts = self.scan_mirror_min_volt + self.scan_axis_range_volts
-            scan_mirror_volts = np.linspace(self.scan_mirror_min_volt, scan_mirror_max_volts, n_voltage_steps)
+            scan_mirror_max_volts = self.image_mirror_min_volt + self.image_axis_range_volts
+            scan_mirror_volts = np.linspace(self.image_mirror_min_volt, scan_mirror_max_volts, n_voltage_steps)
             scan_return_sweep = np.linspace(scan_mirror_volts[-1], scan_mirror_volts[0], return_samples)
 
             # Set the last time point (when exp is off) to the first mirror positions.
@@ -613,12 +638,12 @@ class OPMNIDAQ:
             # Create ao waveform, keeping the mirrors in their neutral positions
             # In stage scan mode, only the first time point gets set.
             _ao_waveform = np.zeros((1, 2))
-            _ao_waveform[:, 0] = self.__ao_neutral_positions[0]
-            _ao_waveform[:, 1] = self.__ao_neutral_positions[1]
+            _ao_waveform[:, 0] = self._ao_neutral_positions[0]
+            _ao_waveform[:, 1] = self._ao_neutral_positions[1]
             
         elif self.scan_type == '2D':
-            """Only fire the active channel lasers, keep the mirrors in their neutral positions
-            """
+            """Only fire the active channel lasers, keep the mirrors in their neutral positions."""
+
             #-----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
@@ -767,7 +792,6 @@ class OPMNIDAQ:
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
      
-     
     def start_waveform_playback(self):
         """Starts any tasks that exist."""
         
@@ -777,7 +801,6 @@ class OPMNIDAQ:
                     _task.StartTask()
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
-
 
     def stop_waveform_playback(self):
         """Stop any tasks that exist."""
@@ -790,7 +813,6 @@ class OPMNIDAQ:
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
       
-        
     def clear_tasks(self):
         """Stop, Clear and remove task handlers."""
         
@@ -806,13 +828,6 @@ class OPMNIDAQ:
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
         
-    def reset(self):
-        """Reset the device."""
-
-        daqmx.DAQmxResetDevice(self._dev_name)
-        self.reset_ao_channels()
-        self.reset_do_channels()
-    
     def __del__(self):
         """Set DO to 0s, AO to neutral positions, clear tasks."""
         
