@@ -1,11 +1,6 @@
 """OPM pymmcore-plus MDA Engine
 
-TO DO: everything but fluidics. For AO-projection, might need to have a function that 
-generates the MDA events for the expected number of images to snap based on AO settings.
-Should be able to use demo devices to setup the AO algorithm and grab those settings.
-
-What I don't quite understand is how to make the callback so that it modifies the MDASequence 
-when the MDA is started. I'll figure it out.
+TO DO: link this up with generating MDAEvents in the modified _opm_app.py
 
 Change Log:
 2025-02-07: New version that includes all possible modes
