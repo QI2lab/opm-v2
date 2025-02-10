@@ -24,6 +24,7 @@ from PyQt6.QtWidgets import QApplication
 from superqt.utils import WorkerBase
 
 from pymmcore_gui import MicroManagerGUI,WidgetAction, __version__
+import json
 
 import numpy as np
 
@@ -97,8 +98,6 @@ def main() -> None:
     win.showMaximized()
     win.show()
 
-    stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
-
     splsh = "_PYI_SPLASH_IPC" in os.environ and importlib.util.find_spec("pyi_splash")
     if splsh:  # pragma: no cover
         import pyi_splash  # pyright: ignore [reportMissingModuleSource]
@@ -115,16 +114,18 @@ def main() -> None:
     # load OPM NIDAQ and OPM AO mirror classes
     opmNIDAQ = None
     opmAOmirror = None
-    test = 2
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(r"C:/Users/dpshe/Documents/GitHub/OPMv2/OPM_demo.cfg"))
 
+    # grab handle to the Stage widget
+    stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
+
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
-
+    
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
         
@@ -142,6 +143,19 @@ def main() -> None:
 
         # Get the current sequence
         sequence = mda_widget.value()
+        image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
+
+        sequence_dict = json.loads(sequence.model_dump_json())
+        print(sequence_dict["metadata"])
+        print(sequence_dict["axis_order"])
+        print(sequence_dict["stage_positions"])
+        print(sequence_dict["grid_plan"])
+        print(sequence_dict["channels"])
+        print(sequence_dict["time_plan"])
+        print(sequence_dict["z_plan"])
+        print(sequence_dict["autofocus_plan"])
+        print(sequence_dict["keep_shutter_open_across"])
+
 
         # check OPM mode
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
