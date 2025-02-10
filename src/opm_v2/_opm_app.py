@@ -17,8 +17,7 @@ from superqt.utils import WorkerBase
 
 from pymmcore_gui import MicroManagerGUI,WidgetAction, __version__
 
-
-
+import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -171,14 +170,16 @@ def main() -> None:
     def setup_preview_mode_callback():
         """Callback to intercept preview mode and setup the NIDAQ accordingly."""
 
-        image_galvo_range = mmc.getProperty("ImageGalvoMirror", "Position")
-        print(image_galvo_range)
-
+        # Get galvo range and active channel
+        image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
+        active_channel = mmc.getProperty("LED", "Label")
+        
+        # Check OPM mode and set up NIDAQ accordingly
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
+            # ... call our NIDAQ code to setup multiple analog waveforms and digital ouput
             print("projection mode")
-            # ... call our NIDAQ code to setup multiple analog waveforms and digital ouputs
         else:
-            # .... call our NIDAQ code to setup digital ouputs
+            # .... call our NIDAQ code to setup digital ouput
             print("standard mode")
 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
