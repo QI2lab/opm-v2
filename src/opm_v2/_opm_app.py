@@ -1,3 +1,11 @@
+"""qi2lab modified version of the launching script for pymmcore-gui.
+
+qi2lab specific changes start on line 112.
+
+Change Log:
+2025/02: Initial version of the script.
+"""
+
 from __future__ import annotations
 
 import argparse
@@ -79,17 +87,13 @@ def parse_args(args: Sequence[str] = ()) -> argparse.Namespace:
 
 def main() -> None:
     """Run the Micro-Manager GUI."""
-    args = parse_args()
+    # args = parse_args()
 
     app = MMQApplication(sys.argv)
     _install_excepthook()
 
     win = MicroManagerGUI()
-    mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(r"C:/Users/dpshe/Documents/GitHub/OPMv2/OPM_demo.cfg"))
-
     win.setWindowIcon(QIcon(str(ICON)))
-
     win.showMaximized()
     win.show()
 
@@ -106,17 +110,30 @@ def main() -> None:
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
 
+    # grab mmc instance and load config file
+    mmc = win.mmcore
+    mmc.loadSystemConfiguration(Path(r"C:/Users/dpshe/Documents/GitHub/OPMv2/OPM_demo.cfg"))
+
+    # grab handle to the MDA widget and define custom execute_mda method
+    # in our method, the MDAEvents are modified before running the sequence
     widget = win.get_widget(WidgetAction.MDA_WIDGET)
-    
+
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
         
+
+        This function parses the various configuration groups and the MDA sequence.
+        It then creates a new MDA sequence based on the configuration settings.
+        Importantly, we add custom metadata events that trigger the custom parts 
+        of our acquistion engine.
+
         Parameters
         ----------
         output : Path | str | object | None
             The output path for the MDA sequence.
         """
 
+        # Get the current sequence
         sequence = widget.value()
 
         # check OPM mode
@@ -160,6 +177,7 @@ def main() -> None:
             print("No O2-O3 autofocus")
 
         print("modifying sequence")
+
         # go nuts here, modify the sequence however you want
         # the only rule is that it has to still be an `Iterable[MDAEvent]` when you pass it in
         widget._mmc.run_mda(sequence, output=output)
@@ -167,8 +185,15 @@ def main() -> None:
     # modify the method on the instance
     widget.execute_mda = custom_execute_mda
 
+
+    # This section sets up a callback to intercept the preview mode 
+    # and setup the OPM accordingly.
     def setup_preview_mode_callback():
-        """Callback to intercept preview mode and setup the NIDAQ accordingly."""
+        """Callback to intercept preview mode and setup the OPM.
+        
+        This function parses the various configuration groups and creates
+        the appropiate NIDAQ waveforms for the selected OPM mode and channel.
+        """
 
         # Get galvo range and active channel
         image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
@@ -182,6 +207,8 @@ def main() -> None:
             # .... call our NIDAQ code to setup digital ouput
             print("standard mode")
 
+    # This line connects the above callback to the event that a continuous sequence is starting
+    # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
 
     # --------------------------------------------------------------------------------
