@@ -2,6 +2,11 @@
 # ----------------------------------------------------------------------------------------
 # The basic I/O class for a Gibson peristaltic pump
 # ----------------------------------------------------------------------------------------
+# Modified by qi2lab (Douglas Shepherd)
+# 2025/02
+# douglas.shepherd@asu.edu
+#
+# Original code:
 # George Emanuel with modifications by Jeff Moffitt
 # 11/16/15
 # jeffmoffitt@gmail.com
@@ -17,12 +22,30 @@ acknowledge = '\x06'
 start = '\x0A'
 stop = '\x0D'
 
+_instance = None
+
 # ----------------------------------------------------------------------------------------
 # GlisonMP3 Class Definition
 # ----------------------------------------------------------------------------------------
 class APump():
+
+    @classmethod
+    def instance(cls) -> 'APump':
+        """Return the global singleton instance of `AOMirror`.
+
+        """
+        global _instance
+        if _instance is None:
+            _instance = cls()
+        return _instance
+
     def __init__(self,
                  parameters = False):
+        
+        # Set the first instance of this class as the global singleton
+        global _instance
+        if _instance is None:
+            _instance = self
 
         # Define attributes
         self.com_port = parameters.get("pump_com_port", "COM3")

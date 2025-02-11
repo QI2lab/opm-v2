@@ -2,6 +2,11 @@
 # ----------------------------------------------------------------------------------------
 # A basic class for serial interface with a series of daisy chained Hamilton MVP devices
 # ----------------------------------------------------------------------------------------
+# Modified by qi2lab (Douglas Shepherd)
+# 2025/02
+# douglas.shepherd@asu.edu
+#
+# Original code:
 # Jeff Moffitt
 # 12/17/13
 # jeffmoffitt@gmail.com
@@ -14,16 +19,34 @@
 # ----------------------------------------------------------------------------------------
 import time
 
-from src.hardware.AbstractValve import AbstractValve
+from opm_v2.hardware.AbstractValve import AbstractValve
+
+_instance = None
 
 # ----------------------------------------------------------------------------------------
 # HamiltonMVP Class Definition
 # ----------------------------------------------------------------------------------------
 class HamiltonMVP(AbstractValve):
+
+    @classmethod
+    def instance(cls) -> 'HamiltonMVP':
+        """Return the global singleton instance of `AOMirror`.
+
+        """
+        global _instance
+        if _instance is None:
+            _instance = cls()
+        return _instance
+
     def __init__(self,
                  com_port = "COM4",
                  num_simulated_valves = 0,
                  verbose = False):
+        
+        # Set the first instance of this class as the global singleton
+        global _instance
+        if _instance is None:
+            _instance = self
 
         # Define attributes
         self.com_port = com_port
