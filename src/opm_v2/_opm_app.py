@@ -333,9 +333,11 @@ def main() -> None:
             )
         )
 
+        # Flags to help ensure sequence-able events are kept together 
         need_to_setup_DAQ = True
         need_to_setup_stage = True
-        # setup ND mirror-basd OPM acquisition
+
+        # setup nD mirror-based AO-OPM acquisition event structure
         for time_idx in range(n_time_steps):
             # Check if autofocus before each timepoint and not initial-only mode
             if O2O3_mode == "Before-each-t" and not(O2O3_mode == "Initial-only"):
@@ -380,7 +382,8 @@ def main() -> None:
                                     'p': pos_idx, 
                                     'g': 0, 
                                     'c': chan_idx, 
-                                    'z': scan_idx}),
+                                    'z': scan_idx
+                                }),
                             )
                             opm_events.append(image_event)
                 else:
@@ -393,7 +396,8 @@ def main() -> None:
                                     'p': pos_idx, 
                                     'g': 0, 
                                     'c': chan_idx, 
-                                    'z': scan_idx}),
+                                    'z': scan_idx
+                                }),
                             )
                             opm_events.append(image_event)
 
