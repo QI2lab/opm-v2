@@ -27,6 +27,8 @@ from pymmcore_gui import MicroManagerGUI,WidgetAction, __version__
 import json
 
 import numpy as np
+from useq import MDAEvent
+from types import MappingProxyType as mappingproxy
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -112,8 +114,8 @@ def main() -> None:
     # --------------------------------------------------------------------------------
 
     # load OPM NIDAQ and OPM AO mirror classes
-    opmNIDAQ = None
-    opmAOmirror = None
+    # opmDAQ = OPMNIDAQ()
+    # opmAOmirror = None
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
@@ -141,67 +143,284 @@ def main() -> None:
             The output path for the MDA sequence.
         """
 
-        # Get the current sequence
-        sequence = mda_widget.value()
-        image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
+        # get image galvo mirror range and step size
+        image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
+        if "0.4" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 0.4
+        elif "0.8" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 0.8
+        elif "1.6" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 1.6
 
-        sequence_dict = json.loads(sequence.model_dump_json())
-        print(sequence_dict["metadata"])
-        print(sequence_dict["axis_order"])
-        print(sequence_dict["stage_positions"])
-        print(sequence_dict["grid_plan"])
-        print(sequence_dict["channels"])
-        print(sequence_dict["time_plan"])
-        print(sequence_dict["z_plan"])
-        print(sequence_dict["autofocus_plan"])
-        print(sequence_dict["keep_shutter_open_across"])
-
-
-        # check OPM mode
-        if "Projection" in mmc.getProperty("OPM-mode", "Label"):
-            print("projection mode")
-        elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
-            print("stage mode")
-        elif "Standard" in mmc.getProperty("OPM-mode", "Label"):
-            print("standard mode")
-
-        # check AO mode
+        # get AO mode
         if "System-correction" in mmc.getProperty("AO-mode", "Label"):
-            print("Use AO system correction.")
+            AO_mode = 'System-correction'
         elif "Before-each-XYZ" in mmc.getProperty("AO-mode", "Label"):
-            print("Run AO before each XYZ position.")
+            AO_mode = 'Before-each-xyz'
         elif "Before-every-acq" in mmc.getProperty("AO-mode", "Label"):
-            print("Run AO optimization before every acquistion.")
+            AO_mode = "Before-every-acq"
         elif "Optimize-now" in mmc.getProperty("AO-mode", "Label"):
-            print("Run AO optimization now.")
+            AO_mode = "Optimize-now"
 
-        # check fluidics mode
-        if "None" in mmc.getProperty("Fluidics-mode", "Label"):
-            print("No fluidics")
-        elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            print("Thin 16bit fluidics")
-        elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            print("Thin 22bit fluidics")
-        elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            print("Thick 16bit fluidics")
-        elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            print("Thick 22bit fluidics")
-
-        # check O2-O3 autofocus
+        # get O2-O3 focus mode
         if "Initial-only" in mmc.getProperty("O2O3focus-mode", "Label"):
-            print("Run initial O2-O3 autofocus")
+            O2O3_mode = "Initial-only"
         elif "Before-each-XYZ" in mmc.getProperty("O2O3focus-mode", "Label"):
-            print("Run O2-O3 autofocus before each XYZ position")
+            O2O3_mode = "Before-each-xyz"
+        elif "Before-each-T" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "Before-each-t"
         elif "After-30min" in mmc.getProperty("O2O3focus-mode", "Label"):
-            print("Run O2-O3 autofocus after 30 minutes")
+            O2O3_mode = "After-30min"
         elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
-            print("No O2-O3 autofocus")
+            O2O3_mode = "None"
 
-        print("modifying sequence")
+        # Get the current MDAsequence and convert to dictionary 
+        sequence = mda_widget.value()
+        sequence_dict = json.loads(sequence.model_dump_json())
 
-        # go nuts here, modify the sequence however you want
-        # the only rule is that it has to still be an `Iterable[MDAEvent]` when you pass it in
-        mda_widget._mmc.run_mda(sequence, output=output)
+        # extract the revelant portions for qi2lab-OPM
+        stage_positions = sequence_dict["stage_positions"]
+        n_stage_pos = len(stage_positions)
+        
+        grid_plan = sequence_dict["grid_plan"]
+        print(grid_plan)
+        
+        time_plan = sequence_dict["time_plan"]
+        if time_plan is not None:
+            n_time_steps = time_plan["loops"]
+            time_interval = time_plan["interval"]
+        else:
+            n_time_steps = 1
+            time_interval = 0
+        
+        
+        
+        
+        channels = sequence_dict["channels"]
+        active_channels = [False,False,False,False,False]
+        exposure_channels = [0.,0.,0.,0.,0.,0.]
+        for channel in channels:
+            if "405nm" in channel['config']:
+                active_channels[0] = True
+                exposure_channels[0] = channel['exposure']
+            elif "488nm" in channel['config']:
+                active_channels[1] = True
+                exposure_channels[1] = channel['exposure']
+            elif "561nm" in channel['config']:
+                active_channels[2] = True
+                exposure_channels[2] = channel['exposure']
+            elif "637nm" in channel['config']:
+                active_channels[3] = True
+                exposure_channels[3] = channel['exposure']
+            elif "730nm" in channel['config']:
+                active_channels[4] = True
+                exposure_channels[4] = channel['exposure']
+
+        if len(set(exposure_channels)) == 1:
+            interleaved_acq = True
+        else:
+            interleaved_acq = False
+        n_active_channels = sum(active_channels)
+
+        n_scan_steps = int(np.ceil(image_mirror_range_um/image_mirror_step_um))
+
+        O2O3_exposure_ms = 10.
+
+        opm_events: list[MDAEvent] = []
+
+        # run O2-O3 autofocus before acquisition starts
+        exposure_event = MDAEvent(
+            exposure = O2O3_exposure_ms
+        )
+        opm_events.append(exposure_event)
+        O2O3_event = MDAEvent(
+            metadata = {
+                "O2O3-mode" : "autofocus"
+            }
+        )
+        opm_events.append(O2O3_event)
+
+        # check OPM mode and create CustomAction DAQ event
+        if "Projection" in mmc.getProperty("OPM-mode", "Label"):
+            n_scan_steps = 1
+            interleaved_acq = False
+          
+            DAQ_event = MDAEvent(
+                metadata= {
+                    'DAQ-mode' : 'projection',
+                    'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
+                    'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
+                    'DAQ-active_channels' : active_channels,
+                    "DAQ-exposure_channels_ms": exposure_channels,
+                    "DAQ-interleaved" : interleaved_acq,
+                    "DAQ-laser_powers" : [0,1,2,3,5],
+                    "DAQ-blanking" : bool(True),  
+                }
+            )
+        elif  "Mirror" in mmc.getProperty("OPM-mode", "Label"):
+            DAQ_event = MDAEvent(
+                metadata= {
+                    'DAQ-mode' : 'mirror_sweep',
+                    'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
+                    'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
+                    'DAQ-active_channels' : active_channels,
+                    "DAQ-exposure_channels_ms": exposure_channels,
+                    "DAQ-interleaved" : interleaved_acq,
+                    "DAQ-laser_powers" : [0,1,2,3,5],
+                    "DAQ-blanking" : bool(True),  
+                }
+            )
+
+        need_to_setup_DAQ = True
+        need_to_setup_stage = True
+        # setup ND mirror-basd OPM acquisition
+        for time_idx in range(n_time_steps):
+            # Check if autofocus before each timepoint and not initial-only mode
+            if O2O3_mode == "Before-each-t" and not(O2O3_mode == "Initial-only"):
+                exposure_event = MDAEvent(
+                    exposure = O2O3_exposure_ms
+                )
+                opm_events.append(exposure_event)
+                O2O3_event = MDAEvent(
+                    metadata = {
+                        "O2O3-mode" : "autofocus"
+                    }
+                )
+                opm_events.append(O2O3_event)
+            for pos_idx in range(n_stage_pos):
+                if need_to_setup_stage:
+                    stage_event = MDAEvent(
+                        x_pos = stage_positions[0]['x'],
+                        y_pos = stage_positions[0]['y'],
+                        z_pos = stage_positions[0]['z'],
+                    )
+                    opm_events.append(stage_event)
+                    if n_stage_pos > 1:
+                        need_to_setup_stage = True
+                    else:
+                        need_to_setup_stage = False
+                # Check if autofocus before each XYZ position and not initial-only mode
+                if O2O3_mode == "Before-each-xyz" and not(O2O3_mode == "Initial-only"):
+                    exposure_event = MDAEvent(
+                        exposure = O2O3_exposure_ms
+                    )
+                    opm_events.append(exposure_event)
+                    O2O3_event = MDAEvent(
+                        metadata = {
+                            "O2O3-mode" : "autofocus"
+                        }
+                    )
+                    opm_events.append(O2O3_event)
+                # Check if run AO opt. before each XYZ on first time we see this position
+                if AO_mode == "Before-each-xyz" and time_idx == 0:
+                    exposure_event = MDAEvent(
+                        exposure = 500. # replace with AO exposure time
+                    )
+                    AO_event = MDAEvent(
+                        metadata = {
+                            'AO-opm_mode': str('projection'),
+                            'AO-active_channels_bool': [False,True,False,False,False],
+                            "AO-laser_power" : [0,5,0,0,0],
+                            'AO-exposure_ms': 500., # replace with AO exposure time
+                            'AO-mode': str('dct'),
+                            'AO-iterations': int(5),
+                            "AO-image_mirror_range_um" : float(50.),
+                            "AO-image_mirror_step_um" : float(0.4),
+                            "AO-blanking": bool(True)
+                        }
+                    )
+                    need_to_setup_DAQ = True
+                    opm_events.append(AO_event)
+                # Otherwise, run AO opt. before every acquisition. COSTLY in time and photons!
+                elif AO_mode == "Before-every-acq":
+                    exposure_event = MDAEvent(
+                        exposure = 500. # replace with AO exposure time
+                    )
+                    AO_event = MDAEvent(
+                        metadata = {
+                            'AO-opm_mode': str('projection'),
+                            'AO-active_channels_bool': [False,True,False,False,False],
+                            "AO-laser_power" : [0,5,0,0,0],
+                            'AO-exposure_ms': 500., # replace with AO exposure time
+                            'AO-mode': str('dct'),
+                            'AO-iterations': int(5),
+                            "AO-image_mirror_range_um" : float(50.),
+                            "AO-image_mirror_step_um" : float(0.4),
+                            "AO-blanking": bool(True)
+                        }
+                    )
+                    need_to_setup_DAQ = True
+                    opm_events.append(AO_event)
+                # Setup DAQ for acquisition
+                # NOTE: should be smart about this. We should only setup the DAQ as needed.
+                if need_to_setup_DAQ:
+                    DAQ_event = MDAEvent(
+                        metadata= {
+                            'DAQ-mode' : 'mirror_sweep',
+                            'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
+                            'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
+                            'DAQ-active_channels' : active_channels,
+                            "DAQ-exposure_channels_ms": exposure_channels,
+                            "DAQ-interleaved" : interleaved_acq,
+                            "DAQ-laser_powers" : [0,1,2,3,5],
+                            "DAQ-blanking" : bool(True),
+                        }
+                    )
+                    need_to_setup_DAQ = False
+                    opm_events.append(DAQ_event)
+                # Finally, handle acquiring images. 
+                # These events are passed through to the normal MDAEngine and *should* be sequenced. 
+                if interleaved_acq:
+                    exposure_event = MDAEvent(
+                        exposure = exposure_channels[0]
+                    )
+                    opm_events.append(exposure_event)
+                    for scan_idx in range(n_scan_steps):
+                        for chan_idx in range(n_active_channels):
+                            image_event = MDAEvent(
+                                index=mappingproxy({
+                                    't': time_idx, 
+                                    'p': pos_idx, 
+                                    'g': 0, 
+                                    'c': chan_idx, 
+                                    'z': scan_idx}),
+                            )
+                            opm_events.append(image_event)
+                else:
+                    for chan_idx in range(n_active_channels):
+                        for scan_idx in range(n_scan_steps):
+                            exposure_event = MDAEvent(
+                                exposure = exposure_channels[chan_idx]
+                            )
+                            opm_events.append(exposure_event)
+                            image_event = MDAEvent(
+                                index=mappingproxy({
+                                    't': time_idx, 
+                                    'p': pos_idx, 
+                                    'g': 0, 
+                                    'c': chan_idx, 
+                                    'z': scan_idx}),
+                            )
+                            opm_events.append(image_event)
+
+        print(opm_events)
+        
+        # elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
+        #     print("stage mode")
+
+        # # check fluidics mode
+        # if "None" in mmc.getProperty("Fluidics-mode", "Label"):
+        #     print("No fluidics")
+        # elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+        #     print("Thin 16bit fluidics")
+        # elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
+        #     print("Thin 22bit fluidics")
+        # elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+        #     print("Thick 16bit fluidics")
+        # elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
+        #     print("Thick 22bit fluidics")
+
+        mda_widget._mmc.run_mda(opm_events, output=output)
 
     # modify the method on the instance
     mda_widget.execute_mda = custom_execute_mda
@@ -215,9 +434,20 @@ def main() -> None:
         the appropiate NIDAQ waveforms for the selected OPM mode and channel.
         """
 
-        # Get galvo range and active channel
-        image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
+        # get image galvo mirror range and step size
+        image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
+        if "0.4" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 0.4
+        elif "0.8" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 0.8
+        elif "1.6" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
+            image_mirror_step_um = 1.6        
+        
+        # get active channel    
         active_channel = mmc.getProperty("LED", "Label")
+
+        # get instance of NIDAQ
+        # opmDAQ = OPMNIDAQ.instance()
         
         # Check OPM mode and set up NIDAQ accordingly
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
