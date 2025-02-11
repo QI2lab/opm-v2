@@ -41,7 +41,7 @@ mode_names = [
             "Oblq. 9th Asm.",
         ]
 
-_instance = None
+_instance_mirror = None
 class AOMirror:
     """Class to control Imagine Optic Mirao52E.
     
@@ -73,10 +73,10 @@ class AOMirror:
         """Return the global singleton instance of `AOMirror`.
 
         """
-        global _instance
-        if _instance is None:
-            _instance = cls()
-        return _instance
+        global _instance_mirror
+        if _instance_mirror is None:
+            _instance_mirror = cls()
+        return _instance_mirror
 
     def __init__(
         self,
@@ -91,9 +91,9 @@ class AOMirror:
     ):
         
         # Set the first instance of this class as the global singleton
-        global _instance
-        if _instance is None:
-            _instance = self
+        global _instance_mirror
+        if _instance_mirror is None:
+            _instance_mirror = self
 
         self.haso_config_file_path = haso_config_file_path
         self.wfc_config_file_path = wfc_config_file_path

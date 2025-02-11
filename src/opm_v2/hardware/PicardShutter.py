@@ -16,7 +16,7 @@ clr.AddReference('PiUsbNet')
 import PiUsbNet
 import gc
 
-_instance = False
+_instance_shutter = False
 
 # ----------------------------------------------------------------------------------------
 # PicardShutter Class Definition
@@ -28,17 +28,17 @@ class PicardShutter():
         """Return the global singleton instance of `AOMirror`.
 
         """
-        global _instance
-        if _instance is None:
-            _instance = cls()
-        return _instance
+        global _instance_shutter
+        if _instance_shutter is None:
+            _instance_shutter = cls()
+        return _instance_shutter
     
     def __init__(self,shutter_id,verbose=False):
 
         # Set the first instance of this class as the global singleton
-        global _instance
-        if _instance is None:
-            _instance = self
+        global _instance_shutter
+        if _instance_shutter is None:
+            _instance_shutter = self
 
         # Define attributes
         self.shutter_id = shutter_id

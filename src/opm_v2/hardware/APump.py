@@ -22,7 +22,7 @@ acknowledge = '\x06'
 start = '\x0A'
 stop = '\x0D'
 
-_instance = None
+_instance_pump = None
 
 # ----------------------------------------------------------------------------------------
 # GlisonMP3 Class Definition
@@ -34,18 +34,18 @@ class APump():
         """Return the global singleton instance of `AOMirror`.
 
         """
-        global _instance
-        if _instance is None:
-            _instance = cls()
-        return _instance
+        global _instance_pump
+        if _instance_pump is None:
+            _instance_pump = cls()
+        return _instance_pump
 
     def __init__(self,
                  parameters = False):
         
         # Set the first instance of this class as the global singleton
-        global _instance
-        if _instance is None:
-            _instance = self
+        global _instance_pump
+        if _instance_pump is None:
+            _instance_pump = self
 
         # Define attributes
         self.com_port = parameters.get("pump_com_port", "COM3")

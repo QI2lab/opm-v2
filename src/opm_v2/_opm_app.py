@@ -1,6 +1,6 @@
 """qi2lab modified version of the launching script for pymmcore-gui.
 
-qi2lab specific changes start on line 112.
+qi2lab specific changes start on ~ line 112.
 
 Change Log:
 2025/02: Initial version of the script.

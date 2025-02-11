@@ -21,7 +21,7 @@ import time
 
 from opm_v2.hardware.AbstractValve import AbstractValve
 
-_instance = None
+_instance_mvp = None
 
 # ----------------------------------------------------------------------------------------
 # HamiltonMVP Class Definition
@@ -33,10 +33,10 @@ class HamiltonMVP(AbstractValve):
         """Return the global singleton instance of `AOMirror`.
 
         """
-        global _instance
-        if _instance is None:
-            _instance = cls()
-        return _instance
+        global _instance_mvp
+        if _instance_mvp is None:
+            _instance_mvp = cls()
+        return _instance_mvp
 
     def __init__(self,
                  com_port = "COM4",
@@ -44,9 +44,9 @@ class HamiltonMVP(AbstractValve):
                  verbose = False):
         
         # Set the first instance of this class as the global singleton
-        global _instance
-        if _instance is None:
-            _instance = self
+        global _instance_mvp
+        if _instance_mvp is None:
+            _instance_mvp = self
 
         # Define attributes
         self.com_port = com_port

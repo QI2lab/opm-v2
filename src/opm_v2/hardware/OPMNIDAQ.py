@@ -36,7 +36,7 @@ import numpy as np
 from typing import Sequence
 
 
-_instance = None
+_instance_daq = None
 
 class OPMNIDAQ:
     """Class to control NIDAQ for the qi2lab-OPM.
@@ -89,10 +89,10 @@ class OPMNIDAQ:
         """Return the global singleton instance of `OPMNIDAQ`.
 
         """
-        global _instance
-        if _instance is None:
-            _instance = cls()
-        return _instance
+        global _instance_daq
+        if _instance_daq is None:
+            _instance_daq = cls()
+        return _instance_daq
 
     def __init__(
         self,
@@ -106,9 +106,9 @@ class OPMNIDAQ:
     ):
         
         # Set the first instance of this class as the global singleton
-        global _instance
-        if _instance is None:
-            _instance = self
+        global _instance_daq
+        if _instance_daq is None:
+            _instance_daq = self
         
         self.scan_type = scan_type
         self.exposure_ms = exposure_ms
