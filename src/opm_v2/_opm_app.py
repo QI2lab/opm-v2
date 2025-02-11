@@ -5,10 +5,10 @@ qi2lab specific changes start on line 112.
 Change Log:
 2025/02: Initial version of the script.
 """
+from __future__ import annotations
+
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
-
-from __future__ import annotations
 
 import argparse
 import importlib
@@ -121,6 +121,7 @@ def main() -> None:
     wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
     haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
     wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
                                 haso_config_file_path = haso_config_file_path,
@@ -131,7 +132,7 @@ def main() -> None:
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(r"C:/Users/dpshe/Documents/GitHub/OPMv2/OPM_demo.cfg"))
+    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_demo.cfg"))
 
     # grab handle to the Stage widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
@@ -230,10 +231,16 @@ def main() -> None:
         """
 
         # Get galvo range and active channel
-        image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
         active_channel = mmc.getProperty("LED", "Label")
-        
-        # need to extract values from mda widget, WIP
+        image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
+        image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-um")[0]),2)
+        exposure = np.round(float(mmc.getProperty("Camera", "Exposure")),2)
+        print("preview callback")
+        print(active_channel)
+        print(image_mirror_range_um)
+        print(image_mirror_step_um)
+        print(exposure)
+        # if active_channel=="":
         channel_states = [True,False,False,False]
         mirror_step_size_um = 0.4
         image_mirror_range_um = 100

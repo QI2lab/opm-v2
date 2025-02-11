@@ -201,7 +201,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_scan_type") or self._scan_type is None:
             self._scan_type = value
         else:
-            self._scan_type.update(value)
+            self._scan_type = value
             
     @property
     def exposure_ms(self) -> float:
@@ -228,7 +228,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_exposure_s") or self._exposure_s is None:
             self._exposure_s = value / 1000.
         else:
-            self._exposure_s.update(value / 1000.)
+            self._exposure_s = value / 1000.
             
     @property
     def laser_blanking(self) -> bool:
@@ -255,7 +255,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_laser_blanking") or self._laser_blanking is None:
             self._laser_blanking = value
         else:
-            self._laser_blanking.update(value)
+            self._laser_blanking = value
             
     @property
     def image_mirror_calibration(self) -> float:
@@ -282,7 +282,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_image_mirror_calibration") or self._image_mirror_calibration is None:
             self._image_mirror_calibration = value
         else:
-            self._image_mirror_calibration.update(value)
+            self._image_mirror_calibration = value
             
     @property
     def projection_mirror_calibration(self) -> float:
@@ -309,7 +309,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_projection_mirror_calibration") or self._projection_mirror_calibration is None:
             self._projection_mirror_calibration = value
         else:
-            self._projection_mirror_calibration.update(value)
+            self._projection_mirror_calibration = value
             
     @property
     def image_mirror_step_size_um(self) -> float:
@@ -338,7 +338,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_image_mirror_step_size_um") or self._image_mirror_step_size_um is None:
             self._image_mirror_step_size_um = value
         else:
-            self._image_mirror_step_size_um.update(value)
+            self._image_mirror_step_size_um = value
             
     @property
     def image_mirror_sweep_um(self) -> float:
@@ -367,7 +367,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_image_mirror_sweep_um") or self._image_mirror_sweep_um is None:
             self._image_mirror_sweep_um = value
         else:
-            self._image_mirror_sweep_um.update(value)
+            self._image_mirror_sweep_um = value
             
     @property
     def channel_states(self) -> Sequence:
@@ -394,7 +394,7 @@ class OPMNIDAQ:
         if not hasattr(self, "_channel_states") or self._channel_states is None:
             self._channel_states = value
         else:
-            self._channel_states.update(value)
+            self._channel_states = value
         
         self._active_channels_indices = [ind for ind, st in zip(self._do_ind, self._channel_states) if st]
         self._n_active_channels = len(self._active_channels_indices)
@@ -620,8 +620,8 @@ class OPMNIDAQ:
             scan_return_sweep = np.linspace(scan_mirror_volts[-1], scan_mirror_volts[0], return_samples)
 
             # Set the last time point (when exp is off) to the first mirror positions.
-            _ao_waveform[:-1, 0] = scan_mirror_volts
-            _ao_waveform[:-1, 1] = proj_mirror_volts
+            _ao_waveform[:-return_samples, 0] = scan_mirror_volts
+            _ao_waveform[:-return_samples, 1] = proj_mirror_volts
 
             # set back to initial value at end
             _ao_waveform[-return_samples:, 0] = proj_return_sweep
@@ -653,7 +653,7 @@ class OPMNIDAQ:
             _ao_waveform[:, 0] = self._ao_neutral_positions[0]
             _ao_waveform[:, 1] = self._ao_neutral_positions[1]
             
-        elif self.scan_type == '2D':
+        elif self.scan_type == '2d':
             """Only fire the active channel lasers, keep the mirrors in their neutral positions."""
 
             #-----------------------------------------------------#
@@ -887,12 +887,13 @@ class OPMNIDAQ:
         
         try:
             for _task in [self._task_di, self._task_do, self._task_ao]:
-                if hasattr(self, _task):
-                    task = getattr(self, _task)
-                    if task is not None:
-                        task.StopTask()
-                        task.ClearTask()
-                        setattr(self, _task, None) 
+                # if hasattr(self, _task):
+                #     task = getattr(self, _task)
+                if _task is not None:
+                    _task.StopTask()
+                    _task.ClearTask()
+                    _task = None
+                    # setattr(self, _task, None) 
         
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
