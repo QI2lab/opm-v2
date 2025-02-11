@@ -5,6 +5,7 @@ from typing import List
 import wavekit_py as wkpy
 import time
 
+# Steven - why do we have a global mode_names also one in the class?
 mode_names = [
             "Vert. Tilt",
             "Horz. Tilt",
@@ -40,35 +41,59 @@ mode_names = [
             "Oblq. 9th Asm.",
         ]
 
-
+_instance = None
 class AOMirror:
-    def __init__(self,
-                 wfc_config_file_path: Path,
-                 haso_config_file_path: Path,
-                 interaction_matrix_file_path: Path,
-                 flat_positions_file_path: Path = None,
-                 coeff_file_path: Path = None,
-                 n_modes: int = 32,
-                 modes_to_ignore: List[int] = []):
-        """_summary_
+    """Class to control Imagine Optic Mirao52E.
+    
+    This class implements a subset of the `wavekit_py` SDK. Mainly,
+    it allows for direct setting of mirror voltage and modal coefficients.
+    There are safety factors built in to stop over-voltage for individual
+    mirrors and the total voltage on the mirror.
+    
+    Parameters
+    ----------
+    wfc_config_file_path : Path
+        _description_
+    haso_config_file_path : Path
+        _description_
+    interaction_matrix_file_path : Path
+        _description_
+    flat_positions_file_path : Path, default=  None
+        _description_
+    coeff_file_path : Path, default = None
+        _description_
+    n_modes : int, default = 32
+        _description_
+    modes_to_ignore : list[int], default = []
+        _description_
+    """
 
-        Parameters
-        ----------
-        wfc_config_file_path : Path
-            _description_
-        haso_config_file_path : Path
-            _description_
-        interaction_matrix_file_path : Path
-            _description_
-        flat_positions_file_path : Path, optional
-            _description_, by default None
-        coeff_file_path : Path, optional
-            _description_, by default None
-        n_modes : int, optional
-            _description_, by default 32
-        modes_to_ignore : list[int], optional
-            _description_, by default []
+    @classmethod
+    def instance(cls) -> 'AOMirror':
+        """Return the global singleton instance of `AOMirror`.
+
         """
+        global _instance
+        if _instance is None:
+            _instance = cls()
+        return _instance
+
+    def __init__(
+        self,
+        wfc_config_file_path: Path,
+        haso_config_file_path: Path,
+        interaction_matrix_file_path: Path,
+        flat_positions_file_path: Path = None,
+        coeff_file_path: Path = None,
+        n_modes: int = 32,
+        modes_to_ignore: List[int] = []
+    ):
+        
+        # Set the first instance of this class as the global singleton
+        global _instance
+        if _instance is None:
+            _instance = self
+
         self.haso_config_file_path = haso_config_file_path
         self.wfc_config_file_path = wfc_config_file_path
         self.interaction_matrix_file_path = interaction_matrix_file_path
@@ -86,8 +111,10 @@ class AOMirror:
         self.wfc.connect(True)
         
         # create corrdata manager object and compute command matrix
-        self.corr_data_manager = wkpy.CorrDataManager(haso_config_file_path = str(haso_config_file_path),
-                                                      interaction_matrix_file_path = str(interaction_matrix_file_path))
+        self.corr_data_manager = wkpy.CorrDataManager(
+            haso_config_file_path = str(haso_config_file_path),
+            interaction_matrix_file_path = str(interaction_matrix_file_path)
+        )
         self.corr_data_manager.set_command_matrix_prefs(self.n_modes,True)
         self.corr_data_manager.compute_command_matrix()
            
@@ -100,8 +127,10 @@ class AOMirror:
         pupil_dimensions = wkpy.dimensions(self.haso_specs.nb_subapertures,self.haso_specs.ulens_step)
 
         # create HasoSlopes object
-        self.haso_slopes = wkpy.HasoSlopes(dimensions=pupil_dimensions,
-                                           serial_number = self.haso_config.serial_number)
+        self.haso_slopes = wkpy.HasoSlopes(
+            dimensions=pupil_dimensions,
+            serial_number = self.haso_config.serial_number
+        )
         
         # initiate an empty pupil
         self.pupil = wkpy.Pupil(dimensions=pupil_dimensions, value=False)
@@ -180,30 +209,20 @@ class AOMirror:
         
         
     def set_mirror_flat(self):
-        """_summary_
-        """
+        """Set mirror to positions in the "flat" file."""
+
         self.wfc.move_to_absolute_positions(self.flat_positions)
         
         
-    def set_mirror_positions(self,
-                             positions: ArrayLike):
-        """_summary_
+    def set_mirror_positions(self, positions: ArrayLike):
+        """Set mirror positions.
 
         Parameters
         ----------
         positions : ArrayLike
-            _description_
-
-        Returns
-        -------
-        _type_
-            _description_
-
-        Raises
-        ------
-        ValueError
-            _description_
+            Flatten array of actuators 
         """
+
         if positions.shape[0] != self.wfc.nb_actuators:
             raise ValueError(f"Positions array needs to have shape = {self.wfc.nb.actuators}")
         
@@ -224,20 +243,17 @@ class AOMirror:
         return apply        
         
         
-    def set_modal_coefficients(self,
-                               amps: ArrayLike):
-        """_summary_
+    def set_modal_coefficients(self,amps: ArrayLike):
+        """Set modal coefficients.
+
+        Commonly in Zernike modes.
 
         Parameters
         ----------
         amps : ArrayLike
-            _description_
-
-        Returns
-        -------
-        _type_
-            _description_
+            Flatten array of Zernike modes.
         """
+
         assert amps.shape[0]==self.n_modes, "amps array must have the same shape as the number of Zernike modes."
         # update modal data
         self.modal_coeff.set_data(
@@ -274,32 +290,34 @@ class AOMirror:
         return apply
         
         
+    # Steven - this is a slightly confusing function name. I would expect
+    # "update" to change the mirror settings, but this updates the internal class.
+    # should these move to class properties?
     def update_mirror_positions(self):
-        """_summary_
-        """
+        """Update stored mirror positions from wavefront corrector."""
         self.current_positions = np.array(self.wfc.get_current_positions())
         self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
         self.deltas = self.current_positions - self.flat_positions
        
         
-    def save_mirror_state(self, wfc_save_path: Path = None):
-        """_summary_
+    def save_mirror_state(self, wfc_save_path: Path):
+        """Save current mirror state to disk.
 
         Parameters
         ----------
-        wfc_save_path : Path, optional
-            _description_, by default None
+        wfc_save_path : Path
+            Path to save wavefront state.
         """
         self.wfc.save_current_positions_to_file(pmc_file_path=str(wfc_save_path))
     
     
-    def save_mirror_positions(self, name: str = None):
-        """_summary_
+    def save_mirror_positions(self, name: str):
+        """Save current mirror positions to disk.
 
         Parameters
         ----------
-        name : str, optional
-            _description_, by default None
+        name : str
+            _description_
         """
         assert name is None, "saving mirror position requires a name!"
         
@@ -329,19 +347,23 @@ class AOMirror:
             self.flat_coeffs = self.current_coeffs
             self.flat_positions_file_path = actuator_save_path
 
-
 def DM_voltage_to_map(v):
-    """
+    """Reshape mirror to a map.
+
     Reshape the 52-long vector v into 2D matrix representing the actual DM aperture.
     Corners of the matrix are set to None for plotting.
-    Parameters:
-    v - double array of length 52
-    
-    Returns:
-    output: 8x8 ndarray of doubles.
-    -------
+
     Author: Nikita Vladimirov
+
+    Parameters
+    ----------
+    v: float array of length 52
+    
+    Returns
+    -------
+    output: 8x8 ndarray of doubles.
     """
+
     M = np.zeros((8,8))
     M[:,:] = None
     M[2:6,0] = v[:4]
@@ -352,34 +374,39 @@ def DM_voltage_to_map(v):
     M[:,5] = v[34:42]
     M[1:7,6] = v[42:48]
     M[2:6,7] = v[48:52]
+
     return M
     
     
-def plotDM(cmd, title:str = "", 
-           cmap: str = "jet", 
-           vmin: float =-0.25,
-           vmax: float =0.25,
-           save_dir_path: Path = None,
-           show_fig: bool = False):
-    """_summary_
+def plotDM(
+    cmd: ArrayLike, 
+    title:str = "", 
+    cmap: str = "jet", 
+    vmin: float =-0.25,
+    vmax: float =0.25,
+    save_dir_path: Path = None,
+    show_fig: bool = False
+):
+    """Plot the current mirror state.
 
     Parameters
     ----------
-    cmd : _type_
-        _description_
-    title : str, optional
-        _description_, by default ""
-    cmap : str, optional
-        _description_, by default "jet"
-    vmin : float, optional
-        _description_, by default -0.25
-    vmax : float, optional
-        _description_, by default 0.25
-    save_dir_path : Path, optional
-        _description_, by default None
-    show_fig : bool, optional
-        _description_, by default False
+    cmd : ArrayLike
+        (8,8) array of DM voltages
+    title : str, default = ""
+        Title of plot window
+    cmap : str, default = "jet"
+        Colormap to use.
+    vmin : float, default = -0.25
+        Colormap minimum value
+    vmax : float, default = +0.25
+        Colormap maximum value
+    save_dir_path : Path, default = None
+        Path to save DM plot
+    show_fig : bool, default = False
+        Show result of DM map
     """
+
     import matplotlib.pyplot as plt
     fig, ax = plt.subplots(1,1)
     valmax = np.nanmax(cmd)
@@ -394,4 +421,3 @@ def plotDM(cmd, title:str = "",
         fig.savefig(save_dir_path / Path("mirror_positions.png"))
     if show_fig:
         plt.show()
-    

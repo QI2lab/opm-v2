@@ -499,21 +499,33 @@ def main() -> None:
         # Check OPM mode and set up NIDAQ accordingly
         opmNIDAQ_local.clear_tasks()
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
-            # ... call our NIDAQ code to setup multiple analog waveforms and digital ouput
             print("projection mode")
-            opmNIDAQ_local.set_acquisition_params(scan_type="projection",
-                                            channel_states=channel_states,
-                                            image_mirror_step_size_um=image_mirror_step_um,
-                                            image_mirror_sweep_um=image_mirror_range_um,
-                                            laser_blanking=laser_blanking,
-                                            exposure_ms=exposure_ms)
+            # Steven - same formatting comment.
+            opmNIDAQ_local.set_acquisition_params(
+                scan_type="projection",
+                channel_states=channel_states,
+                image_mirror_step_size_um=image_mirror_step_um,
+                image_mirror_sweep_um=image_mirror_range_um,
+                laser_blanking=laser_blanking,
+                exposure_ms=exposure_ms
+            )
+            # opmNIDAQ_local.set_acquisition_params(scan_type="projection",
+            #                                 channel_states=channel_states,
+            #                                 image_mirror_step_size_um=image_mirror_step_um,
+            #                                 image_mirror_sweep_um=image_mirror_range_um,
+            #                                 laser_blanking=laser_blanking,
+            #                                 exposure_ms=exposure_ms)
             opmNIDAQ_local.generate_waveforms()
         else:
-            # .... call our NIDAQ code to setup digital ouput
             print("standard mode")
             opmNIDAQ_local.clear_tasks()
-            opmNIDAQ_local.set_acquisition_params(scan_type="2d",
-                                            channel_states=channel_states)
+            # Steven - same formatting comment.
+            opmNIDAQ_local.set_acquisition_params(
+                scan_type="2d",
+                channel_states=channel_states
+            )
+            # opmNIDAQ_local.set_acquisition_params(scan_type="2d",
+            #                                 channel_states=channel_states)
             opmNIDAQ_local.generate_waveforms()
     
         opmNIDAQ_local.start_waveform_playback()
