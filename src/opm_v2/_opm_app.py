@@ -26,7 +26,7 @@ from pymmcore_gui import MicroManagerGUI,WidgetAction, __version__
 import json
 
 import numpy as np
-from useq import MDAEvent
+from useq import MDAEvent, CustomAction
 from types import MappingProxyType as mappingproxy
 
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -228,7 +228,7 @@ def main() -> None:
             n_time_steps = 1
             time_interval = 0
         
-        
+        AO_exposure_ms = 500.
     
         channels = sequence_dict["channels"]
         active_channels = [False,False,False,False,False]
@@ -268,9 +268,12 @@ def main() -> None:
         )
         opm_events.append(exposure_event)
         O2O3_event = MDAEvent(
-            metadata = {
-                "O2O3-mode" : "autofocus"
-            }
+            action=CustomAction(
+                name="O2O3-autfocus",
+                data = {
+                    "O2O3-mode" : "autofocus"
+                }
+            )
         )
         opm_events.append(O2O3_event)
 
@@ -280,30 +283,55 @@ def main() -> None:
             interleaved_acq = False
           
             DAQ_event = MDAEvent(
-                metadata= {
-                    'DAQ-mode' : 'projection',
-                    'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
-                    'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
-                    'DAQ-active_channels' : active_channels,
-                    "DAQ-exposure_channels_ms": exposure_channels,
-                    "DAQ-interleaved" : interleaved_acq,
-                    "DAQ-laser_powers" : [0,1,2,3,5],
-                    "DAQ-blanking" : bool(True),  
-                }
+                action=CustomAction(
+                    name="DAQ-projection",
+                    data = {
+                        'DAQ-mode' : 'projection',
+                        'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
+                        'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
+                        'DAQ-active_channels' : active_channels,
+                        "DAQ-exposure_channels_ms": exposure_channels,
+                        "DAQ-interleaved" : interleaved_acq,
+                        "DAQ-laser_powers" : [0,1,2,3,5],
+                        "DAQ-blanking" : bool(True),  
+                    }
+                )
             )
         elif  "Mirror" in mmc.getProperty("OPM-mode", "Label"):
             DAQ_event = MDAEvent(
-                metadata= {
-                    'DAQ-mode' : 'mirror_sweep',
-                    'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
-                    'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
-                    'DAQ-active_channels' : active_channels,
-                    "DAQ-exposure_channels_ms": exposure_channels,
-                    "DAQ-interleaved" : interleaved_acq,
-                    "DAQ-laser_powers" : [0,1,2,3,5],
-                    "DAQ-blanking" : bool(True),  
+                action=CustomAction(
+                    name="DAQ-mirror",
+                    data = {
+                        'DAQ-mode' : 'mirror_sweep',
+                        'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
+                        'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
+                        'DAQ-active_channels' : active_channels,
+                        "DAQ-exposure_channels_ms": exposure_channels,
+                        "DAQ-interleaved" : interleaved_acq,
+                        "DAQ-laser_powers" : [0,1,2,3,5],
+                        "DAQ-blanking" : bool(True),  
+                    }
+                )
+            )
+
+        # Create AO event
+        AO_event = MDAEvent(
+            exposure = AO_exposure_ms,
+            action=CustomAction(
+                name="AO-projection",
+                data = {
+                    'AO-opm_mode': str('projection'),
+                    'AO-active_channels_bool': [False,True,False,False,False],
+                    "AO-laser_power" : [0,5,0,0,0],
+                    'AO-exposure_ms': AO_exposure_ms, # replace with AO exposure time
+                    'AO-mode': str('dct'),
+                    'AO-iterations': int(5),
+                    "AO-image_mirror_range_um" : float(50.),
+                    "AO-image_mirror_step_um" : float(0.4),
+                    "AO-blanking": bool(True)
                 }
             )
+        )
 
         need_to_setup_DAQ = True
         need_to_setup_stage = True
@@ -311,22 +339,13 @@ def main() -> None:
         for time_idx in range(n_time_steps):
             # Check if autofocus before each timepoint and not initial-only mode
             if O2O3_mode == "Before-each-t" and not(O2O3_mode == "Initial-only"):
-                exposure_event = MDAEvent(
-                    exposure = O2O3_exposure_ms
-                )
-                opm_events.append(exposure_event)
-                O2O3_event = MDAEvent(
-                    metadata = {
-                        "O2O3-mode" : "autofocus"
-                    }
-                )
                 opm_events.append(O2O3_event)
             for pos_idx in range(n_stage_pos):
                 if need_to_setup_stage:
                     stage_event = MDAEvent(
-                        x_pos = stage_positions[0]['x'],
-                        y_pos = stage_positions[0]['y'],
-                        z_pos = stage_positions[0]['z'],
+                        x_pos = stage_positions[pos_idx]['x'],
+                        y_pos = stage_positions[pos_idx]['y'],
+                        z_pos = stage_positions[pos_idx]['z'],
                     )
                     opm_events.append(stage_event)
                     if n_stage_pos > 1:
@@ -335,83 +354,27 @@ def main() -> None:
                         need_to_setup_stage = False
                 # Check if autofocus before each XYZ position and not initial-only mode
                 if O2O3_mode == "Before-each-xyz" and not(O2O3_mode == "Initial-only"):
-                    exposure_event = MDAEvent(
-                        exposure = O2O3_exposure_ms
-                    )
-                    opm_events.append(exposure_event)
-                    O2O3_event = MDAEvent(
-                        metadata = {
-                            "O2O3-mode" : "autofocus"
-                        }
-                    )
                     opm_events.append(O2O3_event)
                 # Check if run AO opt. before each XYZ on first time we see this position
                 if AO_mode == "Before-each-xyz" and time_idx == 0:
-                    exposure_event = MDAEvent(
-                        exposure = 500. # replace with AO exposure time
-                    )
-                    AO_event = MDAEvent(
-                        metadata = {
-                            'AO-opm_mode': str('projection'),
-                            'AO-active_channels_bool': [False,True,False,False,False],
-                            "AO-laser_power" : [0,5,0,0,0],
-                            'AO-exposure_ms': 500., # replace with AO exposure time
-                            'AO-mode': str('dct'),
-                            'AO-iterations': int(5),
-                            "AO-image_mirror_range_um" : float(50.),
-                            "AO-image_mirror_step_um" : float(0.4),
-                            "AO-blanking": bool(True)
-                        }
-                    )
                     need_to_setup_DAQ = True
                     opm_events.append(AO_event)
                 # Otherwise, run AO opt. before every acquisition. COSTLY in time and photons!
                 elif AO_mode == "Before-every-acq":
-                    exposure_event = MDAEvent(
-                        exposure = 500. # replace with AO exposure time
-                    )
-                    AO_event = MDAEvent(
-                        metadata = {
-                            'AO-opm_mode': str('projection'),
-                            'AO-active_channels_bool': [False,True,False,False,False],
-                            "AO-laser_power" : [0,5,0,0,0],
-                            'AO-exposure_ms': 500., # replace with AO exposure time
-                            'AO-mode': str('dct'),
-                            'AO-iterations': int(5),
-                            "AO-image_mirror_range_um" : float(50.),
-                            "AO-image_mirror_step_um" : float(0.4),
-                            "AO-blanking": bool(True)
-                        }
-                    )
                     need_to_setup_DAQ = True
                     opm_events.append(AO_event)
                 # Setup DAQ for acquisition
                 # NOTE: should be smart about this. We should only setup the DAQ as needed.
                 if need_to_setup_DAQ:
-                    DAQ_event = MDAEvent(
-                        metadata= {
-                            'DAQ-mode' : 'mirror_sweep',
-                            'DAQ-image_mirror_step_um' : float(image_mirror_step_um),
-                            'DAQ-image_mirror_range_um' : float(image_mirror_range_um),
-                            'DAQ-active_channels' : active_channels,
-                            "DAQ-exposure_channels_ms": exposure_channels,
-                            "DAQ-interleaved" : interleaved_acq,
-                            "DAQ-laser_powers" : [0,1,2,3,5],
-                            "DAQ-blanking" : bool(True),
-                        }
-                    )
                     need_to_setup_DAQ = False
                     opm_events.append(DAQ_event)
                 # Finally, handle acquiring images. 
                 # These events are passed through to the normal MDAEngine and *should* be sequenced. 
                 if interleaved_acq:
-                    exposure_event = MDAEvent(
-                        exposure = exposure_channels[0]
-                    )
-                    opm_events.append(exposure_event)
                     for scan_idx in range(n_scan_steps):
                         for chan_idx in range(n_active_channels):
                             image_event = MDAEvent(
+                                exposure=exposure_channels[0],
                                 index=mappingproxy({
                                     't': time_idx, 
                                     'p': pos_idx, 
@@ -423,11 +386,8 @@ def main() -> None:
                 else:
                     for chan_idx in range(n_active_channels):
                         for scan_idx in range(n_scan_steps):
-                            exposure_event = MDAEvent(
-                                exposure = exposure_channels[chan_idx]
-                            )
-                            opm_events.append(exposure_event)
                             image_event = MDAEvent(
+                                exposure = exposure_channels[chan_idx],
                                 index=mappingproxy({
                                     't': time_idx, 
                                     'p': pos_idx, 
@@ -523,7 +483,7 @@ def main() -> None:
             opmNIDAQ_local.set_acquisition_params(
                 scan_type="2d",
                 channel_states=channel_states
-            )
+                )
             # opmNIDAQ_local.set_acquisition_params(scan_type="2d",
             #                                 channel_states=channel_states)
             opmNIDAQ_local.generate_waveforms()
