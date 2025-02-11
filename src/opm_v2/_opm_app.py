@@ -132,7 +132,7 @@ def main() -> None:
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_demo.cfg"))
+    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_20250210.cfg"))
 
     # grab handle to the Stage widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
@@ -140,6 +140,13 @@ def main() -> None:
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
+    
+    # Enforce lasers to external modulation
+    laser_box_name = "Coherent-Scientific Remote"
+    modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
+    for _p in modulation_properties:
+        mmc.setProperty(laser_box_name, _p, "External/Digital")
+
     
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
@@ -235,17 +242,12 @@ def main() -> None:
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
         image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-um")[0]),2)
         exposure = np.round(float(mmc.getProperty("Camera", "Exposure")),2)
-        print("preview callback")
-        print(active_channel)
-        print(image_mirror_range_um)
-        print(image_mirror_step_um)
-        print(exposure)
-        # if active_channel=="":
-        channel_states = [True,False,False,False]
-        mirror_step_size_um = 0.4
-        image_mirror_range_um = 100
+        
+        channel_states = [False] * 5
+        for ch_i, ch_str in enumerate(["405nm", "488nm", "532nm", "561nm", "638nm"]):
+            if active_channel==ch_str:
+                channel_states[ch_i] = True
         laser_blanking = True
-        exposure_ms = 100 
         
         # Check OPM mode and set up NIDAQ accordingly
         opmNIDAQ.clear_tasks()
@@ -254,10 +256,10 @@ def main() -> None:
             print("projection mode")
             opmNIDAQ.set_acquisition_params(scan_type="projection",
                                             channel_states=channel_states,
-                                            image_mirror_step_size_um=mirror_step_size_um,
+                                            image_mirror_step_size_um=image_mirror_step_um,
                                             image_mirror_sweep_um=image_mirror_range_um,
                                             laser_blanking=laser_blanking,
-                                            exposure_ms=exposure_ms)
+                                            exposure_ms=exposure)
             opmNIDAQ.generate_waveforms()
         else:
             # .... call our NIDAQ code to setup digital ouput
