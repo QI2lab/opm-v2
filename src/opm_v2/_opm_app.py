@@ -5,6 +5,8 @@ qi2lab specific changes start on line 112.
 Change Log:
 2025/02: Initial version of the script.
 """
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.hardware.AOMirror import AOMirror
 
 from __future__ import annotations
 
@@ -112,8 +114,20 @@ def main() -> None:
     # --------------------------------------------------------------------------------
 
     # load OPM NIDAQ and OPM AO mirror classes
-    opmNIDAQ = None
-    opmAOmirror = None
+    opmNIDAQ = OPMNIDAQ()
+    
+    # Adaptive optics parameters
+    wfc_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat")
+    wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
+    haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
+    wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    # Start the mirror in the flat_position position.
+    opmAOmirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
+                                haso_config_file_path = haso_config_file_path,
+                                interaction_matrix_file_path = wfc_correction_file_path,
+                                flat_positions_file_path = wfc_flat_file_path,
+                                n_modes = 32,
+                                modes_to_ignore = [])
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
@@ -219,14 +233,35 @@ def main() -> None:
         image_galvo_range = np.round(float(mmc.getProperty("ImageGalvoMirror", "Position")),2)
         active_channel = mmc.getProperty("LED", "Label")
         
+        # need to extract values from mda widget, WIP
+        channel_states = [True,False,False,False]
+        mirror_step_size_um = 0.4
+        image_mirror_range_um = 100
+        laser_blanking = True
+        exposure_ms = 100 
+        
         # Check OPM mode and set up NIDAQ accordingly
+        opmNIDAQ.clear_tasks()
         if "Projection" in mmc.getProperty("OPM-mode", "Label"):
             # ... call our NIDAQ code to setup multiple analog waveforms and digital ouput
             print("projection mode")
+            opmNIDAQ.set_acquisition_params(scan_type="projection",
+                                            channel_states=channel_states,
+                                            image_mirror_step_size_um=mirror_step_size_um,
+                                            image_mirror_sweep_um=image_mirror_range_um,
+                                            laser_blanking=laser_blanking,
+                                            exposure_ms=exposure_ms)
+            opmNIDAQ.generate_waveforms()
         else:
             # .... call our NIDAQ code to setup digital ouput
             print("standard mode")
-
+            opmNIDAQ.clear_tasks()
+            opmNIDAQ.set_acquisition_params(scan_type="2d",
+                                            channel_states=channel_states)
+            opmNIDAQ.generate_waveforms()
+    
+        opmNIDAQ.start_waveform_playback()
+            
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
