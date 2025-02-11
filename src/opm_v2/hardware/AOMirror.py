@@ -1,6 +1,6 @@
 import numpy as np
 from pathlib import Path
-from numpy.typing import ArrayLike
+from numpy.typing import NDArray
 from typing import List
 import wavekit_py as wkpy
 import time
@@ -86,6 +86,7 @@ class AOMirror:
         flat_positions_file_path: Path = None,
         coeff_file_path: Path = None,
         n_modes: int = 32,
+        n_positions: int = 1,
         modes_to_ignore: List[int] = []
     ):
         
@@ -101,6 +102,7 @@ class AOMirror:
         self.flat_positions_file_path = flat_positions_file_path
         self.n_modes = n_modes
         self.modes_to_ignore = modes_to_ignore
+        self.n_positions = n_positions
         
         # create wkpy sub class objects
         # Wavefront corrector and set objects
@@ -168,6 +170,8 @@ class AOMirror:
         self.set_mirror_flat()
         self.wfc_positions = {"flat":self.flat_positions}
 
+        self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
+
         self.mode_names = [
             "Vert. Tilt",
             "Horz. Tilt",
@@ -205,21 +209,35 @@ class AOMirror:
 
     
     def __del__(self):
+        """Disconnect from mirror on close"""
         self.wfc.disconnect()
-        
         
     def set_mirror_flat(self):
         """Set mirror to positions in the "flat" file."""
 
         self.wfc.move_to_absolute_positions(self.flat_positions)
+
+    # Steven - we need a paired function to store positions at unique
+    # position index. You may want to re-think the API as you implement this.
+    def set_mirror_positions_from_array(self,idx: int = 0):
+        """Set mirror positions from stored array.
         
+        Used in nD acquisitions where each "position" has a unique correction.
+
+        Parameters
+        ----------
+        idx: int, default = 0
+            position index to use
+        """
+    
+        self.set_mirror_positions(self.wfc_positions_array[idx,:])
         
-    def set_mirror_positions(self, positions: ArrayLike):
+    def set_mirror_positions(self, positions: NDArray):
         """Set mirror positions.
 
         Parameters
         ----------
-        positions : ArrayLike
+        positions : NDArray
             Flatten array of actuators 
         """
 
@@ -242,15 +260,14 @@ class AOMirror:
             
         return apply        
         
-        
-    def set_modal_coefficients(self,amps: ArrayLike):
+    def set_modal_coefficients(self,amps: NDArray):
         """Set modal coefficients.
 
         Commonly in Zernike modes.
 
         Parameters
         ----------
-        amps : ArrayLike
+        amps : NDArray
             Flatten array of Zernike modes.
         """
 
@@ -289,7 +306,6 @@ class AOMirror:
         time.sleep(.01)
         return apply
         
-        
     # Steven - this is a slightly confusing function name. I would expect
     # "update" to change the mirror settings, but this updates the internal class.
     # should these move to class properties?
@@ -299,7 +315,6 @@ class AOMirror:
         self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
         self.deltas = self.current_positions - self.flat_positions
        
-        
     def save_mirror_state(self, wfc_save_path: Path):
         """Save current mirror state to disk.
 
@@ -379,7 +394,7 @@ def DM_voltage_to_map(v):
     
     
 def plotDM(
-    cmd: ArrayLike, 
+    cmd: NDArray, 
     title:str = "", 
     cmap: str = "jet", 
     vmin: float =-0.25,
@@ -391,7 +406,7 @@ def plotDM(
 
     Parameters
     ----------
-    cmd : ArrayLike
+    cmd : NDArray
         (8,8) array of DM voltages
     title : str, default = ""
         Title of plot window
