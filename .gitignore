@@ -109,3 +109,4 @@ ENV/
 # IDE settings
 .vscode/
 .idea/
+src/opm_v2/test_seq_events.py
