@@ -5,43 +5,8 @@ from typing import List
 import wavekit_py as wkpy
 import time
 
-# Steven - why do we have a global mode_names also one in the class?
-mode_names = [
-            "Vert. Tilt",
-            "Horz. Tilt",
-            "Defocus",
-            "Vert. Asm.",
-            "Oblq. Asm.",
-            "Vert. Coma",
-            "Horz. Coma",
-            "3rd Spherical",
-            "Vert. Tre.",
-            "Horz. Tre.",
-            "Vert. 5th Asm.",
-            "Oblq. 5th Asm.",
-            "Vert. 5th Coma",
-            "Horz. 5th Coma",
-            "5th Spherical",
-            "Vert. Tetra.",
-            "Oblq. Tetra.",
-            "Vert. 7th Tre.",
-            "Horz. 7th Tre.",
-            "Vert. 7th Asm.",
-            "Oblq. 7th Asm.",
-            "Vert. 7th Coma",
-            "Horz. 7th Coma",
-            "7th Spherical",
-            "Vert. Penta.",
-            "Horz. Penta.",
-            "Vert. 9th Tetra.",
-            "Oblq. 9th Tetra.",
-            "Vert. 9th Tre.",
-            "Horz. 9th Tre.",
-            "Vert. 9th Asm.",
-            "Oblq. 9th Asm.",
-        ]
-
 _instance_mirror = None
+
 class AOMirror:
     """Class to control Imagine Optic Mirao52E.
     
@@ -63,6 +28,8 @@ class AOMirror:
     coeff_file_path : Path, default = None
         _description_
     n_modes : int, default = 32
+        _description_
+    n_positions: int, default = 1
         _description_
     modes_to_ignore : list[int], default = []
         _description_
@@ -102,7 +69,7 @@ class AOMirror:
         self.flat_positions_file_path = flat_positions_file_path
         self.n_modes = n_modes
         self.modes_to_ignore = modes_to_ignore
-        self.n_positions = n_positions
+        self._n_positions = n_positions
         
         # create wkpy sub class objects
         # Wavefront corrector and set objects
@@ -111,6 +78,7 @@ class AOMirror:
         )
         self.wfc_set = wkpy.WavefrontCorrectorSet(wavefrontcorrector = self.wfc)
         self.wfc.connect(True)
+        
         
         # create corrdata manager object and compute command matrix
         self.corr_data_manager = wkpy.CorrDataManager(
@@ -206,6 +174,35 @@ class AOMirror:
             "Vert. 9th Asm.",
             "Oblq. 9th Asm.",
         ]
+        
+    @property
+    def n_positions(self) -> int:
+        """Number of experimental "positions".
+        
+        Returns
+        -------
+        n_positions: int
+            number of wavefronts to store, tied to experimental "positions".
+        """
+        
+        return getattr(self,"_n_positions",None)
+    
+    @n_positions.setter
+    def n_positions(self, value: int):
+        """Set the number of experimental "positions".
+        
+        Parameters
+        ----------
+        value: int
+            number of wavefronts to store, tied to experimental "positions".
+        """
+        
+        if not hasattr(self, "_n_positions") or self._n_positions is None:
+            self._n_positions = value
+        else:
+            self._n_positions = value
+            
+        self.wfc_positions_array = np.zeros((self.n_positions,self.wfc.nb_actuators))
 
     
     def __del__(self):

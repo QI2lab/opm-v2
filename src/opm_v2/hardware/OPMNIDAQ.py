@@ -123,11 +123,8 @@ class OPMNIDAQ:
         self._do_ind = [0,1,2,3,4]
         self._active_channels_indices = None
         self._n_active_channels = 0
-        self.__do_ind = [0,1,2,3,4]
-        self._active_channels_indices = None
-        self._n_active_channels = 0
-        self._num_do_channels = len(self.__do_ind)
-        self._do_waveform = [False] * len(self.__do_ind)
+        self._num_do_channels = 8
+        self._do_waveform = np.zeros((self._num_do_channels),dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
         self._ao_neutral_positions = [0.0, 0.0]
         self._ao_neutral_positions = [0.0, 0.0]
@@ -153,14 +150,18 @@ class OPMNIDAQ:
             "di_start_ao_trigger":"/Dev1/PFI3"
         }
         
-        self._address_channel_do = [
-            "/Dev1/port0/line0", # 405
-            "/Dev1/port0/line1", # 473
-            "/Dev1/port0/line2", # 532
-            "/Dev1/port0/line3", # 561
-            "/Dev1/port0/line4", # 637
-            "/Dev1/port0/line5"  # 730
-        ]
+        
+        # Steven - I don't undresatnd this strategy
+        # It was working as was, there was a comment about programming daq line individually,I don't think it will change anything.
+        # self._address_channel_do = [
+        #     "/Dev1/port0/line0", # 405
+        #     "/Dev1/port0/line1", # 473
+        #     "/Dev1/port0/line2", # 532
+        #     "/Dev1/port0/line3", # 561
+        #     "/Dev1/port0/line4", # 637
+        #     "/Dev1/port0/line5"  # 730
+        # ]
+        self._address_channel_do = "/Dev1/port0/line0:7"
 
         self._address_ao_mirrors = [
             "/Dev1/ao0", # image scanning galvo
@@ -438,23 +439,25 @@ class OPMNIDAQ:
             if laser_blanking:
                 self.laser_blanking = laser_blanking
             if exposure_ms:
-             self.exposure_ms = exposure_ms
+                self.exposure_ms = exposure_ms
                 
             if self.scan_type == "mirror" or self.scan_type == "projection":
                 if image_mirror_step_size_um and image_mirror_sweep_um:
                     # determine sweep footprint
-                    self.image_mirror_min_volt = -(image_mirror_step_size_um * self.image_mirror_calibration / 2.) + self._ao_neutral_positions[0] # unit: volts
+                    self.image_mirror_min_volt = -(image_mirror_sweep_um * self.image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
                     self.image_axis_step_volts = image_mirror_step_size_um * self.image_mirror_calibration 
-                    self.image_axis_range_volts = image_mirror_step_size_um * self.image_mirror_calibration 
-                    self.image_scan_steps = np.rint(self.image_axis_range_volts / self.image_axis_step_volts).astype(np.int16) # galvo steps
+                    self.image_axis_range_volts = image_mirror_sweep_um * self.image_mirror_calibration
+                    self.image_scan_steps = np.rint(self.image_axis_range_volts / self.image_axis_step_volts) # galvo steps
+                   
                     # determine projection scan range
-                    self.projection_scan_range_volts = image_mirror_step_size_um * self.projection_mirror_calibration
+                    self.projection_scan_range_volts = image_mirror_sweep_um * self.projection_mirror_calibration
+                    
                     return self.image_scan_steps
             
     def reset(self):
         """Reset the device."""
 
-        daqmx.DAQmxResetDevice(self.dev_name)
+        daqmx.DAQmxResetDevice(self._dev_name)
         self.reset_ao_channels()
         self.reset_do_channels()
 
@@ -464,7 +467,7 @@ class OPMNIDAQ:
         self.clear_tasks()
         
         _ao_waveform = np.column_stack((np.full(2, self._ao_neutral_positions[0]),
-                                        np.full(2, self.self._ao_neutral_positions[1])))
+                                        np.full(2, self._ao_neutral_positions[1])))
 
         samples_per_ch_ct = ct.c_int32()
         try:
@@ -500,7 +503,7 @@ class OPMNIDAQ:
         try:
             with daqmx.Task("ResetDO") as _task:
                 _task.CreateDOChan(
-                    ", ".join(self._address_channel_do), 
+                    self._address_channel_do, 
                     "reset_do", 
                     daqmx.DAQmx_Val_ChanForAllLines
                 )
@@ -564,6 +567,11 @@ class OPMNIDAQ:
             
             # Set the last time point (when exp is off) to the first mirror positions.
             _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
+            
+            # It is close, but something is not right with the analog voltage waveforms. I had to fix some variable names, so I'm wondering
+            # if there are still issues there. A few places there was a step <-> sweep mix up.
+            # I'll review the changes if you push the changes
+            # Sure. I'll try one or two more things then shut down the setup.
 
             if len(scan_mirror_volts) > 1:
                 # (2 * # active channels) voltage values for all other frames
@@ -606,8 +614,9 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((self.samples_per_ao_ch, 2))
             
             # Generate projection mirror linear ramp
-            self.proj_mirror_max_volt = self.projection_scan_range_volts/2
             self.proj_mirror_min_volt = - self.projection_scan_range_volts/2
+            self.proj_mirror_max_volt = self.projection_scan_range_volts/2
+
             
             if self.verbose:
                 print(self.proj_mirror_min_volt)
@@ -679,7 +688,7 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((1, 2))
             _ao_waveform[:, 0] = self._ao_neutral_positions[0]
             _ao_waveform[:, 1] = self._ao_neutral_positions[1]
-            
+                        
         # Update daq waveforms
         self._do_waveform = _do_waveform
         self._ao_waveform = _ao_waveform
@@ -688,12 +697,12 @@ class OPMNIDAQ:
     def prepare_waveform_playback(self):
         """Create DAQ tasks for synchronizing camera output triggers to lasers and galvo mirrors."""
         
-        self.stop_waveform_playback()
+        #self.stop_waveform_playback()
         try:
             #-------------------------------------------------#
             # Create DI trigger from camera task
             # This should only be done at startup or after a reset occurs
-            if self._task_di == None:
+            if self._task_di is None:
                 self._task_di = daqmx.Task("TaskDI")
                 self._task_di.CreateDIChan(
                     self._channel_di_trigger_from_camera,
@@ -719,10 +728,10 @@ class OPMNIDAQ:
         
             #-------------------------------------------------#
             # Create DO laser control tasks
-            if self._task_do == None:
+            if self._task_do is None:
                 self._task_do = daqmx.Task("TaskDO")
                 self._task_do.CreateDOChan(
-                    ", ".join(self._address_channel_do), 
+                    self._address_channel_do, 
                     "DO_LaserControl", 
                     daqmx.DAQmx_Val_ChanForAllLines
                 )
@@ -736,6 +745,7 @@ class OPMNIDAQ:
                     self.samples_per_do_ch
                 )
             
+
             # Write the output waveform
             samples_per_ch_ct_digital = ct.c_int32()
             self._task_do.WriteDigitalLines(
@@ -743,7 +753,7 @@ class OPMNIDAQ:
                 False, 
                 10.0, 
                 daqmx.DAQmx_Val_GroupByChannel, 
-                self._do_waveform, 
+                self._do_waveform.astype(np.uint8), 
                 ct.byref(samples_per_ch_ct_digital), 
                 None
             )
@@ -754,7 +764,7 @@ class OPMNIDAQ:
             samples_per_ch_ct = ct.c_int32()
             with daqmx.Task("TaskInitAO") as _task:
                 # Create a 2d array that sets the initial AO voltage to the start of the scan.
-                initial__ao_waveform = np.column_stack(
+                initial_ao_waveform = np.column_stack(
                     (np.full(2, self._ao_waveform[0,0]),
                     np.full(2, self._ao_waveform[0,1]))
                 )
@@ -779,7 +789,7 @@ class OPMNIDAQ:
                     True, 
                     1, 
                     daqmx.DAQmx_Val_GroupByScanNumber, 
-                    initial__ao_waveform, 
+                    initial_ao_waveform, 
                     ct.byref(samples_per_ch_ct), 
                     None
                 )
@@ -787,7 +797,7 @@ class OPMNIDAQ:
                 _task.ClearTask()
                 
             # Create and configure timing for AO tasks
-            if self._task_ao == None:
+            if self._task_ao is None:
                 self._task_ao = daqmx.Task("TaskAO")
                 self._task_ao.CreateAOVoltageChan(
                     self._address_ao_mirrors[0], 
@@ -858,7 +868,8 @@ class OPMNIDAQ:
                     ct.byref(samples_per_ch_ct), 
                     None
                 )                
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
+            print(e)
             pass
      
     def start_waveform_playback(self):
@@ -868,32 +879,33 @@ class OPMNIDAQ:
             for _task in [self._task_di, self._task_do, self._task_ao]:
                 if _task:
                     _task.StartTask()
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
+            print(e)
             pass
 
     def stop_waveform_playback(self):
         """Stop any tasks that exist."""
         
         try:
-            for _task in [self._task_do, self._task_ao]:
+            for _task in [self._task_di, self._task_do, self._task_ao]:
                 if _task:
                     _task.StopTask()
         
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
+            print(e)
             pass
       
     def clear_tasks(self):
         """Stop, Clear and remove task handlers."""
         
         try:
-            for _task in [self._task_di, self._task_do, self._task_ao]:
-                # if hasattr(self, _task):
-                #     task = getattr(self, _task)
-                if _task is not None:
-                    _task.StopTask()
-                    _task.ClearTask()
-                    _task = None
-                    # setattr(self, _task, None) 
+            for task_name in ["_task_di", "_task_do", "_task_ao"]:
+                if hasattr(self, task_name):
+                    task = getattr(self, task_name)
+                    if task is not None:
+                        task.StopTask()
+                        task.ClearTask()
+                    setattr(self, task_name, None) 
         
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass

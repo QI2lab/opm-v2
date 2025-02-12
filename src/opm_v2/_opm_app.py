@@ -117,16 +117,15 @@ def main() -> None:
 
     # load OPM NIDAQ and OPM AO mirror classes
     opmNIDAQ = OPMNIDAQ()
+    opmNIDAQ.reset()
     
     # Steven - please create a json, store these files in the json, and load the json.
     # Adaptive optics parameters
-    wfc_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat")
-    wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
-    haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
-    wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    wfc_config_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat")
+    wfc_correction_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc")
+    haso_config_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat")
+    wfc_flat_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250122_tilted_gauss2d_laser_actuator_positions.wcs")
     
-    # Steven - please follow the formatting I used below for all code. 
-    #          I left your code commented so you can see the difference.
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
         wfc_config_file_path = wfc_config_file_path,
@@ -134,19 +133,26 @@ def main() -> None:
         interaction_matrix_file_path = wfc_correction_file_path,
         flat_positions_file_path = wfc_flat_file_path,
         n_modes = 32,
+        n_positions=1,
         modes_to_ignore = []
     )
-
-    # opmAOmirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
-    #                             haso_config_file_path = haso_config_file_path,
-    #                             interaction_matrix_file_path = wfc_correction_file_path,
-    #                             flat_positions_file_path = wfc_flat_file_path,
-    #                             n_modes = 32,
-    #                             modes_to_ignore = [])
+    
+    opmAOmirror.set_mirror_flat()
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_20250210.cfg"))
+    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_20250210_DPS.cfg"))
+    
+    # Steven - I was wrong, we should do this here. There is something odd about the Coherent driver.
+    # Enforce lasers to external modulation and on
+    laser_box_name = "Coherent-Scientific Remote"
+    modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
+    for _p in modulation_properties:
+        mmc.setProperty(laser_box_name, _p, "External/Digital")
+    state_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "State" in _s.lower()]
+    for _p in state_properties:
+        mmc.setProperty(laser_box_name, _p, "On")
+        
 
     # grab handle to the Stage widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
@@ -154,14 +160,6 @@ def main() -> None:
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
-    
-    # Steven - please do this in the config file using the "Startup" config, not here.
-    # Enforce lasers to external modulation
-    laser_box_name = "Coherent-Scientific Remote"
-    modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
-    for _p in modulation_properties:
-        mmc.setProperty(laser_box_name, _p, "External/Digital")
-
     
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
@@ -447,7 +445,7 @@ def main() -> None:
         # get active channel    
         active_channel = mmc.getProperty("LED", "Label")
        
-        exposure_ms = np.round(float(mmc.getProperty("Camera", "Exposure")),2)
+        exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),2)
         
         channel_states = [False,False,False,False,False]
         for ch_i, ch_str in enumerate(["405nm", "488nm", "561nm", "637nm", "730nm"]):
@@ -460,39 +458,34 @@ def main() -> None:
         else:
             laser_blanking = True
         
-        # Check OPM mode and set up NIDAQ accordingly
-        opmNIDAQ_local.clear_tasks()
-        if "Projection" in mmc.getProperty("OPM-mode", "Label"):
-            print("projection mode")
-            # Steven - same formatting comment.
-            opmNIDAQ_local.set_acquisition_params(
-                scan_type="projection",
-                channel_states=channel_states,
-                image_mirror_step_size_um=image_mirror_step_um,
-                image_mirror_sweep_um=image_mirror_range_um,
-                laser_blanking=laser_blanking,
-                exposure_ms=exposure_ms
-            )
-            # opmNIDAQ_local.set_acquisition_params(scan_type="projection",
-            #                                 channel_states=channel_states,
-            #                                 image_mirror_step_size_um=image_mirror_step_um,
-            #                                 image_mirror_sweep_um=image_mirror_range_um,
-            #                                 laser_blanking=laser_blanking,
-            #                                 exposure_ms=exposure_ms)
-            opmNIDAQ_local.generate_waveforms()
-        else:
-            print("standard mode")
+        # check if any channels are active. If not, don't setup DAQ.
+        if any(channel_states):
+            # Check OPM mode and set up NIDAQ accordingly
+            opmNIDAQ_local.stop_waveform_playback()
             opmNIDAQ_local.clear_tasks()
-            # Steven - same formatting comment.
-            opmNIDAQ_local.set_acquisition_params(
-                scan_type="2d",
-                channel_states=channel_states
+            if "Projection" in mmc.getProperty("OPM-mode", "Label"):
+                print("projection mode")
+                _ = opmNIDAQ_local.set_acquisition_params(
+                    scan_type="projection",
+                    channel_states=channel_states,
+                    image_mirror_step_size_um=image_mirror_step_um,
+                    image_mirror_sweep_um=image_mirror_range_um,
+                    laser_blanking=laser_blanking,
+                    exposure_ms=exposure_ms
                 )
-            # opmNIDAQ_local.set_acquisition_params(scan_type="2d",
-            #                                 channel_states=channel_states)
-            opmNIDAQ_local.generate_waveforms()
-    
-        opmNIDAQ_local.start_waveform_playback()
+
+                opmNIDAQ_local.generate_waveforms()
+            else:
+                print("standard mode")
+                opmNIDAQ_local.set_acquisition_params(
+                    scan_type="2d",
+                    channel_states=channel_states,
+                    laser_blanking=laser_blanking
+                    )
+                opmNIDAQ_local.generate_waveforms()
+        
+            opmNIDAQ_local.prepare_waveform_playback()
+            opmNIDAQ_local.start_waveform_playback()
             
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
