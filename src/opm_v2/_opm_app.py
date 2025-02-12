@@ -145,13 +145,13 @@ def main() -> None:
     
     # Steven - I was wrong, we should do this here. There is something odd about the Coherent driver.
     # Enforce lasers to external modulation and on
-    laser_box_name = "Coherent-Scientific Remote"
-    modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
-    for _p in modulation_properties:
-        mmc.setProperty(laser_box_name, _p, "External/Digital")
-    state_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "State" in _s.lower()]
-    for _p in state_properties:
-        mmc.setProperty(laser_box_name, _p, "On")
+    # laser_box_name = "Coherent-Scientific Remote"
+    # modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
+    # for _p in modulation_properties:
+    #     mmc.setProperty(laser_box_name, _p, "External/Digital")
+    # state_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "State" in _s.lower()]
+    # for _p in state_properties:
+    #     mmc.setProperty(laser_box_name, _p, "On")
         
 
     # grab handle to the Stage widget
@@ -432,6 +432,8 @@ def main() -> None:
 
         # get instance of opmnidaq here
         opmNIDAQ_local = OPMNIDAQ.instance()
+        opmNIDAQ_local.projection_mirror_calibration = np.round(float(mmc.getProperty("ProjGalvoFactorRange", "Position")),5) / 1000.
+        print(opmNIDAQ_local.projection_mirror_calibration)
 
         # get image galvo mirror range and step size
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
@@ -485,6 +487,9 @@ def main() -> None:
         
             opmNIDAQ_local.prepare_waveform_playback()
             opmNIDAQ_local.start_waveform_playback()
+        else:
+            opmNIDAQ_local.stop_waveform_playback()
+            opmNIDAQ_local.clear_tasks()
             
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 

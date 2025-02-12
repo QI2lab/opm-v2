@@ -76,7 +76,7 @@ class OPMNIDAQ:
         exposure time in milliseconds
     laser_blanking: bool, default = True
         synchronize laser output to the camera rolling shutter being fully open. For fast imaging, this likely needs to be `False`
-    image_mirror_calibration: float, default = .0043
+    image_mirror_calibration: float, default = .043
         image mirror calibration in V/um
     projection_mirror_calibration: float, default = .0052
         projection mirror calibration in V/um
@@ -118,7 +118,7 @@ class OPMNIDAQ:
         self.image_mirror_step_size_um = image_mirror_step_size_um
         self.verbose = verbose
         
-        # Define waveform generation parameters for projection mode
+        # Define waveform generation parameters
         self._daq_sample_rate_hz = 10000
         self._do_ind = [0,1,2,3,4]
         self._active_channels_indices = None
@@ -127,42 +127,11 @@ class OPMNIDAQ:
         self._do_waveform = np.zeros((self._num_do_channels),dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
         self._ao_neutral_positions = [0.0, 0.0]
-        self._ao_neutral_positions = [0.0, 0.0]
                 
         # Configure hardware pin addresses.
         self._dev_name = "Dev1"
-        self._channel_addresses = {
-            "do_channels":[
-                "/Dev1/port0/line0", # 405
-                "/Dev1/port0/line1", # 473
-                "/Dev1/port0/line2", # 532
-                "/Dev1/port0/line3", # 561
-                "/Dev1/port0/line4", # 638
-                "/Dev1/port0/line5"  # 730
-            ],
-            "ao_mirrors":[
-                "/Dev1/ao0",  # image scanning galvo
-                "/Dev1/ao1"   # projection scanning galvo
-            ], 
-            "di_camera_trigger":"/Dev1/PFI0",
-            "di_start_trigger":"/Dev1/PFI1",
-            "di_change_trigger":"/Dev1/PFI2",
-            "di_start_ao_trigger":"/Dev1/PFI3"
-        }
-        
-        
-        # Steven - I don't undresatnd this strategy
-        # It was working as was, there was a comment about programming daq line individually,I don't think it will change anything.
-        # self._address_channel_do = [
-        #     "/Dev1/port0/line0", # 405
-        #     "/Dev1/port0/line1", # 473
-        #     "/Dev1/port0/line2", # 532
-        #     "/Dev1/port0/line3", # 561
-        #     "/Dev1/port0/line4", # 637
-        #     "/Dev1/port0/line5"  # 730
-        # ]
-        self._address_channel_do = "/Dev1/port0/line0:7"
-
+        # Program DO port0 using 8-bit waveforms
+        self._address_channel_do = "/Dev1/port0/line0:7" # laser lines 0:4
         self._address_ao_mirrors = [
             "/Dev1/ao0", # image scanning galvo
             "/Dev1/ao1" # projection scanning galvo
@@ -503,7 +472,7 @@ class OPMNIDAQ:
         try:
             with daqmx.Task("ResetDO") as _task:
                 _task.CreateDOChan(
-                    self._address_channel_do, 
+                    self._address_channel_do,
                     "reset_do", 
                     daqmx.DAQmx_Val_ChanForAllLines
                 )
@@ -581,7 +550,7 @@ class OPMNIDAQ:
                - Fire active lasers
                - Synchronize image scanning mirror and projection mirror to rolling shutter.
                - Capture one frame per active channel.
-               - Start camera in light sheet mode, apply linear ramp to each mirror
+               - Start camera in light sheet mode, apply linear ramp to each mirror?
             """
             #-----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
@@ -604,32 +573,45 @@ class OPMNIDAQ:
             # Create ao waveform, scan the image mirror and projection mirror voltages.
             # This array is written for both AO channels and runs at the camera di rising edge
             n_voltage_steps = int(self._exposure_s * self._daq_sample_rate_hz) + 1
-            # return_samples = 5
-            self.samples_per_ao_ch = n_voltage_steps # + return_samples
-            _ao_waveform = np.zeros((self.samples_per_ao_ch, 2))
-            
+            # n_return_steps = 1
+                        
             # Generate projection mirror linear ramp
-            self.proj_mirror_min_volt = - self.projection_scan_range_volts/2
-            self.proj_mirror_max_volt = self.projection_scan_range_volts/2
-
-            
+            self.proj_mirror_min_volt = self.projection_scan_range_volts/2
+            self.proj_mirror_max_volt = - self.projection_scan_range_volts/2
+            proj_mirror_sweep_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps-1)
+            # proj_mirror_return_volts = np.linspace(self.proj_mirror_max_volt, self.proj_mirror_min_volt, n_return_steps)
+            # proj_mirror_volts = np.concatenate(
+            #     (proj_mirror_sweep_volts,
+            #      proj_mirror_return_volts)
+            # )
             if self.verbose:
                 print(self.proj_mirror_min_volt)
                 print(self.proj_mirror_max_volt)
-            proj_mirror_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps-1)
-            # proj_return_sweep = np.linspace(proj_mirror_volts[-1], proj_mirror_volts[0], return_samples)
             
             # Generate image scanning mirror voltage steps
             image_mirror_max_volts = self.image_mirror_min_volt + self.image_axis_range_volts
-            image_mirror_volts = np.linspace(self.image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
-            # image_return_sweep = np.linspace(image_mirror_volts[-1], image_mirror_volts[0], return_samples)
-
-            # Set the last time point (when exp is off) to the first mirror positions.
-            _ao_waveform[:-1, 0] = image_mirror_volts
-            _ao_waveform[:-1, 1] = proj_mirror_volts
+            image_mirror_sweep_volts = np.linspace(self.image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
+            # image_mirror_return_volts = np.linspace(image_mirror_max_volts, self.image_mirror_min_volt, n_return_steps)
+            # image_mirror_volts = np.concatenate(
+            #     (image_mirror_sweep_volts,
+            #      image_mirror_return_volts)
+            # ) 
+            # Combine image and proj mirror waveforms to program to daq
+            # _ao_waveform = np.column_stack(
+            #     (image_mirror_volts,
+            #      proj_mirror_volts)
+            # )
             
-            _ao_waveform[-1, 0] = image_mirror_volts[0]
-            _ao_waveform[-1, 1] = proj_mirror_volts[0]          
+            # Create an empty AO waveform
+            _ao_waveform = np.zeros((n_voltage_steps,2))
+            self.samples_per_ao_ch = _ao_waveform.shape[0]
+            
+            # Set the last time point (when exp is off) to the first mirror positions.
+            _ao_waveform[:-1, 0] = image_mirror_sweep_volts
+            _ao_waveform[:-1, 1] = proj_mirror_sweep_volts
+            
+            _ao_waveform[-1, 0] = image_mirror_sweep_volts[0]
+            _ao_waveform[-1, 1] = proj_mirror_sweep_volts[0]          
 
         elif self.scan_type == 'stage':
             """Only fire the active channel lasers,keep the mirrors in their neutral positions"""
@@ -692,7 +674,7 @@ class OPMNIDAQ:
     def prepare_waveform_playback(self):
         """Create DAQ tasks for synchronizing camera output triggers to lasers and galvo mirrors."""
         
-        #self.stop_waveform_playback()
+        # self.stop_waveform_playback()
         try:
             #-------------------------------------------------#
             # Create DI trigger from camera task
@@ -726,7 +708,7 @@ class OPMNIDAQ:
             if self._task_do is None:
                 self._task_do = daqmx.Task("TaskDO")
                 self._task_do.CreateDOChan(
-                    self._address_channel_do, 
+                    self._address_channel_do,
                     "DO_LaserControl", 
                     daqmx.DAQmx_Val_ChanForAllLines
                 )
