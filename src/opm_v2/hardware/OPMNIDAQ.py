@@ -99,7 +99,7 @@ class OPMNIDAQ:
         scan_type: str = "2D",
         exposure_ms: float = 50.,
         laser_blanking: bool = True,
-        image_mirror_calibration: float = .0043,
+        image_mirror_calibration: float = .0433,
         projection_mirror_calibration: float = .0052,
         image_mirror_step_size_um = 0.4,
         verbose: bool=False
@@ -568,11 +568,6 @@ class OPMNIDAQ:
             # Set the last time point (when exp is off) to the first mirror positions.
             _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
             
-            # It is close, but something is not right with the analog voltage waveforms. I had to fix some variable names, so I'm wondering
-            # if there are still issues there. A few places there was a step <-> sweep mix up.
-            # I'll review the changes if you push the changes
-            # Sure. I'll try one or two more things then shut down the setup.
-
             if len(scan_mirror_volts) > 1:
                 # (2 * # active channels) voltage values for all other frames
                 _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(scan_mirror_volts[1:], np.ones(2 * self._n_active_channels))
@@ -608,9 +603,9 @@ class OPMNIDAQ:
             #-----------------------------------------------------#
             # Create ao waveform, scan the image mirror and projection mirror voltages.
             # This array is written for both AO channels and runs at the camera di rising edge
-            n_voltage_steps = int(self._exposure_s * self._daq_sample_rate_hz)
-            return_samples = 5
-            self.samples_per_ao_ch = n_voltage_steps + return_samples
+            n_voltage_steps = int(self._exposure_s * self._daq_sample_rate_hz) + 1
+            # return_samples = 5
+            self.samples_per_ao_ch = n_voltage_steps # + return_samples
             _ao_waveform = np.zeros((self.samples_per_ao_ch, 2))
             
             # Generate projection mirror linear ramp
@@ -621,21 +616,21 @@ class OPMNIDAQ:
             if self.verbose:
                 print(self.proj_mirror_min_volt)
                 print(self.proj_mirror_max_volt)
-            proj_mirror_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps)
-            proj_return_sweep = np.linspace(proj_mirror_volts[-1], proj_mirror_volts[0], return_samples)
+            proj_mirror_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps-1)
+            # proj_return_sweep = np.linspace(proj_mirror_volts[-1], proj_mirror_volts[0], return_samples)
+            
             # Generate image scanning mirror voltage steps
-            scan_mirror_max_volts = self.image_mirror_min_volt + self.image_axis_range_volts
-            scan_mirror_volts = np.linspace(self.image_mirror_min_volt, scan_mirror_max_volts, n_voltage_steps)
-            scan_return_sweep = np.linspace(scan_mirror_volts[-1], scan_mirror_volts[0], return_samples)
+            image_mirror_max_volts = self.image_mirror_min_volt + self.image_axis_range_volts
+            image_mirror_volts = np.linspace(self.image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
+            # image_return_sweep = np.linspace(image_mirror_volts[-1], image_mirror_volts[0], return_samples)
 
             # Set the last time point (when exp is off) to the first mirror positions.
-            _ao_waveform[:-return_samples, 0] = scan_mirror_volts
-            _ao_waveform[:-return_samples, 1] = proj_mirror_volts
-
-            # set back to initial value at end
-            _ao_waveform[-return_samples:, 0] = proj_return_sweep
-            _ao_waveform[-return_samples:, 1] = scan_return_sweep
+            _ao_waveform[:-1, 0] = image_mirror_volts
+            _ao_waveform[:-1, 1] = proj_mirror_volts
             
+            _ao_waveform[-1, 0] = image_mirror_volts[0]
+            _ao_waveform[-1, 1] = proj_mirror_volts[0]          
+
         elif self.scan_type == 'stage':
             """Only fire the active channel lasers,keep the mirrors in their neutral positions"""
 

@@ -445,8 +445,7 @@ def main() -> None:
         # get active channel    
         active_channel = mmc.getProperty("LED", "Label")
        
-        exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),2)
-        
+        exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),2)        
         channel_states = [False,False,False,False,False]
         for ch_i, ch_str in enumerate(["405nm", "488nm", "561nm", "637nm", "730nm"]):
             if active_channel==ch_str:
