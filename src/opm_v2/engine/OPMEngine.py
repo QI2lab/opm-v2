@@ -7,45 +7,22 @@ Change Log:
 """
 
 from pymmcore_plus.mda import MDAEngine
-from useq import MDAEvent, MDASequence, SummaryMetaV1, FrameMetaV1
+from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.hardware.AOMirror import AOMirror
+from pymmcore_plus.metadata import (
+    FrameMetaV1,
+    PropertyValue,
+    SummaryMetaV1,
+    frame_metadata,
+    summary_metadata,
+)
+from numpy.typing import NDArray
+from opm_v2.utils.sensorless_ao import run_ao_optimization
 
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
-
-class qi2labOPMEngine(MDAEngine):
-    def __init__(self, opmNidaq, opmAOmirror, *args, **kwds):
-        """Initialize the engine with the OPM NIDAQ and AO mirror.
-        
-        Parameters
-        ----------
-        opmNidaq : OPMNIDAQ
-            class that controls the NIDAQ for the OPM system
-        opmAOmirror : AOMIRROR
-            class that controls the AO mirror for the OPM system
-        
-        """
-
-        """
-        check MDAsequence to see if it needs to be modified
-        if mirror:
-            pull in the MDASequence and modify it to include the image mirror settings
-        elif projection:
-            pull in the MDASequence and modify it to include the image mirror settings and the projection mirror settings
-        elif stage:
-            pull in the MDASequence and modify it to include the stage settings
-        elif AO-projection:
-            pull in the MDASequence and modify it to include the image mirror settings and the projection mirror settings
-            Will also need to figure out how to run AO. Should be in the setup_sequence or setup_event functions
-        elif fluidics-stage:
-            pull in the MDASequence and modify it to include the fluidics settings, stage settings, and AO settings
-        """
-
-        self.opmNIDAQ = opmNidaq
-        self.opmAOmirror = opmAOmirror
-
-        return super().__call__(*args, **kwds)
-    
+class OPMENGINE(MDAEngine):
+   
     def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
         """Setup state of system (hardware, etc.) before an MDA is run.
 
@@ -86,6 +63,8 @@ class qi2labOPMEngine(MDAEngine):
             setup digital blanking waveforms
             set camera to external trigger mode
         """
+        
+        super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
         """Prepare state of system (hardware, etc.) for `event`.
@@ -125,7 +104,7 @@ class qi2labOPMEngine(MDAEngine):
             start digital waveform playback
             ensure camera is in external trigger mode
         """
-
+            
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.
 
@@ -143,6 +122,17 @@ class qi2labOPMEngine(MDAEngine):
         if mirror or projection:
             do nothing
         """
+        print("in exec_event")
+        if type(event.action) is CustomAction:
+            if event.action.name == "AO-projection":
+                data_dict = event.action.data
+                run_ao_optimization(
+                        image_mirror_step_size_um=float(data_dict["AO-image_mirror_step_um"]),
+                        image_mirror_sweep_um=float(data_dict["AO-image_mirror_range_um"]),
+                        exposure_ms=float(data_dict["AO-exposure_ms"][1]),
+                        channel_states=data_dict["AO-active_channels_bool"],
+                        num_iterations=data_dict["AO-iterations"]
+                    )
 
     def teardown_event(self, event):
         """

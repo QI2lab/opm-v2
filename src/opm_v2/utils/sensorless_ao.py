@@ -9,33 +9,31 @@ TO DO:
 """
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
-
+from pymmcore_plus import CMMCorePlus
 import numpy as np
-# import h5py
 from numpy.typing import ArrayLike
 from typing import Optional, Tuple, Sequence, List
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
 from pathlib import Path
-
+from tifffile import imwrite
     
 def run_ao_optimization(
-    mmc,
     image_mirror_step_size_um: float,
     image_mirror_sweep_um: float,
     exposure_ms: float,
     channel_states: List[bool],
-    metric_to_use: Optional(str) = "shannon_dct",
-    shannon_psf_radius_px: Optional(float) = 1.5,
-    num_iterations: Optional(int) = 1,
-    num_mode_steps: Optional(int) = 3,
-    init_delta_range: Optional(float) = 0.300,
-    delta_range_alpha_per_iter: Optional(float) = 0.75,
-    modes_to_optimize: Optional(List[int]) = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
-    roi_crop_size: Optional(int) = 101,
-    save_results: Optional(bool) = False,
-    verbose: Optional(bool) = False,
+    metric_to_use: Optional[str] = "shannon_dct",
+    shannon_psf_radius_px: Optional[float] = 1.5,
+    num_iterations: Optional[int] = 1,
+    num_mode_steps: Optional[int] = 3,
+    init_delta_range: Optional[float] = 0.300,
+    delta_range_alpha_per_iter: Optional[float] = 0.75,
+    modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
+    roi_crop_size: Optional[int] = 101,
+    save_results: Optional[bool] = False,
+    verbose: Optional[bool] = True,
     ):
     
     #---------------------------------------------#
@@ -43,10 +41,13 @@ def run_ao_optimization(
     #---------------------------------------------#
     opmNIDAQ_local = OPMNIDAQ.instance()
     aoMirror_local = AOMirror.instance()
+    mmc = CMMCorePlus.instance()
     
     #---------------------------------------------#
     # setup the daq waveforms to run in projection mode
     #---------------------------------------------#
+    opmNIDAQ_local.stop_waveform_playback()
+    opmNIDAQ_local.clear_tasks()
     opmNIDAQ_local.set_acquisition_params(
         scan_type="projection",
         channel_states=channel_states,
@@ -56,7 +57,11 @@ def run_ao_optimization(
         exposure_ms=exposure_ms
     )
     opmNIDAQ_local.generate_waveforms()
+    opmNIDAQ_local.prepare_waveform_playback()
     opmNIDAQ_local.start_waveform_playback()
+    
+    mmc.setProperty("OrcaFusionBT", "Exposure",float(exposure_ms))
+    mmc.waitForDevice("OrcaFusionBT")
     
     #---------------------------------------------#
     # Setup Zernike modal coeff arrays
@@ -88,10 +93,12 @@ def run_ao_optimization(
     # Snap an image and calculate the starting metric.
     mmc.snapImage()
     starting_image = mmc.getImage()
+    imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
+
     starting_metric = metric_shannon_dct(
         image=starting_image,
-        psf_radius_px=shannon_psf_radius_px,
-        crop_size=roi_crop_size
+        shannon_psf_radius_px=shannon_psf_radius_px,
+        crop_size=None
         )
 
     # initialize delta range
@@ -139,12 +146,13 @@ def run_ao_optimization(
                     """acquire projection image"""
                     mmc.snapImage()
                     image = mmc.getImage()
+                    imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
                         
                     """Calculate metric."""
                     metric = metric_shannon_dct(
                         image=image,
-                        psf_radius_px=shannon_psf_radius_px,
-                        crop_size=roi_crop_size
+                        shannon_psf_radius_px=shannon_psf_radius_px,
+                        crop_size=None
                         )
                     
                     if metric==np.nan:
@@ -213,8 +221,8 @@ def run_ao_optimization(
                 """Calculate metric."""
                 metric = metric_shannon_dct(
                     image=image,
-                    psf_radius_px=shannon_psf_radius_px,
-                    crop_size=roi_crop_size
+                    shannon_psf_radius_px=shannon_psf_radius_px,
+                    crop_size=None
                     )
                     
                 if metric==np.nan:
@@ -275,23 +283,7 @@ def run_ao_optimization(
     # apply optimized Zernike mode coefficients to the mirror
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
     opmNIDAQ_local.stop_waveform_playback()
-    
-    if save_path.exists():
-        save_wfc_path = save_path / Path("wfc_optimized_mirror_positions.wcs")
-        aoMirror_local.save_mirror_state(save_wfc_path)
-        
-        # Create save paths for results and metrics / coeffs summary figures.
-        results_save_path = save_path / Path("ao_optimization.h5")
-        optimal_metrics_path = save_path / Path("ao_optimal_metrics.png")
-        optimal_coeffs_path = save_path / Path("ao_coefficients.png")
-        
-        # Save ao results
-        optimal_metrics = np.reshape(optimal_metrics, [num_iterations, len(modes_to_optimize)])
-        # save_optimization_results(np.array(iteration_images), np.array(mode_images), optimal_coefficients, 
-        #                             optimal_metrics, modes_to_optimize, results_save_path)
-        plot_metric_progress(optimal_metrics, modes_to_optimize, np.array(aoMirror_local.mode_names), optimal_metrics_path, False)
-        plot_zernike_coeffs(optimal_coefficients, np.array(aoMirror_local.mode_names), optimal_coeffs_path, False)
-        
+         
 
 
 #-------------------------------------------------#
