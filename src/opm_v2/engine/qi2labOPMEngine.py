@@ -7,51 +7,21 @@ Change Log:
 """
 
 from pymmcore_plus.mda import MDAEngine
-from useq import MDAEvent, MDASequence, SummaryMetaV1, FrameMetaV1
+from useq import MDAEvent, MDASequence
 from typing import TYPE_CHECKING, Iterable
-
-if TYPE_CHECKING:
-    from numpy.typing import NDArray
+from numpy.typing import NDArray
+from useq import CustomAction
 
 class qi2labOPMEngine(MDAEngine):
-    def __init__(self, opmNidaq, opmAOmirror, *args, **kwds):
-        """Initialize the engine with the OPM NIDAQ and AO mirror.
-        
-        Parameters
-        ----------
-        opmNidaq : OPMNIDAQ
-            class that controls the NIDAQ for the OPM system
-        opmAOmirror : AOMIRROR
-            class that controls the AO mirror for the OPM system
-        
-        """
-
-        """
-        check MDAsequence to see if it needs to be modified
-        if mirror:
-            pull in the MDASequence and modify it to include the image mirror settings
-        elif projection:
-            pull in the MDASequence and modify it to include the image mirror settings and the projection mirror settings
-        elif stage:
-            pull in the MDASequence and modify it to include the stage settings
-        elif AO-projection:
-            pull in the MDASequence and modify it to include the image mirror settings and the projection mirror settings
-            Will also need to figure out how to run AO. Should be in the setup_sequence or setup_event functions
-        elif fluidics-stage:
-            pull in the MDASequence and modify it to include the fluidics settings, stage settings, and AO settings
-        """
-
-        self.opmNIDAQ = opmNidaq
-        self.opmAOmirror = opmAOmirror
-
-        return super().__call__(*args, **kwds)
     
-    def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
+    def setup_sequence(self, sequence: MDASequence) -> None:
         """Setup state of system (hardware, etc.) before an MDA is run.
 
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
+        print(sequence)
+        super().setup_sequence(sequence)
         
         """
         check MDASequence for active laser channels
@@ -96,6 +66,27 @@ class qi2labOPMEngine(MDAEngine):
         without any additional preparation.
         """
 
+        if isinstance(event.action,CustomAction):
+            action_type = event.action.name
+
+            if action_type == "O2O3-autofocus":
+                print(action_type)
+                pass
+            elif action_type == "AO-projection":
+                print(action_type)
+                pass
+            elif action_type == "DAQ-projection":
+                print(action_type)
+                pass
+            elif action_type == "DAQ-mirror":
+                print(action_type)
+                pass
+            elif action_type == "Fluidics":
+                print(action_type)
+                pass
+        else:
+            super().setup_event(event)
+                            
         """
         if mirror:
             move to new XY position if requested
@@ -126,22 +117,25 @@ class qi2labOPMEngine(MDAEngine):
             ensure camera is in external trigger mode
         """
 
-    def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
+    def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent]]:
         """Execute `event`.
 
         This method is called after `setup_event` and is responsible for
         executing the event. The default assumption is to acquire an image,
         but more elaborate events will be possible.
         """
+
+        if isinstance(event.action,CustomAction):
+            pass
+        else:
+            result = super().exec_event(event)
+            return result
         
         """
-        if AO-projection:
-            run AO update using projection mode.
-            Update mirror. Need to figure best strategy here. Probably need to pass in AO controller.
         if stage or fluidics-stage:
             Start ASI stage scan
         if mirror or projection:
-            do nothing
+            capture image
         """
 
     def teardown_event(self, event):
@@ -155,6 +149,8 @@ class qi2labOPMEngine(MDAEngine):
         elif AO-projection:
             do nothing
         """
+
+        super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
 
@@ -168,3 +164,5 @@ class qi2labOPMEngine(MDAEngine):
         elif AO-projection:
             stop playback
         """
+
+        super().teardown_sequence(sequence)
