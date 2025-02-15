@@ -66,6 +66,7 @@ class OPMENGINE(MDAEngine):
             set camera to external trigger mode
         """
         
+        print(sequence)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -137,7 +138,15 @@ class OPMENGINE(MDAEngine):
         """
 
         if isinstance(event.action,CustomAction):
-            pass
+            if event.action.name == "AO-projection":
+                data_dict = event.action.data
+                run_ao_optimization(
+                        image_mirror_step_size_um=float(data_dict["AO-image_mirror_step_um"]),
+                        image_mirror_sweep_um=float(data_dict["AO-image_mirror_range_um"]),
+                        exposure_ms=float(data_dict["AO-exposure_ms"][1]),
+                        channel_states=data_dict["AO-active_channels_bool"],
+                        num_iterations=data_dict["AO-iterations"]
+                    )
         else:
             result = super().exec_event(event)
             return result
@@ -148,17 +157,7 @@ class OPMENGINE(MDAEngine):
         if mirror or projection:
             capture image
         """
-        print("in exec_event")
-        if type(event.action) is CustomAction:
-            if event.action.name == "AO-projection":
-                data_dict = event.action.data
-                run_ao_optimization(
-                        image_mirror_step_size_um=float(data_dict["AO-image_mirror_step_um"]),
-                        image_mirror_sweep_um=float(data_dict["AO-image_mirror_range_um"]),
-                        exposure_ms=float(data_dict["AO-exposure_ms"][1]),
-                        channel_states=data_dict["AO-active_channels_bool"],
-                        num_iterations=data_dict["AO-iterations"]
-                    )
+
 
     def teardown_event(self, event):
         """
