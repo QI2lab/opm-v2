@@ -31,6 +31,7 @@ from types import MappingProxyType as mappingproxy
 
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.engine.OPMEngine import OPMENGINE
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -119,19 +120,17 @@ def main() -> None:
     opmNIDAQ = OPMNIDAQ()
     opmNIDAQ.reset()
     
-    # Steven - please create a json, store these files in the json, and load the json.
-    # Adaptive optics parameters
-    wfc_config_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat")
-    wfc_correction_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc")
-    haso_config_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat")
-    wfc_flat_file_path = Path(r"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    # load hardware configuration file
+    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config.json")
+    with open(config_path, 'r') as _:
+        config = json.load(_)
     
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
-        wfc_config_file_path = wfc_config_file_path,
-        haso_config_file_path = haso_config_file_path,
-        interaction_matrix_file_path = wfc_correction_file_path,
-        flat_positions_file_path = wfc_flat_file_path,
+        wfc_config_file_path = Path(config["AOMirror"]["wfc_config_path"]),
+        haso_config_file_path = Path(config["AOMirror"]["haso_config_path"]),
+        interaction_matrix_file_path = Path(config["AOMirror"]["wfc_correction_path"]),
+        flat_positions_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
         n_modes = 32,
         n_positions=1,
         modes_to_ignore = []
@@ -141,18 +140,7 @@ def main() -> None:
 
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(r"C:\Users\qi2lab\Documents\github\opm_v2\OPM_20250210_DPS.cfg"))
-    
-    # Steven - I was wrong, we should do this here. There is something odd about the Coherent driver.
-    # Enforce lasers to external modulation and on
-    laser_box_name = "Coherent-Scientific Remote"
-    modulation_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "Modulation/Trigger" in _s.lower()]
-    for _p in modulation_properties:
-        mmc.setProperty(laser_box_name, _p, "External/Digital")
-    state_properties = [_s for _s in mmc.getDevicePropertyNames(laser_box_name) if "State" in _s.lower()]
-    for _p in state_properties:
-        mmc.setProperty(laser_box_name, _p, "On")
-        
+    mmc.loadSystemConfiguration(Path(config["mm_config_path"]))      
 
     # grab handle to the Stage widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
@@ -244,6 +232,13 @@ def main() -> None:
         else:
             interleaved_acq = False
         n_active_channels = sum(active_channels)
+        
+        if "On" in mmc.getProperty("LaserBlanking","Label"):
+            laser_blanking = True
+        elif "Off" in mmc.getProperty("LaserBlanking","Label"):
+            laser_blanking = False
+        else:
+            laser_blanking = True
 
         n_scan_steps = int(np.ceil(image_mirror_range_um/image_mirror_step_um))
 
@@ -425,7 +420,7 @@ def main() -> None:
                                 )
                                 opm_events.append(image_event)
 
-        print(opm_events)
+        # print(opm_events)
         
         # elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
         #     print("stage mode")
@@ -461,6 +456,7 @@ def main() -> None:
 
         # get image galvo mirror range and step size
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),2)
+        print(image_mirror_range_um)
         if "0.4" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
             image_mirror_step_um = 0.4
         elif "0.8" in mmc.getProperty("ImageGalvoMirrorStep", "Label"):
@@ -509,13 +505,16 @@ def main() -> None:
         
             opmNIDAQ_local.prepare_waveform_playback()
             opmNIDAQ_local.start_waveform_playback()
+        else:
+            opmNIDAQ_local.stop_waveform_playback()
+            opmNIDAQ_local.clear_tasks()
             
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
 
     # Register the custom OPM MDA engine with mmc
-    #mmc.mda.set_engine(opmMDAEngine(mmc, opmNIDAQ, opmAOmirror))
+    mmc.mda.set_engine(OPMENGINE(mmc))
 
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
@@ -622,3 +621,5 @@ def ndv_excepthook(
     if os.getenv("MMGUI_EXIT_ON_EXCEPTION"):
         print("\nMMGUI_EXIT_ON_EXCEPTION is set, exiting.")
         sys.exit(1)
+        
+    
