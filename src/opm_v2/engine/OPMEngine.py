@@ -78,57 +78,98 @@ class OPMENGINE(MDAEngine):
         without any additional preparation.
         """
 
-        if isinstance(event.action,CustomAction):
-            action_type = event.action.name
+        opmDAQ_setup = OPMNIDAQ.instance()
+        channel_names = ["405nm","488nm","561nm","637nm","730nm"]
 
-            if action_type == "O2O3-autofocus":
-                print(action_type)
-                pass
-            elif action_type == "AO-projection":
-                print(action_type)
-                pass
-            elif action_type == "DAQ-projection":
-                print(action_type)
-                pass
-            elif action_type == "DAQ-mirror":
-                print(action_type)
-                pass
-            elif action_type == "Fluidics":
-                print(action_type)
-                pass
+        if isinstance(event.action,CustomAction):
+
+            action_name = event.action.name
+            data_dict = event.action.data
+
+            if action_name == "O2O3-autofocus":
+                self.mmc.setROI(
+                    data_dict["Camera"]["camera_crop"][0],
+                    data_dict["Camera"]["camera_crop"][1],
+                    data_dict["Camera"]["camera_crop"][2],
+                    data_dict["Camera"]["camera_crop"][3],
+                )
+                self.mmc.waitForDevice("OrcaFusionBT")
+                self.mmc.setProperty(
+                    "OrcaFusionBT", 
+                    "Exposure", 
+                    float(data_dict["Camera"]["exposure_ms"])
+                )
+                self.mmc.waitForDevice("OrcaFusionBT")
+                if opmDAQ_setup.running():
+                    opmDAQ_setup.stop_waveform_playback()
+            elif action_name == "AO-projection":
+                if data_dict["AO"]["apply_existing"]:
+                    pass
+                else:
+                    self.mmc.setROI(
+                        data_dict["Camera"]["camera_crop"][0],
+                        data_dict["Camera"]["camera_crop"][1],
+                        data_dict["Camera"]["camera_crop"][2],
+                        data_dict["Camera"]["camera_crop"][3],
+                    )
+                    self.mmc.setProperty(
+                        "OrcaFusionBT", 
+                        "Exposure", 
+                        float(data_dict["Camera"]["exposure_ms"])
+                    )
+                    self.mmc.waitForDevice("OrcaFusionBT")
+                    self.mmc.setConfig(
+                        "Laser-"+str(data_dict["AO"]["active_channel"])+"-power",
+                        float(data_dict["AO"]["laser_power"])
+                    )
+                    self.mmc.waitForDevice("OrcaFusionBT")
+            elif action_name == "DAQ-projection":
+                self.mmc.setROI(
+                    data_dict["Camera"]["camera_crop"][0],
+                    data_dict["Camera"]["camera_crop"][1],
+                    data_dict["Camera"]["camera_crop"][2],
+                    data_dict["Camera"]["camera_crop"][3],
+                )
+                self.mmc.waitForDevice("OrcaFusionBT")
+                for chan_idx, channel in enumerate(channel_names):
+                    self.mmc.setConfig(
+                        "Laser-"+str(channel)+"-power",
+                        float(data_dict["DAQ"]["laser_powers"][chan_idx])
+                    )
+                opmDAQ_setup.set_acquisition_params(
+                    scan_type = str(data_dict["DAQ"]["mode"]),
+                    channel_states = data_dict["DAQ"]["active_channels"],
+                    image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
+                    image_mirror_sweep_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
+                    laser_blanking = bool(data_dict["DAQ"]["blanking"]),
+                    exposure_ms = float(data_dict["Camera"]["exposure_ms"])
+                )
+            elif action_name == "DAQ-mirror":
+                self.mmc.setROI(
+                    data_dict["Camera"]["camera_crop"][0],
+                    data_dict["Camera"]["camera_crop"][1],
+                    data_dict["Camera"]["camera_crop"][2],
+                    data_dict["Camera"]["camera_crop"][3],
+                )
+                self.mmc.waitForDevice("OrcaFusionBT")
+                for chan_idx, channel in enumerate(channel_names):
+                    self.mmc.setConfig(
+                        "Laser-"+str(channel)+"-power",
+                        float(data_dict["DAQ"]["laser_powers"][chan_idx])
+                    )
+                opmDAQ_setup.set_acquisition_params(
+                    scan_type = str(data_dict["DAQ"]["mode"]),
+                    channel_states = data_dict["DAQ"]["active_channels"],
+                    image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
+                    image_mirror_sweep_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
+                    laser_blanking = bool(data_dict["DAQ"]["blanking"]),
+                    exposure_ms = float(data_dict["Camera"]["exposure_ms"])
+                )
+            elif action_name == "Fluidics":
+                print(action_name)
         else:
             super().setup_event(event)
-                            
-        """
-        if mirror:
-            move to new XY position if requested
-            move to new Z position if requested
-        elif projection:
-            move to new XY position if requested
-            move to new Z position if requested
-        elif stage:
-            move to next XYZ position
-            run O2-O3 autofocus
-            setup ASI controller for stage scan at this position
-            setup ASI triggering for stage scan
-            start digital waveform playback
-            ensure camera is in external trigger mode
-        elif AO-projection:
-            move to new XY position if requested
-            move to new Z position if requested
-        elif fluidics-stage:
-            execute this round's fluidics program
-            run O2-O3 autofocus
-            if round == 0:
-                run AO-projection for all Z positions and starting XY positions. Store AO corrections.
-            apply AO correction for this area
-            run O2-O3 autofocus
-            setup ASI controller for stage scan at this position
-            setup ASI triggering for stage scan
-            start digital waveform playback
-            ensure camera is in external trigger mode
-        """
-            
+                                        
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.
 
@@ -137,53 +178,48 @@ class OPMENGINE(MDAEngine):
         but more elaborate events will be possible.
         """
 
+        opmDAQ_exec = OPMNIDAQ.instance()
+        opmAOmirror_exec = AOMirror.instance()
+
         if isinstance(event.action,CustomAction):
-            if event.action.name == "AO-projection":
-                data_dict = event.action.data
-                run_ao_optimization(
-                        image_mirror_step_size_um=float(data_dict["AO-image_mirror_step_um"]),
-                        image_mirror_sweep_um=float(data_dict["AO-image_mirror_range_um"]),
-                        exposure_ms=float(data_dict["AO-exposure_ms"][1]),
-                        channel_states=data_dict["AO-active_channels_bool"],
-                        num_iterations=data_dict["AO-iterations"]
+            action_name = event.action.name
+            data_dict = event.action.data
+
+            if action_name == "O2O3-autofocus":
+                # execute autofocus
+                print(action_name)
+            elif action_name == "AO-projection":
+                if data_dict["AO"]["apply_existing"]:
+                    wfc_positions_to_use = opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    opmAOmirror_exec.update_mirror_positions(wfc_positions_to_use)
+                else:
+                    run_ao_optimization(
+                        image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
+                        image_mirror_sweep_um=float(data_dict["AO"]["image_mirror_range_um"]),
+                        exposure_ms=float(data_dict["AO"]["exposure_ms"]),
+                        channel_states=data_dict["AO"]["active_channels"],
+                        num_iterations=int(data_dict["AO"]["iterations"]),
+                        pos_idx=int(data_dict["AO"]["pos_idx"])
                     )
+            elif action_name == "DAQ-projection" or action_name == "DAQ-mirror":
+                opmDAQ_exec.generate_waveforms()
+                opmDAQ_exec.prepare_waveform_playback()
+                opmDAQ_exec.start_waveform_playback()
+            elif action_name == "Fluidics":
+                print(action_name)
         else:
             result = super().exec_event(event)
             return result
         
-        """
-        if stage or fluidics-stage:
-            Start ASI stage scan
-        if mirror or projection:
-            capture image
-        """
-
-
     def teardown_event(self, event):
-        """
-        if mirror:
-            do nothing
-        elif projection:
-            do nothing
-        elif stage:
-            stop digital playback
-        elif AO-projection:
-            do nothing
-        """
 
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
 
-        """
-        if mirror:
-            stop playback
-        elif projection:
-            stop playback
-        elif stage:
-            set camera back to internal trigger mode
-        elif AO-projection:
-            stop playback
-        """
+        opmDAQ_teardown = OPMNIDAQ.instance()
+        if opmDAQ_teardown.running():
+            opmDAQ_teardown.stop_waveform_playback()
+            opmDAQ_teardown.clear_tasks()
 
         super().teardown_sequence(sequence)

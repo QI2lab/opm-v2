@@ -96,7 +96,8 @@ class OPMNIDAQ:
 
     def __init__(
         self,
-        scan_type: str = "2D",
+        name = "Dev1",
+        scan_type: str = "2d",
         exposure_ms: float = 50.,
         laser_blanking: bool = True,
         image_mirror_calibration: float = .0433,
@@ -129,7 +130,7 @@ class OPMNIDAQ:
         self._ao_neutral_positions = [0.0, 0.0]
                 
         # Configure hardware pin addresses.
-        self._dev_name = "Dev1"
+        self._dev_name = name
         # Program DO port0 using 8-bit waveforms
         self._address_channel_do = "/Dev1/port0/line0:7" # laser lines 0:4
         self._address_ao_mirrors = [
@@ -145,6 +146,9 @@ class OPMNIDAQ:
         self._task_do = None
         self._task_ao = None
         self._task_di = None
+
+        # daq data
+        self._running = False
         
     @property
     def scan_type(self) -> str:
@@ -309,6 +313,10 @@ class OPMNIDAQ:
             self._image_mirror_step_size_um = value
         else:
             self._image_mirror_step_size_um = value
+
+        self._image_axis_step_volts = self._image_mirror_step_size_um * self._image_mirror_calibration
+        temp = self.image_mirror_sweep_um.copy()
+        self.image_mirror_sweep_um = temp
             
     @property
     def image_mirror_sweep_um(self) -> float:
@@ -338,6 +346,15 @@ class OPMNIDAQ:
             self._image_mirror_sweep_um = value
         else:
             self._image_mirror_sweep_um = value
+
+        # setup image galvo mirror
+        self._image_mirror_min_volt = -(self._image_mirror_sweep_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
+        self._image_axis_range_volts = self._image_mirror_sweep_um * self._image_mirror_calibration
+        self._image_scan_steps = np.rint(self._image_axis_range_volts / self._image_axis_step_volts) # galvo steps
+
+        # setup projection galvo mirror
+        self._projection_scan_range_volts = self._image_mirror_sweep_um * self._projection_mirror_calibration
+            
             
     @property
     def channel_states(self) -> Sequence:
@@ -368,7 +385,11 @@ class OPMNIDAQ:
         
         self._active_channels_indices = [ind for ind, st in zip(self._do_ind, self._channel_states) if st]
         self._n_active_channels = len(self._active_channels_indices)
-        
+
+    def running(self) -> bool:
+        """Returns true is playback is active, false otherwise"""
+
+        return self._running
         
     def set_acquisition_params(
         self,
@@ -403,8 +424,7 @@ class OPMNIDAQ:
             
         if self.scan_type is not None:
             if channel_states:
-                self._active_channels_indices = [ind for ind, st in zip(self._do_ind, channel_states) if st]
-                self._n_active_channels = len(self._active_channels_indices)
+                self.channel_states = channel_states
             if laser_blanking:
                 self.laser_blanking = laser_blanking
             if exposure_ms:
@@ -412,17 +432,9 @@ class OPMNIDAQ:
                 
             if self.scan_type == "mirror" or self.scan_type == "projection":
                 if image_mirror_step_size_um and image_mirror_sweep_um:
-                    # determine sweep footprint
-                    self.image_mirror_min_volt = -(image_mirror_sweep_um * self.image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
-                    self.image_axis_step_volts = image_mirror_step_size_um * self.image_mirror_calibration 
-                    self.image_axis_range_volts = image_mirror_sweep_um * self.image_mirror_calibration
-                    self.image_scan_steps = np.rint(self.image_axis_range_volts / self.image_axis_step_volts) # galvo steps
-                   
-                    # determine projection scan range
-                    self.projection_scan_range_volts = image_mirror_sweep_um * self.projection_mirror_calibration
-                    
-                    return self.image_scan_steps
-            
+                    self.image_mirror_step_size_um = image_mirror_step_size_um
+                    self.image_mirror_sweep_um = image_mirror_sweep_um
+                
     def reset(self):
         """Reset the device."""
 
@@ -509,7 +521,7 @@ class OPMNIDAQ:
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
             # Collect one frame for each scan position
-            n_voltage_steps = self.image_scan_steps
+            n_voltage_steps = self._image_scan_steps
             self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
             self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
             
@@ -531,8 +543,8 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
             
             # Generate image scanning mirror voltage steps
-            max_volt = self.image_mirror_min_volt + self.image_axis_range_volts
-            scan_mirror_volts = np.linspace(self.image_mirror_min_volt, max_volt, n_voltage_steps)
+            max_volt = self._image_mirror_min_volt + self._image_axis_range_volts
+            scan_mirror_volts = np.linspace(self._image_mirror_min_volt, max_volt, n_voltage_steps)
             
             # Set the last time point (when exp is off) to the first mirror positions.
             _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
@@ -576,8 +588,8 @@ class OPMNIDAQ:
             # n_return_steps = 1
                         
             # Generate projection mirror linear ramp
-            self.proj_mirror_min_volt = self.projection_scan_range_volts/2
-            self.proj_mirror_max_volt = - self.projection_scan_range_volts/2
+            self.proj_mirror_min_volt = self._projection_scan_range_volts/2
+            self.proj_mirror_max_volt = - self._projection_scan_range_volts/2
             proj_mirror_sweep_volts = np.linspace(self.proj_mirror_min_volt, self.proj_mirror_max_volt, n_voltage_steps-1)
             # proj_mirror_return_volts = np.linspace(self.proj_mirror_max_volt, self.proj_mirror_min_volt, n_return_steps)
             # proj_mirror_volts = np.concatenate(
@@ -589,9 +601,9 @@ class OPMNIDAQ:
                 print(self.proj_mirror_max_volt)
             
             # Generate image scanning mirror voltage steps
-            image_mirror_max_volts = self.image_mirror_min_volt + self.image_axis_range_volts
-            image_mirror_sweep_volts = np.linspace(self.image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
-            # image_mirror_return_volts = np.linspace(image_mirror_max_volts, self.image_mirror_min_volt, n_return_steps)
+            image_mirror_max_volts = self._image_mirror_min_volt + self._image_axis_range_volts
+            image_mirror_sweep_volts = np.linspace(self._image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
+            # image_mirror_return_volts = np.linspace(image_mirror_max_volts, self._image_mirror_min_volt, n_return_steps)
             # image_mirror_volts = np.concatenate(
             #     (image_mirror_sweep_volts,
             #      image_mirror_return_volts)
@@ -845,8 +857,7 @@ class OPMNIDAQ:
                     ct.byref(samples_per_ch_ct), 
                     None
                 )                
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
-            print(e)
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
      
     def start_waveform_playback(self):
@@ -856,8 +867,9 @@ class OPMNIDAQ:
             for _task in [self._task_di, self._task_do, self._task_ao]:
                 if _task:
                     _task.StartTask()
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
-            print(e)
+
+            self._running = True
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
 
     def stop_waveform_playback(self):
@@ -867,9 +879,8 @@ class OPMNIDAQ:
             for _task in [self._task_di, self._task_do, self._task_ao]:
                 if _task:
                     _task.StopTask()
-        
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError) as e:
-            print(e)
+            self._running = False
+        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
       
     def clear_tasks(self):
@@ -883,7 +894,7 @@ class OPMNIDAQ:
                         task.StopTask()
                         task.ClearTask()
                     setattr(self, task_name, None) 
-        
+            self._running = False
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
         

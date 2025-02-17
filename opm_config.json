@@ -1,9 +1,0 @@
-{
-    "AOMirror": {
-        "wfc_config_path":"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
-        "wfc_correction_path":"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc",
-        "haso_config_path":"C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path":"C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250122_tilted_gauss2d_laser_actuator_positions.wcs"
-    },
-    "mm_config_path":"C:/Users/qi2lab/Documents/github/opm_v2/OPM_20250210_DPS.cfg"
-}
