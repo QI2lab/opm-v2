@@ -136,7 +136,8 @@ class AOMirror:
         self.current_positions = np.asarray(self.flat_positions)
             
         self.set_mirror_flat()
-        self.wfc_positions = {"flat":self.flat_positions}
+        self.wfc_positions = {"flat":self.flat_positions,
+                              "opm_current_flat":self.flat_positions}
 
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
 
@@ -331,8 +332,6 @@ class AOMirror:
         name : str
             _description_
         """
-        assert name is None, "saving mirror position requires a name!"
-        
         self.update_mirror_positions()
         self.wfc_positions[name] = self.current_positions
         
@@ -343,9 +342,9 @@ class AOMirror:
         coeff_save_path = self.interaction_matrix_file_path.parent / Path(f"{name}_modalcoeffs.json")
         
         # copied from navigate
-        coefs, coef_inds = self.current_coeffs
+        coefs = self.current_coeffs
         mode_dict = {}
-        for c in coef_inds:
+        for c in range(len(self.mode_names)):
             mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
 
         import json

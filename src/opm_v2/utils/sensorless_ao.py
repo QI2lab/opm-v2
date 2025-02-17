@@ -25,11 +25,11 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
-    shannon_psf_radius_px: Optional[float] = 1.5,
-    num_iterations: Optional[int] = 1,
+    shannon_psf_radius_px: Optional[float] = 2,
+    num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.300,
-    delta_range_alpha_per_iter: Optional[float] = 0.75,
+    delta_range_alpha_per_iter: Optional[float] = 0.5,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
     save_results: Optional[bool] = False,
@@ -282,6 +282,7 @@ def run_ao_optimization(
     
     # apply optimized Zernike mode coefficients to the mirror
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
+    aoMirror_local.save_mirror_positions(name="opm_current_flat")
     opmNIDAQ_local.stop_waveform_playback()
          
 
@@ -1037,8 +1038,8 @@ if __name__ == "__main__":
     wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
     haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
     wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\flat_actuator_positions.wcs")
-    wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
-    
+    # wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250215_tilted_brightness_laser_actuator_positions.wcs")
     # Load ao_mirror controller
     # ao_mirror puts the mirror in the flat_position state to start.
     ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,

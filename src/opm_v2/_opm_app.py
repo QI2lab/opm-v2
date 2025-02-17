@@ -316,7 +316,7 @@ def main() -> None:
                     'AO-active_channels_bool': active_channels,
                     'AO-exposure_ms': exposure_channels,
                     'AO-mode': str('shannon_dct'),
-                    'AO-iterations': int(5),
+                    'AO-iterations': int(3),
                     "AO-image_mirror_range_um" : float(image_mirror_range_um),
                     "AO-image_mirror_step_um" : float(image_mirror_step_um),
                     "AO-blanking": laser_blanking
@@ -452,7 +452,7 @@ def main() -> None:
             laser_blanking = False
         else:
             laser_blanking = True
-        
+
         # check if any channels are active. If not, don't setup DAQ.
         if any(channel_states):
             # Check OPM mode and set up NIDAQ accordingly
