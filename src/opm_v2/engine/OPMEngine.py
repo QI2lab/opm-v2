@@ -29,6 +29,8 @@ class OPMENGINE(MDAEngine):
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
+        print(sequence)
+        super().setup_sequence(sequence)
         
         """
         check MDASequence for active laser channels
@@ -64,6 +66,7 @@ class OPMENGINE(MDAEngine):
             set camera to external trigger mode
         """
         
+        print(sequence)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -75,6 +78,27 @@ class OPMENGINE(MDAEngine):
         without any additional preparation.
         """
 
+        if isinstance(event.action,CustomAction):
+            action_type = event.action.name
+
+            if action_type == "O2O3-autofocus":
+                print(action_type)
+                pass
+            elif action_type == "AO-projection":
+                print(action_type)
+                pass
+            elif action_type == "DAQ-projection":
+                print(action_type)
+                pass
+            elif action_type == "DAQ-mirror":
+                print(action_type)
+                pass
+            elif action_type == "Fluidics":
+                print(action_type)
+                pass
+        else:
+            super().setup_event(event)
+                            
         """
         if mirror:
             move to new XY position if requested
@@ -112,18 +136,8 @@ class OPMENGINE(MDAEngine):
         executing the event. The default assumption is to acquire an image,
         but more elaborate events will be possible.
         """
-        
-        """
-        if AO-projection:
-            run AO update using projection mode.
-            Update mirror. Need to figure best strategy here. Probably need to pass in AO controller.
-        if stage or fluidics-stage:
-            Start ASI stage scan
-        if mirror or projection:
-            do nothing
-        """
-        print("in exec_event")
-        if type(event.action) is CustomAction:
+
+        if isinstance(event.action,CustomAction):
             if event.action.name == "AO-projection":
                 data_dict = event.action.data
                 run_ao_optimization(
@@ -133,6 +147,17 @@ class OPMENGINE(MDAEngine):
                         channel_states=data_dict["AO-active_channels_bool"],
                         num_iterations=data_dict["AO-iterations"]
                     )
+        else:
+            result = super().exec_event(event)
+            return result
+        
+        """
+        if stage or fluidics-stage:
+            Start ASI stage scan
+        if mirror or projection:
+            capture image
+        """
+
 
     def teardown_event(self, event):
         """
@@ -145,6 +170,8 @@ class OPMENGINE(MDAEngine):
         elif AO-projection:
             do nothing
         """
+
+        super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
 
@@ -158,3 +185,5 @@ class OPMENGINE(MDAEngine):
         elif AO-projection:
             stop playback
         """
+
+        super().teardown_sequence(sequence)
