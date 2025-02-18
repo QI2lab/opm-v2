@@ -31,6 +31,7 @@ from types import MappingProxyType as mappingproxy
 
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.engine.OPMEngine import OPMENGINE
 
 if TYPE_CHECKING:
@@ -148,6 +149,13 @@ def main() -> None:
     opmNIDAQ.reset()
 
 
+    # Initialize ElveFlow OB1 Controller
+    opmOB1 = OB1Controller(
+        port=config["OB1"]["port"],
+        to_OB1_pin=config["OB1"]["to_OB1_pin"],
+        from_OB1_pin=config["OB1"]["from_OB1_pin"]
+    )
+    
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["mm_config_path"]))

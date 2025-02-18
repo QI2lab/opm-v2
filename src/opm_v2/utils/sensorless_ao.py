@@ -25,11 +25,11 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
-    shannon_psf_radius_px: Optional[float] = 1.5,
-    num_iterations: Optional[int] = 1,
+    shannon_psf_radius_px: Optional[float] = 2,
+    num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.300,
-    delta_range_alpha_per_iter: Optional[float] = 0.75,
+    delta_range_alpha_per_iter: Optional[float] = 0.5,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
     save_results: Optional[bool] = False,
@@ -282,6 +282,7 @@ def run_ao_optimization(
     
     # apply optimized Zernike mode coefficients to the mirror
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
+    aoMirror_local.save_mirror_positions(name="opm_current_flat")
     opmNIDAQ_local.stop_waveform_playback()
          
 
@@ -395,56 +396,129 @@ def plot_metric_progress(optimal_metrics: ArrayLike,
         fig.savefig(save_path)
 
 
-#-------------------------------------------------#
-# Helper functions for saving optmization results
-#-------------------------------------------------#
+def plot_2d_localization_fit_summary(
+    fit_results,
+    img,
+    coords_2d,
+    save_path: Path = None,
+    showfig: bool = False
+    ):
+    """_summary_
 
-# def save_optimization_results(iteration_images: ArrayLike,
-#                               mode_delta_images: ArrayLike,
-#                               optimal_coefficients: ArrayLike,
-#                               optimal_metrics: ArrayLike,
-#                               modes_to_optimize: List[int],
-#                               results_save_path: Path):
-#     """_summary_
+    Parameters
+    ----------
+    fit_results : _type_
+        _description_
+    img : _type_
+        _description_
+    coords_2d : _type_
+        _description_
+    save_path : Path, optional
+        _description_, by default None
+    showfig : bool, optional
+        _description_, by default False
 
-#     Parameters
-#     ----------
-#     optimal_coefficients : ArrayLike
-#         _description_
-#     optimal_metrics : ArrayLike
-#         _description_
-#     modes_to_optimize : List[int]
-#         _description_
-#     results_save_path : Path
-#         _description_
-#     """
-#     with h5py.File(str(results_save_path), "w") as f:
-#                 f.create_dataset("optimal_images", data=iteration_images)
-#                 f.create_dataset("mode_delta_images", data=mode_delta_images)
-#                 f.create_dataset("optimal_coefficients", data=optimal_coefficients)
-#                 f.create_dataset("optimal_metrics", data=optimal_metrics)
-#                 f.create_dataset("modes_to_optimize", data=modes_to_optimize)
-#                 f.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"))
+    Returns
+    -------
+    _type_
+        _description_
+    """
+    # imports
+    from localize_psf.fit_psf import sxy2na
+    from localize_psf.localize import plot_bead_locations
+    import matplotlib.pyplot as plt
     
+    to_keep = fit_results["to_keep"]
+    sxy = fit_results["fit_params"][to_keep, 4]
+    amp = fit_results["fit_params"][to_keep, 0]
+    bg = fit_results["fit_params"][to_keep, 6]
+    centers = fit_results["fit_params"][to_keep][:, (3, 2, 1)]
+    cx = centers[:,2]
+    cy = centers[:,1]
+
+    width_ratios=[1,0.7,0.1,0.1,0.1]
+    height_ratios=[1,0.1,0.5,0.5,0.5,0.5,0.5]
+    figh_sum = plt.figure(figsize=(10,8))
+    grid_sum = figh_sum.add_gridspec(nrows=len(height_ratios),
+                                     ncols=len(width_ratios),
+                                     width_ratios=width_ratios,
+                                     height_ratios=height_ratios,
+                                     hspace=0.2,
+                                     wspace=0.3
+                                     )
+
+    ax_proj_sxy = figh_sum.add_subplot(grid_sum[0,:2])
+    ax_cmap_i_sxy = figh_sum.add_subplot(grid_sum[0,2])
+    ax_cmap_sxy = figh_sum.add_subplot(grid_sum[0,4])
+    figh_sum = plot_bead_locations(img,
+                                    centers,
+                                    weights=[fit_results["fit_params"][to_keep, 4]],
+                                    color_lists=["autumn"],
+                                    color_limits=[[0.05,0.5]],
+                                    cbar_labels=[r"$\sigma_{xy}$"],
+                                    title="Max intensity projection with Sxy",
+                                    coords=coords_2d,
+                                    gamma=0.5,
+                                    axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
+                                    )
+    ax_proj_sxy.set_title(f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}")
+
+    # Create axes for plotting x, y specific results
+    ax_sxy_cx = figh_sum.add_subplot(grid_sum[3,0])
+    ax_sxy_cy = figh_sum.add_subplot(grid_sum[3,1:],
+                                     sharey=ax_sxy_cx)
+    ax_amp_cx = figh_sum.add_subplot(grid_sum[4,0],sharex=ax_sxy_cx)
+    ax_amp_cy = figh_sum.add_subplot(grid_sum[4,1:],
+                                     sharey=ax_amp_cx,sharex=ax_sxy_cy)
+    ax_bg_cx = figh_sum.add_subplot(grid_sum[5,0],sharex=ax_sxy_cx)
+    ax_bg_cy = figh_sum.add_subplot(grid_sum[5,1:],
+                                    sharey=ax_bg_cx,sharex=ax_sxy_cy)
+    ax_sxy_cx.set_ylabel(r"$\sigma_{xy}$ ($\mu m$)")
+    ax_amp_cx.set_ylabel("amplitude")
+    ax_bg_cx.set_ylabel("background")
+    ax_bg_cx.set_xlabel(r"$C_x$ $\mu m$")
+    ax_bg_cy.set_xlabel(r"$C_y$ $\mu m$")
+    for ax in [ax_sxy_cy,ax_amp_cy,ax_bg_cy]:
+        ax.tick_params(labelleft=False)
+    for ax in [ax_sxy_cx,ax_sxy_cy,ax_amp_cx,ax_amp_cy]:
+        ax.tick_params(labelbottom=False)
+
+    # Set limits for visualizing sz
+    if max(amp)>65000:
+        amp_max = 15000
+    else:
+        amp_max = np.max(amp)*1.1
+    ax_sxy_cx.set_ylim(0,1.0)
+    ax_sxy_cy.set_ylim(0,1.0)
+    ax_amp_cx.set_ylim(0, amp_max)
+    ax_amp_cy.set_ylim(0, amp_max)
+    ax_bg_cx.set_ylim(0, amp_max)
+    ax_bg_cy.set_ylim(0, amp_max)
+    ax_sxy_cx.set_xlim(0,img.shape[1]*0.115)
+    ax_sxy_cy.set_xlim(0,img.shape[0]*0.115)
+    ax_amp_cx.set_xlim(0,img.shape[1]*0.115)
+    ax_amp_cy.set_xlim(0,img.shape[0]*0.115)
+    ax_bg_cx.set_xlim(0,img.shape[1]*0.115)
+    ax_bg_cy.set_xlim(0,img.shape[0]*0.115)
+    # Plot directional results
+    ax_sxy_cx.plot(cx, sxy, c="b", marker=".", markersize=3, linestyle="none")
+    ax_sxy_cy.plot(cy, sxy, c="b", marker=".", markersize=3, linestyle="none")
+    ax_amp_cx.plot(cx, amp, c="b", marker=".", markersize=3, linestyle="none")
+    ax_amp_cy.plot(cy, amp, c="b", marker=".", markersize=3, linestyle="none")
+    ax_bg_cx.plot(cx, bg, c="b", marker=".", markersize=3, linestyle="none")
+    ax_bg_cy.plot(cy, bg, c="b", marker=".", markersize=3, linestyle="none")
+
+    if showfig:
+        figh_sum.show()
+        plt.show()
+    else:
+        plt.close(figh_sum)
+    if save_path:
+        figh_sum.savefig(save_path, dpi=150)
     
-# def load_optimization_results(results_path: Path):
-#     """_summary_
-
-#     Parameters
-#     ----------
-#     results_path : Path
-#         _description_
-#     """
-#     # Load the mixed dictionary from HDF5
-#     with h5py.File(str(results_path), "r") as f:
-#         optimal_images = f["optimal_images"][:]
-#         mode_delta_images = f["mode_delta_images"][:]
-#         optimal_coefficients = f["optimal_coefficients"][:]
-#         optimal_metrics = f["optimal_metrics"][:]
-#         modes_to_optimize = f["modes_to_optimize"][:]
-#         zernike_mode_names = [name.decode("utf-8") for name in f["zernike_mode_names"][:]]
-
-#     return optimal_images, mode_delta_images, optimal_coefficients, optimal_metrics, modes_to_optimize, zernike_mode_names
+    figh_sum = None
+    del figh_sum
+    return None
 
 
 #-------------------------------------------------#
@@ -453,7 +527,7 @@ def plot_metric_progress(optimal_metrics: ArrayLike,
 
 def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
     """
-    Calculate the center of an image using a thresholded binary mask.
+    Calculate the center of an image using a thresh-holded binary mask.
 
     Parameters
     ----------
@@ -688,6 +762,106 @@ def quadratic_fit(x: ArrayLike, y: ArrayLike) -> Sequence[float]:
 
     return coeffs
 
+
+#-------------------------------------------------#
+# Localization methods to generate ROIs for fitting
+#-------------------------------------------------#
+
+def localize_2d_img(
+    img, 
+    dxy,
+    localize_psf_filters = {
+        "threshold":3000,
+        "amp_bounds":(1000, 30000),
+        "sxy_bounds":(0.100, 1.0)
+        },
+    save_dir_path: Path = None,
+    label: str = "", 
+    showfig: bool = False,
+    verbose: bool = False):
+    """_summary_
+
+    Parameters
+    ----------
+    img : _type_
+        _description_
+    dxy : _type_
+        _description_
+    localize_psf_filters : dict, optional
+        _description_, by default { "threshold":3000, "amp_bounds":(1000, 30000), "sxy_bounds":(0.100, 1.0) }
+    save_dir_path : Path, optional
+        _description_, by default None
+    label : str, optional
+        _description_, by default ""
+    showfig : bool, optional
+        _description_, by default False
+    verbose : bool, optional
+        _description_, by default False
+
+    Returns
+    -------
+    _type_
+        _description_
+    """
+    from localize_psf.fit_psf import gaussian3d_psf_model
+    from localize_psf.localize import (
+        localize_beads_generic,
+        get_param_filter,
+        get_coords
+        )
+    
+    # Define fitting model and coordinates
+    model = gaussian3d_psf_model() 
+    coords_3d = get_coords((1,)+img.shape, (1, dxy, dxy))
+    coords_2d = get_coords(img.shape, (dxy, dxy))
+                           
+    # Set fit bounds and parameter filters
+    threshold = localize_psf_filters["threshold"]
+    amp_bounds = localize_psf_filters["amp_bounds"]
+    sxy_bounds = localize_psf_filters["sxy_bounds"]
+    fit_dist_max_err = (0, dxy*2) 
+    fit_roi_size = (1, dxy*9, dxy*9)
+    min_spot_sep = (0, dxy*5)
+    dist_boundary_min = (0, 1.0)
+        
+    param_filter = get_param_filter(
+        coords_3d,
+        fit_dist_max_err=fit_dist_max_err,
+        min_spot_sep=min_spot_sep,
+        amp_bounds=amp_bounds,
+        dist_boundary_min=dist_boundary_min,
+        sigma_bounds=((0,sxy_bounds[0]),(1,sxy_bounds[1]))
+        )
+        
+    # Run localization function
+    _, r, _ = localize_beads_generic(
+        img,
+        (1, dxy, dxy),
+        threshold=threshold,
+        roi_size=fit_roi_size,
+        filter_sigma_small=None,
+        filter_sigma_large=None,
+        min_spot_sep=min_spot_sep,
+        model=model,
+        filter=param_filter,
+        max_nfit_iterations=100,
+        use_gpu_fit=False,
+        use_gpu_filter=False,
+        return_filtered_images=False,
+        fit_filtered_images=False,
+        verbose=verbose
+        )
+    
+    if save_dir_path:
+        plot_2d_localization_fit_summary(
+            r, 
+            img,
+            coords_2d, 
+            save_dir_path / Path(f"localize_psf_summary_{label}.png"),
+            showfig
+            )
+        
+    return r
 
 #-------------------------------------------------#
 # Functions to calculate image metrics
@@ -1027,6 +1201,91 @@ def metric_shannon_dct(
         return shannon_dct
 
 
+def metric_localize_gauss2d(image: ArrayLike) -> float:
+    """_summary_
+
+    Parameters
+    ----------
+    image : ArrayLike
+        _description_
+
+    Returns
+    -------
+    float
+        _description_
+    """
+    fit_results = localize_2d_img(
+        image, 
+        0.115,
+        {"threshold":3000,
+         "amp_bounds":(1000, 30000),
+         "sxy_bounds":(0.100, 1.0)
+         },
+        save_dir_path = None,
+        label = "", 
+        showfig = False,
+        verbose = False
+        )
+    
+    to_keep = fit_results["to_keep"]
+    sxy = fit_results["fit_params"][to_keep, 4]
+    metric = np.median(sxy)
+    
+    return metric
+
+
+#-------------------------------------------------#
+# Helper functions for saving optmization results
+#-------------------------------------------------#
+
+# def save_optimization_results(iteration_images: ArrayLike,
+#                               mode_delta_images: ArrayLike,
+#                               optimal_coefficients: ArrayLike,
+#                               optimal_metrics: ArrayLike,
+#                               modes_to_optimize: List[int],
+#                               results_save_path: Path):
+#     """_summary_
+
+#     Parameters
+#     ----------
+#     optimal_coefficients : ArrayLike
+#         _description_
+#     optimal_metrics : ArrayLike
+#         _description_
+#     modes_to_optimize : List[int]
+#         _description_
+#     results_save_path : Path
+#         _description_
+#     """
+#     with h5py.File(str(results_save_path), "w") as f:
+#                 f.create_dataset("optimal_images", data=iteration_images)
+#                 f.create_dataset("mode_delta_images", data=mode_delta_images)
+#                 f.create_dataset("optimal_coefficients", data=optimal_coefficients)
+#                 f.create_dataset("optimal_metrics", data=optimal_metrics)
+#                 f.create_dataset("modes_to_optimize", data=modes_to_optimize)
+#                 f.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"))
+    
+    
+# def load_optimization_results(results_path: Path):
+#     """_summary_
+
+#     Parameters
+#     ----------
+#     results_path : Path
+#         _description_
+#     """
+#     # Load the mixed dictionary from HDF5
+#     with h5py.File(str(results_path), "r") as f:
+#         optimal_images = f["optimal_images"][:]
+#         mode_delta_images = f["mode_delta_images"][:]
+#         optimal_coefficients = f["optimal_coefficients"][:]
+#         optimal_metrics = f["optimal_metrics"][:]
+#         modes_to_optimize = f["modes_to_optimize"][:]
+#         zernike_mode_names = [name.decode("utf-8") for name in f["zernike_mode_names"][:]]
+
+#     return optimal_images, mode_delta_images, optimal_coefficients, optimal_metrics, modes_to_optimize, zernike_mode_names
+
+
 #-------------------------------------------------#
 # Run as script 'keeps mirror flat'
 #-------------------------------------------------#
@@ -1037,8 +1296,8 @@ if __name__ == "__main__":
     wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
     haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
     wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\flat_actuator_positions.wcs")
-    wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
-    
+    # wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
+    wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250215_tilted_brightness_laser_actuator_positions.wcs")
     # Load ao_mirror controller
     # ao_mirror puts the mirror in the flat_position state to start.
     ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
