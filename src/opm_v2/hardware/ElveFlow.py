@@ -1,3 +1,5 @@
+#!/usr/bin/python
+
 import pyfirmata2
 from time import perf_counter
 
@@ -18,10 +20,11 @@ class OB1Controller():
         
         
     def __init__( self,
-                  port: str = 'COM7',
+                  port: str = 'COM9',
                   to_OB1_pin: int = 8,
                   from_OB1_pin: int = 6):
-        """_summary_
+        """Arduino controller for the Elveflow OB1 controller.
+        Send and receive signals to the input/output ports
 
         Parameters
         ----------
@@ -32,17 +35,19 @@ class OB1Controller():
         from_OB1_pin : int, optional
             _description_, by default 6
         """
+        
         self.port = port
         self.to_OB1_pin_location= f'd:{to_OB1_pin}:o'
         self.from_OB1_pin_location = f'd:{from_OB1_pin}:i'
         self._from_OB1_pin_high = False
 
-        self.init_board()
+        # SJS: Should we not init board in the _init_? This way we can init and close in the fluidics loop?
+        # self.init_board()
         
     def init_board(self):
         """
         Initialize Arduino connection 
-        - open connnection
+        - open connection
         - configure pins
         """
         self.board = pyfirmata2.Arduino(self.port)
@@ -54,7 +59,7 @@ class OB1Controller():
         self.to_OB1_pin = self.board.get_pin(self.to_OB1_pin_location)
         self.to_OB1_pin.write(False)
         
-        # Configue=re DI pin recieved from ElveFlow controller
+        # Configure DI pin received from ElveFlow controller
         self.from_OB1_pin = self.board.get_pin(self.from_OB1_pin_location)
         self.from_OB1_pin.register_callback(self._input_callback)
         self.from_OB1_pin.enable_reporting()
@@ -63,7 +68,7 @@ class OB1Controller():
         """
         Set the sampling interval for the Arduino
         Note: should be set such that there is no possibility the output
-              pulse from the Elveflow controller is missed.
+              pulse from the ElveFlow controller is missed.
         """
         self.board.setSamplingInterval(polling_rate_ms)
 
@@ -84,13 +89,19 @@ class OB1Controller():
             self._from_OB1_pin_high = True
             if verbose:
                 print('received trigger')
+        else:
+            self._from_OB1_pin_high = False
 
     def wait_for_OB1(self):
         """
-        Funtion to pause program until a high pulse is recieved
+        Function to pause program until a high pulse is received
         """
         while not self._from_OB1_pin_high:
             self.board.iterate()
+        
+        # reset the input to false
+        self._from_OB1_pin_high = False
+        
 
     def trigger_OB1(self, pulse_duration: float = 0.500):
         """

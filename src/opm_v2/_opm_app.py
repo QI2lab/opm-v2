@@ -31,6 +31,7 @@ from types import MappingProxyType as mappingproxy
 
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.engine.OPMEngine import OPMENGINE
 
 if TYPE_CHECKING:
@@ -116,14 +117,14 @@ def main() -> None:
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
 
-    # load OPM NIDAQ and OPM AO mirror classes
-    opmNIDAQ = OPMNIDAQ()
-    opmNIDAQ.reset()
-    
     # load hardware configuration file
     config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config.json")
     with open(config_path, 'r') as _:
         config = json.load(_)
+    
+    # load OPM NIDAQ and OPM AO mirror classes
+    opmNIDAQ = OPMNIDAQ()
+    opmNIDAQ.reset()
     
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
@@ -138,6 +139,14 @@ def main() -> None:
     
     opmAOmirror.set_mirror_flat()
 
+    # Open connection with ElveFlow Controller
+    opmOB1 = OB1Controller(
+        port=config["OB1"]["port"],
+        to_OB1_pin=config["OB1"]["to_OB1_pin"],
+        from_OB1_pin=config["OB1"]["from_OB1_pin"]
+    )
+    # sjs: Perhaps we only init controller if the fluidics program is selected?
+    
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["mm_config_path"]))      
