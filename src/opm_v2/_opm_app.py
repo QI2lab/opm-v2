@@ -203,7 +203,7 @@ def main() -> None:
             property_label = signal_args[1]
             property_value = signal_args[2]
             
-            if property_name=="OrcaFusionBT" and property_label=="Exposure":
+            if property_name==str(config["Camera"]["camera_id"]) and property_label=="Exposure":
                 _exposure_ms = round(float(property_value), 0)
                 opmNIDAQ_update_state.exposure_ms = _exposure_ms
             elif property_name == "ImageGalvoMirrorRange":
@@ -277,20 +277,16 @@ def main() -> None:
                 opmNIDAQ_update_state.image_mirror_step_size_um = image_mirror_step_um
             elif config_name == "Camera-CropY":
                 camera_crop_y = int(config_state.split("-")[0])
-                mmc.clearROI()
-                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                print("In update crop")
-                print(config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2))
-                print(config["Camera"]["camera_center_y"] - int(camera_crop_y//2))
-                print(config["Camera"]["camera_crop_x"])
-                print(camera_crop_y)
-                mmc.setROI(
-                    config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                    config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
-                    config["Camera"]["camera_crop_x"],
-                    camera_crop_y
-                )
-                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                if not(camera_crop_y == mmc.getROI()[-1]): 
+                    mmc.clearROI()
+                    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                    mmc.setROI(
+                        config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                        config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
+                        config["Camera"]["camera_crop_x"],
+                        camera_crop_y
+                    )
+                    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                  
         # Restart acquisition if needed
         if restart_sequence:
@@ -330,8 +326,9 @@ def main() -> None:
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
         image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
                
-        # image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-        # image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label"),0))
+        # reload hardware configuration file before setting up acq
+        with open(config_path, "r") as config_file:
+            updated_config = json.load(config_file)
 
         # get AO mode
         if "System-correction" in mmc.getProperty("AO-mode", "Label"):
@@ -347,9 +344,9 @@ def main() -> None:
         if "Initial-only" in mmc.getProperty("O2O3focus-mode", "Label"):
             O2O3_mode = "Initial-only"
         elif "Before-each-XYZ" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "Before-each-xyz"
+            O2O3_mode = "Before-each-XYZ"
         elif "Before-each-T" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "Before-each-t"
+            O2O3_mode = "Before-each-time"
         elif "After-30min" in mmc.getProperty("O2O3focus-mode", "Label"):
             O2O3_mode = "After-30min"
         elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
@@ -373,7 +370,7 @@ def main() -> None:
             time_interval = 0
     
         channels = sequence_dict["channels"]
-        channel_names = ["405nm","488nm","561nm","637nm","730nm"]
+        channel_names = updated_config["OPM"]["channel_ids"]
         active_channels = [False,False,False,False,False]
         exposure_channels = [0.,0.,0.,0.,0.,0.]
         laser_powers = [0.,0.,0.,0.,0.]
@@ -383,7 +380,7 @@ def main() -> None:
                 exposure_channels[chan_idx] = channel["exposure"]
                 laser_powers[chan_idx] = float(
                     mmc.getConfigState(
-                        "Coherent-Scientific Remote",
+                        config["OPM"]["laser_source"],
                         "Laser-"+str(channel_names[chan_idx])+"-power"
                     )
                 )
@@ -402,10 +399,6 @@ def main() -> None:
             laser_blanking = True
 
         n_scan_steps = int(np.ceil(image_mirror_range_um/image_mirror_step_um))
-
-        # reload hardware configuration file before setting up acq
-        with open(config_path, "r") as config_file:
-            updated_config = json.load(config_file)
 
         opm_events: list[MDAEvent] = []
 
@@ -520,15 +513,15 @@ def main() -> None:
         # setup AO using values in GUI
         else:
             active_channel = mmc.getProperty("LED", "Label")
-            AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)        
+            AO_exposure_ms = np.round(float(mmc.getProperty(str(updated_config["Camera"]["camera_id"]), "Exposure")),0)        
             AO_channel_states = [False,False,False,False,False]
             AO_laser_powers = [0.,0.,0.,0.,0.]
-            for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
+            for chan_idx, chan_str in enumerate(updated_config["OPM"]["channel_ids"]):
                 if active_channel==chan_str:
                     AO_channel_states[chan_idx] = True
                     AO_laser_powers[chan_idx] = float(
                         mmc.getConfigState(
-                            "Coherent-Scientific Remote",
+                            updated_config["OPM"]["laser_source"],
                             "Laser-"+str(active_channel)+"-power"
                         )
                     )
@@ -582,7 +575,7 @@ def main() -> None:
         # setup nD mirror-based AO-OPM acquisition event structure
         for time_idx in range(n_time_steps):
             # Check if autofocus before each timepoint and not initial-only mode
-            if O2O3_mode == "Before-each-t" and not(O2O3_mode == "Initial-only"):
+            if O2O3_mode == "Before-each-time" and not(O2O3_mode == "Initial-only"):
                 opm_events.append(O2O3_event)
             for pos_idx in range(n_stage_pos):
                 if need_to_setup_stage:
@@ -661,9 +654,12 @@ def main() -> None:
                                         "camera_crop_y" : int(mmc.getProperty("ImageCameraCrop","Label"))
                                     },
                                     "OPM" : {
+                                        "camera_id" : updated_config["OPM"]["camera_id"],
                                         "angle_deg" : float(updated_config["OPM"]["angle_deg"]),
                                         "camera_stage_orientation" : str(updated_config["OPM"]["camera_stage_orientation"]),
-                                        "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"])
+                                        "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"]),
+                                        "laser_source" : updated_config["OPM"]["laser_source"],
+                                        "channel_ids" : updated_config["OPM"]["channel_ids"]
                                     }
                                 }
                             )
@@ -711,9 +707,12 @@ def main() -> None:
                                             "camera_crop_y" : int(mmc.getProperty("ImageCameraCrop","Label"))
                                         },
                                         "OPM" : {
+                                            "camera_id" : updated_config["OPM"]["camera_id"],
                                             "angle_deg" : float(updated_config["OPM"]["angle_deg"]),
                                             "camera_stage_orientation" : str(updated_config["OPM"]["camera_stage_orientation"]),
-                                            "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"])
+                                            "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"]),
+                                            "laser_source" : updated_config["OPM"]["laser_source"],
+                                            "channel_ids" : updated_config["OPM"]["channel_ids"]
                                         }
                                     }
                                 )
@@ -760,18 +759,6 @@ def main() -> None:
             print("DAQ is running, stopping now.")
             opmNIDAQ_setup_preview.stop_waveform_playback()
         
-        
-        
-        # Update device states from the configuration entries
-        # opmNIDAQ_setup_preview.set_acquisition_params(
-        #     scan_type=,
-        #     channel_states=,
-        #     image_mirror_step_size_um=,
-        #     image_mirror_sweep_um=,
-        #     laser_blanking=,
-        #     exposure_ms=
-        # )
-        
         # check if any channels are active. If not, don't setup DAQ.
         if any(opmNIDAQ_setup_preview.channel_states):
             # Check OPM mode and set up NIDAQ accordingly
@@ -784,8 +771,6 @@ def main() -> None:
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
-
-
 
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------

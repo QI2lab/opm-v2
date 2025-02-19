@@ -48,6 +48,7 @@
         "angle_deg" : 30.0,
         "camera_stage_orientation" : "positive",
         "camera_mirror_orientation" : "positive",
-        "channel_ids" : ["405nm","488nm","561nm","637nm","730nm"]
+        "channel_ids" : ["405nm","488nm","561nm","637nm","730nm"],
+        "laser_source" : "Coherent-Scientific Remote"
     }
 }
