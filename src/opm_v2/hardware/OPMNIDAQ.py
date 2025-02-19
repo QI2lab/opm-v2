@@ -49,7 +49,7 @@ class OPMNIDAQ:
     
     The first three modes use the camera for all timing:
     
-    scan_type = "2D"
+    scan_type = "2d"
         This mode snaps an image for each of the requested laser in sequential order, with both mirrors at the neutral position. 
         The images are a single oblique plane each. The "EXPOSURE OUT" timing of the camera controls when the lasers are active, if laser blanking
         is "True".
@@ -58,7 +58,7 @@ class OPMNIDAQ:
         The "EXPOSURE TIMING" of the camera controls when the lasers are active, if laser blanking is "True". The changing edge of the "EXPOSURE OUT"
         timing of the camera controls when the image galvo mirror advances to the next discrete position.
     scan_type = "stage"
-        This mode is similar to "2D", except the camera now does not begin free running until the ASI stage controller sends a pulse that the scanning
+        This mode is similar to "2d", except the camera now does not begin free running until the ASI stage controller sends a pulse that the scanning
         stage has passed the start position and is up to speed.
         
     The last mode uses the camera "EXPOSURE OUT" to initiate waveform playback at a set speed.
@@ -70,7 +70,7 @@ class OPMNIDAQ:
     
     Parameters
     ----------
-    scan_type: str, default = "2D"
+    scan_type: str, default = "2d"
         scan type
     exposure_ms: float, default = 50.0
         exposure time in milliseconds
@@ -122,13 +122,14 @@ class OPMNIDAQ:
         # Define waveform generation parameters
         self._daq_sample_rate_hz = 10000
         self._do_ind = [0,1,2,3,4]
+        self._channel_states = [False, False, False, False]
         self._active_channels_indices = None
         self._n_active_channels = 0
         self._num_do_channels = 8
         self._do_waveform = np.zeros((self._num_do_channels),dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
         self._ao_neutral_positions = [0.0, 0.0]
-                
+        
         # Configure hardware pin addresses.
         self._dev_name = name
         # Program DO port0 using 8-bit waveforms
@@ -157,7 +158,7 @@ class OPMNIDAQ:
         Returns
         -------
         scan_type: str
-            scan type. One of "2D", "3D", "projection", or "stage"
+            scan type. One of "2d", "mirror", "projection", or "stage"
         """
         
         return getattr(self,"_scan_type",None)
@@ -169,7 +170,7 @@ class OPMNIDAQ:
         Parameters
         ----------
         value: str
-            scan type. One of "2D", "3D", "projection", or "stage"
+            scan type. One of "2d", "mirror", "projection", or "stage
         """
         
         if not hasattr(self, "_scan_type") or self._scan_type is None:
@@ -315,8 +316,8 @@ class OPMNIDAQ:
             self._image_mirror_step_size_um = value
 
         self._image_axis_step_volts = self._image_mirror_step_size_um * self._image_mirror_calibration
-        temp = self.image_mirror_sweep_um.copy()
-        self.image_mirror_sweep_um = temp
+        # temp = self.image_mirror_sweep_um.copy()
+        # self.image_mirror_sweep_um = temp
             
     @property
     def image_mirror_sweep_um(self) -> float:
@@ -406,7 +407,7 @@ class OPMNIDAQ:
         Parameters
         ----------
         scan_type: str
-            scan type. One of "2D", "3D", "projection", or "stage"
+            scan type. One of "2d", "mirror", "projection", or "stage
         channel_states: Sequence[bool]
             channel states, in order of [405nm, 488nm, 561nm, 637nm, 730nm].
         image_mirror_step_size_um: float
@@ -421,19 +422,29 @@ class OPMNIDAQ:
 
         if scan_type:
             self.scan_type=scan_type
-            
-        if self.scan_type is not None:
-            if channel_states:
-                self.channel_states = channel_states
-            if laser_blanking:
-                self.laser_blanking = laser_blanking
-            if exposure_ms:
-                self.exposure_ms = exposure_ms
+        if channel_states:
+            self.channel_states = channel_states
+        if laser_blanking:
+            self.laser_blanking = laser_blanking
+        if exposure_ms:
+            self.exposure_ms = exposure_ms
+        if image_mirror_step_size_um:
+            self.image_mirror_step_size_um = image_mirror_step_size_um
+        if image_mirror_sweep_um:
+            self.image_mirror_sweep_um = image_mirror_sweep_um
+        
+        # if self.scan_type is not None:
+        #     if channel_states:
+        #         self.channel_states = channel_states
+        #     if laser_blanking:
+        #         self.laser_blanking = laser_blanking
+        #     if exposure_ms:
+        #         self.exposure_ms = exposure_ms
                 
-            if self.scan_type == "mirror" or self.scan_type == "projection":
-                if image_mirror_step_size_um and image_mirror_sweep_um:
-                    self.image_mirror_step_size_um = image_mirror_step_size_um
-                    self.image_mirror_sweep_um = image_mirror_sweep_um
+        #     if self.scan_type == "mirror" or self.scan_type == "projection":
+        #         if image_mirror_step_size_um and image_mirror_sweep_um:
+        #             self.image_mirror_step_size_um = image_mirror_step_size_um
+        #             self.image_mirror_sweep_um = image_mirror_sweep_um
                 
     def reset(self):
         """Reset the device."""
@@ -507,28 +518,24 @@ class OPMNIDAQ:
         
            Waveforms run after receiving change detection from camera trigger.
            Possible 'scan_type':
-           - '2D' for a 2d scan is a single image mirror position.
+           - '2d' for a 2d scan is a single image mirror position.
            - 'stage' for a 2d scan during a constant speed stage movement.
            - 'projection' for a projection scan is a linear ramp for both the image and projection mirrors.
            - 'mirror' for a mirror scan is n_scan_step frames x n_do channels x camera_roi
         """        
 
-        if self.scan_type == 'mirror':
-            """Fire active lasers, advance image scanning galvo in a linear ramp,
-               hold the projection galvo in it's neutral position."""
-            
+        if self.scan_type == '2d':
+            """Only fire the active channel lasers, keep the mirrors in their neutral positions."""
+
             #-----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
-            # Collect one frame for each scan position
-            n_voltage_steps = self._image_scan_steps
-            self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
-            self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
-            
+            self.samples_per_do_ch = (2*self._n_active_channels - 1) + 1
+            self.samples_per_do_ch = (2*self._n_active_channels - 1) + 1
+ 
             # Generate values for DO
             _do_waveform = np.zeros((self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8)
             for ii, ind in enumerate(self._active_channels_indices):
-                # Turn laser on in order for each image position
                 if self._laser_blanking:
                     _do_waveform[2*ii::2*self._n_active_channels, ind] = 1
                 else:
@@ -536,26 +543,14 @@ class OPMNIDAQ:
             
             if self._laser_blanking:
                 _do_waveform[-1, :] = 0
-                
+            
             #-----------------------------------------------------#
-            # Create ao waveform, scan the image mirror voltage, keep the projection mirror neutral            
-            # This array is written for both AO channels
-            _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
+            # Create ao waveform, keeping the mirrors in their neutral positions
+            # In 2d mode, the first time point gets set.
+            _ao_waveform = np.zeros((1, 2))
+            _ao_waveform[:, 0] = self._ao_neutral_positions[0]
+            _ao_waveform[:, 1] = self._ao_neutral_positions[1]
             
-            # Generate image scanning mirror voltage steps
-            max_volt = self._image_mirror_min_volt + self._image_axis_range_volts
-            scan_mirror_volts = np.linspace(self._image_mirror_min_volt, max_volt, n_voltage_steps)
-            
-            # Set the last time point (when exp is off) to the first mirror positions.
-            _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
-            
-            if len(scan_mirror_volts) > 1:
-                # (2 * # active channels) voltage values for all other frames
-                _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(scan_mirror_volts[1:], np.ones(2 * self._n_active_channels))
-            
-            # set back to initial value at end
-            _ao_waveform[-1] = scan_mirror_volts[0]
-        
         elif self.scan_type == "projection":
             """Perform projection scan.
             
@@ -625,6 +620,49 @@ class OPMNIDAQ:
             _ao_waveform[-1, 0] = image_mirror_sweep_volts[0]
             _ao_waveform[-1, 1] = proj_mirror_sweep_volts[0]          
 
+        elif self.scan_type == 'mirror':
+            """Fire active lasers, advance image scanning galvo in a linear ramp,
+               hold the projection galvo in it's neutral position."""
+            
+            #-----------------------------------------------------#
+            # The DO channel changes with changes in camera's trigger output,
+            # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
+            # Collect one frame for each scan position
+            n_voltage_steps = self._image_scan_steps
+            self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
+            self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
+            
+            # Generate values for DO
+            _do_waveform = np.zeros((self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8)
+            for ii, ind in enumerate(self._active_channels_indices):
+                # Turn laser on in order for each image position
+                if self._laser_blanking:
+                    _do_waveform[2*ii::2*self._n_active_channels, ind] = 1
+                else:
+                    _do_waveform[:,int(ind)] = 1
+            
+            if self._laser_blanking:
+                _do_waveform[-1, :] = 0
+                
+            #-----------------------------------------------------#
+            # Create ao waveform, scan the image mirror voltage, keep the projection mirror neutral            
+            # This array is written for both AO channels
+            _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
+            
+            # Generate image scanning mirror voltage steps
+            max_volt = self._image_mirror_min_volt + self._image_axis_range_volts
+            scan_mirror_volts = np.linspace(self._image_mirror_min_volt, max_volt, n_voltage_steps)
+            
+            # Set the last time point (when exp is off) to the first mirror positions.
+            _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
+            
+            if len(scan_mirror_volts) > 1:
+                # (2 * # active channels) voltage values for all other frames
+                _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(scan_mirror_volts[1:], np.ones(2 * self._n_active_channels))
+            
+            # set back to initial value at end
+            _ao_waveform[-1] = scan_mirror_volts[0]
+        
         elif self.scan_type == 'stage':
             """Only fire the active channel lasers,keep the mirrors in their neutral positions"""
 
@@ -650,34 +688,7 @@ class OPMNIDAQ:
             _ao_waveform = np.zeros((1, 2))
             _ao_waveform[:, 0] = self._ao_neutral_positions[0]
             _ao_waveform[:, 1] = self._ao_neutral_positions[1]
-            
-        elif self.scan_type == '2d':
-            """Only fire the active channel lasers, keep the mirrors in their neutral positions."""
-
-            #-----------------------------------------------------#
-            # The DO channel changes with changes in camera's trigger output,
-            # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
-            self.samples_per_do_ch = (2*self._n_active_channels - 1) + 1
-            self.samples_per_do_ch = (2*self._n_active_channels - 1) + 1
- 
-            # Generate values for DO
-            _do_waveform = np.zeros((self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8)
-            for ii, ind in enumerate(self._active_channels_indices):
-                if self._laser_blanking:
-                    _do_waveform[2*ii::2*self._n_active_channels, ind] = 1
-                else:
-                    _do_waveform[:,int(ind)] = 1
-            
-            if self._laser_blanking:
-                _do_waveform[-1, :] = 0
-            
-            #-----------------------------------------------------#
-            # Create ao waveform, keeping the mirrors in their neutral positions
-            # In 2D mode, the first time point gets set.
-            _ao_waveform = np.zeros((1, 2))
-            _ao_waveform[:, 0] = self._ao_neutral_positions[0]
-            _ao_waveform[:, 1] = self._ao_neutral_positions[1]
-                        
+               
         # Update daq waveforms
         self._do_waveform = _do_waveform
         self._ao_waveform = _ao_waveform
@@ -863,35 +874,41 @@ class OPMNIDAQ:
     def start_waveform_playback(self):
         """Starts any tasks that exist."""
         
+        # if already running, stop playback
+        if self._running:
+            self.stop_waveform_playback()
         try:
             for _task in [self._task_di, self._task_do, self._task_ao]:
                 if _task:
                     _task.StartTask()
-
+            # set running flag
             self._running = True
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
 
     def stop_waveform_playback(self):
         """Stop any tasks that exist."""
-        
-        try:
-            for _task in [self._task_di, self._task_do, self._task_ao]:
-                if _task:
-                    _task.StopTask()
-            self._running = False
-        except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
-            pass
+        if self._running:
+            try:
+                for _task in [self._task_di, self._task_do, self._task_ao]:
+                    if _task:
+                        _task.StopTask()
+                self._running = False
+            except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
+                pass
       
     def clear_tasks(self):
         """Stop, Clear and remove task handlers."""
         
+        # if already running, stop playback
+        if self._running:
+            self.stop_waveform_playback()
         try:
             for task_name in ["_task_di", "_task_do", "_task_ao"]:
                 if hasattr(self, task_name):
                     task = getattr(self, task_name)
                     if task is not None:
-                        task.StopTask()
+                        # task.StopTask()
                         task.ClearTask()
                     setattr(self, task_name, None) 
             self._running = False
@@ -901,5 +918,4 @@ class OPMNIDAQ:
     def __del__(self):
         """Set DO to 0s, AO to neutral positions, clear tasks."""
         
-        self.reset_ao_channels()
-        self.reset_do_channels()
+        self.reset()

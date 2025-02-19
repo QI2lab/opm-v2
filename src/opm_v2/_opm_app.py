@@ -40,6 +40,7 @@ if TYPE_CHECKING:
 
     ExcTuple = tuple[type[BaseException], BaseException, TracebackType | None]
 
+
 APP_NAME = "Micro-Manager GUI"
 APP_VERSION = __version__
 ORG_NAME = "pymmcore-plus"
@@ -118,7 +119,7 @@ def main() -> None:
     # --------------------------------------------------------------------------------
 
     # load hardware configuration file
-    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250216.json")
+    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218.json")
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
     
@@ -159,13 +160,32 @@ def main() -> None:
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["mm_config_path"]))
-    mmc.setProperty("OrcaFusionBT", "Exposure", float(config["Camera"]["exposure_ms"]))
+    
+    # Enforce config's defualt properties
+    mmc.setProperty(
+        config["Camera"]["camera_id"],
+        "Exposure",
+        float(config["Camera"]["exposure_ms"])
+    )
+    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+    
+    mmc.clearROI()
+    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+    
+    mmc.setROI(
+        config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+        config["Camera"]["camera_center_y"] - int(config["Camera"]["camera_crop_y"]//2),
+        config["Camera"]["camera_crop_x"],
+        config["Camera"]["camera_crop_y"]
+    )
+    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
 
-
-    def update_state(config_name: str, config_state: str):
-
+    def update_state(*signal_args):
+        """
+        Update microscope states and values upon changes to in the GUI
+        """
+        # Stop the DAQ playback if running.
         opmNIDAQ_update_state = OPMNIDAQ.instance()
-
         restart_sequence = False
         if mmc.isSequenceRunning():
             mmc.stopSequenceAcquisition()
@@ -173,80 +193,115 @@ def main() -> None:
 
         if opmNIDAQ_update_state.running():
             opmNIDAQ_update_state.stop_waveform_playback()
-
-        exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)        
-
-        if config_name == "CameraCrop-Y":
-
-            ROI_size_y = int(mmc.getProperty("ImageCameraCrop","Label"))
-
-            mmc.setROI(
-                config["Camera"]["camera_center_x"],
-                config["Camera"]["camera_center_y"],
-                config["Camera"]["camera_crop_x"],
-                ROI_size_y
-            )
-
-        elif config_name == "ImageGalvoMirrorRange":
-            image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-            opmNIDAQ_update_state.image_mirror_sweep_um = image_mirror_range_um
-
-        elif config_name == "ImageGalvoMirrorStep":
-            image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label"),0))
-            opmNIDAQ_update_state.image_mirror_step_size_um = image_mirror_step_um
-
-        elif config_name == "LED":
-            active_channel = mmc.getProperty("LED", "Label")
-            channel_states = [False,False,False,False,False]
-            for ch_i, ch_str in enumerate(["405nm", "488nm", "561nm", "637nm", "730nm"]):
-                if active_channel==ch_str:
-                    channel_states[ch_i] = True
-            opmNIDAQ_update_state.channel_states = channel_states
-
-        elif config_name == "OPM-mode":
-            opm_mode = mmc.getProperty("OPM-mode")
+        
+        # Check the signal arguements to determine which property or config state was changed.
+        if len(signal_args)==3:
+            print("PropertyChanged signal recieved")
+            # Extract changed property names and values
+            print(f"{signal_args[0]}, {signal_args[1]}, {signal_args[2]}")    
+            property_name = signal_args[0]
+            property_label = signal_args[1]
+            property_value = signal_args[2]
             
-            active_channel = mmc.getProperty("LED", "Label")
-            channel_states = [False,False,False,False,False]
-            for ch_i, ch_str in enumerate(["405nm", "488nm", "561nm", "637nm", "730nm"]):
-                if active_channel==ch_str:
-                    channel_states[ch_i] = True
-            image_mirror_sweep_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-            image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label"),0))
-            if "On" in mmc.getProperty("LaserBlanking","Label"):
-                laser_blanking = True
-            elif "Off" in mmc.getProperty("LaserBlanking","Label"):
-                laser_blanking = False
-            else:
-                laser_blanking = True
+            if property_name=="OrcaFusionBT" and property_label=="Exposure":
+                _exposure_ms = round(float(property_value), 0)
+                opmNIDAQ_update_state.exposure_ms = _exposure_ms
+            elif property_name == "ImageGalvoMirrorRange":
+                _image_mirror_range_um = np.round(float(property_value), 0)
+                opmNIDAQ_update_state.image_mirror_sweep_um = _image_mirror_range_um
 
-            if opm_mode == "0-Standard" or opm_mode == "2-Stage":
+        # The signal emitted was from a configSet
+        elif len(signal_args)==2:
+            print("ConfigSet signal recieved")
+            # update configurations
+            print(f"{signal_args[0]}, {signal_args[1]}")
+            config_name = signal_args[0]
+            config_state = signal_args[1]
+            
+            if config_name == "OPM-Mode":
+                # If the OPM-Mode changes, update annd re-generate the waveforms
+                opm_mode = config_state
+                print(f"updating OPM-mode: {opm_mode}")
+                                
+                # Get DAQ the current exposure
+                _exposure_ms = round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 0)
+                
+                # Define the current channel states
+                active_channel = mmc.getProperty("LED", "Label")
+                _channel_states = [False,False,False,False,False]
+                for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
+                    if active_channel==ch_str:
+                        _channel_states[ch_i] = True
+                        
+                # Get the current ImageGalvoMirror parameters
+                _image_mirror_sweep_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
+                _image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
+                
+                # Get the current LaserBlanking State
+                if mmc.getProperty("LaserBlanking", "Label")=="On":
+                    _laser_blanking = True
+                else:
+                    _laser_blanking = False
+                
+                # Define the current scan type based on opm-mode
+                if "Standard" in opm_mode or "Stage" in opm_mode:
+                    _scan_type = "2d"
+                elif "Projection" in opm_mode:
+                    _scan_type = "projection"
+                    mmc.setProperty(config["Camera"]["camera_id"], "Exposure",500.)
+                    mmc.waitForDevice(config["Camera"]["camera_id"])
+                elif "Mirror" in opm_mode:
+                    _scan_type = "mirror"
+                
+                # Set the DAQ acquisition params.
                 opmNIDAQ_update_state.set_acquisition_params(
-                    scan_type="2d",
-                    channel_states=channel_states,
-                    image_mirror_step_size_um=image_mirror_step_um,
-                    image_mirror_sweep_um=image_mirror_sweep_um,
-                    laser_blanking=laser_blanking,
-                    exposure_ms=exposure_ms,
+                    scan_type=_scan_type,
+                    channel_states=_channel_states,
+                    image_mirror_step_size_um=_image_mirror_step_um,
+                    image_mirror_sweep_um=_image_mirror_sweep_um,
+                    laser_blanking=_laser_blanking,
+                    exposure_ms=_exposure_ms,
                 )
-            elif opm_mode == "1-projection":
-                opmNIDAQ_update_state.set_acquisition_params(
-                    scan_type="projection",
-                    channel_states=channel_states,
-                    image_mirror_step_size_um=image_mirror_step_um,
-                    image_mirror_sweep_um=image_mirror_sweep_um,
-                    laser_blanking=laser_blanking,
-                    exposure_ms=exposure_ms,
+                
+            elif config_name == "Channel":
+                print("updating Channels")            
+                active_channel = config_state
+                channel_states = [False,False,False,False,False]
+                for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
+                    if active_channel==ch_str:
+                        channel_states[ch_i] = True
+                opmNIDAQ_update_state.channel_states = channel_states
+            elif config_name == "ImageGalvoMirrorStep":
+                print("updating MirrorStep")
+                image_mirror_step_um =  float(config_state.split("-")[0]) 
+                opmNIDAQ_update_state.image_mirror_step_size_um = image_mirror_step_um
+            elif config_name == "Camera-CropY":
+                camera_crop_y = int(config_state.split("-")[0])
+                mmc.clearROI()
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                print("In update crop")
+                print(config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2))
+                print(config["Camera"]["camera_center_y"] - int(camera_crop_y//2))
+                print(config["Camera"]["camera_crop_x"])
+                print(camera_crop_y)
+                mmc.setROI(
+                    config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                    config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
+                    config["Camera"]["camera_crop_x"],
+                    camera_crop_y
                 )
-
-        mmc.setProperty("OrcaFusionBT", "Exposure", exposure_ms)
-
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                 
+        # Restart acquisition if needed
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
-
+            
+    # Connect changes in gui fields to the update_state method.            
+    mmc.events.propertyChanged.connect(update_state)
     mmc.events.configSet.connect(update_state)
-
-
+    # mmc.events.propertyChanged.connect(test_callback)
+    # mmc.events.configSet.connect(test_callback)
+    
     # grab handle to the Stage widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
 
@@ -273,7 +328,10 @@ def main() -> None:
 
         # get image galvo mirror range and step size
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-        image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label"),0))
+        image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
+               
+        # image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
+        # image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label"),0))
 
         # get AO mode
         if "System-correction" in mmc.getProperty("AO-mode", "Label"):
@@ -346,7 +404,6 @@ def main() -> None:
         n_scan_steps = int(np.ceil(image_mirror_range_um/image_mirror_step_um))
 
         # reload hardware configuration file before setting up acq
-        config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250216.json")
         with open(config_path, "r") as config_file:
             updated_config = json.load(config_file)
 
@@ -466,7 +523,7 @@ def main() -> None:
             AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)        
             AO_channel_states = [False,False,False,False,False]
             AO_laser_powers = [0.,0.,0.,0.,0.]
-            for chan_idx, chan_str in enumerate(["405nm", "488nm", "561nm", "637nm", "730nm"]):
+            for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
                 if active_channel==chan_str:
                     AO_channel_states[chan_idx] = True
                     AO_laser_powers[chan_idx] = float(
@@ -679,7 +736,8 @@ def main() -> None:
         # elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
         #     print("Thick 22bit fluidics")
 
-        mda_widget._mmc.run_mda(opm_events, output=output)
+        #uncomment after debugging
+        # mda_widget._mmc.run_mda(opm_events, output=output)
 
     # modify the method on the instance
     mda_widget.execute_mda = custom_execute_mda
@@ -695,13 +753,25 @@ def main() -> None:
         This function parses the various configuration groups and creates
         the appropiate NIDAQ waveforms for the selected OPM mode and channel.
         """
-
         # get instance of opmnidaq here
         opmNIDAQ_setup_preview = OPMNIDAQ.instance()
 
         if opmNIDAQ_setup_preview.running():
+            print("DAQ is running, stopping now.")
             opmNIDAQ_setup_preview.stop_waveform_playback()
-            
+        
+        
+        
+        # Update device states from the configuration entries
+        # opmNIDAQ_setup_preview.set_acquisition_params(
+        #     scan_type=,
+        #     channel_states=,
+        #     image_mirror_step_size_um=,
+        #     image_mirror_sweep_um=,
+        #     laser_blanking=,
+        #     exposure_ms=
+        # )
+        
         # check if any channels are active. If not, don't setup DAQ.
         if any(opmNIDAQ_setup_preview.channel_states):
             # Check OPM mode and set up NIDAQ accordingly
