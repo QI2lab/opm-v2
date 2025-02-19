@@ -28,7 +28,8 @@
         "camera_center_x": 1142,
         "camera_center_y": 1151,
         "camera_crop_x" : 1900,
-        "camera_crop_y": 512
+        "camera_crop_y": 512,
+        "line_readout_ms":0.010
     },
     "NIDAQ" : {
         "name" : "Dev1",
