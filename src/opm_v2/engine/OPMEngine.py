@@ -58,24 +58,25 @@ class OPMENGINE(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
+                # Stop DAQ playback and clear 
                 opmDAQ_setup.stop_waveform_playback()
                 opmDAQ_setup.clear_tasks()
                 opmDAQ_setup.reset()               
                 self._mmc.clearROI()
-                self._mmc.waitForDevice("OrcaFusionBT")
+                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 self._mmc.setROI(
                     data_dict["Camera"]["camera_crop"][0],
                     data_dict["Camera"]["camera_crop"][1],
                     data_dict["Camera"]["camera_crop"][2],
                     data_dict["Camera"]["camera_crop"][3],
                 )
-                self._mmc.waitForDevice("OrcaFusionBT")
+                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 self._mmc.setProperty(
-                    "OrcaFusionBT", 
+                    str(config["Camera"]["camera_id"]), 
                     "Exposure", 
                     np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                 )
-                self._mmc.waitForDevice("OrcaFusionBT")
+                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
                 
@@ -95,8 +96,9 @@ class OPMENGINE(MDAEngine):
                 else:
                     opmDAQ_setup.stop_waveform_playback()
                     opmDAQ_setup.clear_tasks()
+                    
                     self._mmc.clearROI()
-                    self._mmc.waitForDevice("OrcaFusionBT")
+                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                     self._mmc.setROI(
                         data_dict["Camera"]["camera_crop"][0],
                         data_dict["Camera"]["camera_crop"][1],
@@ -104,11 +106,11 @@ class OPMENGINE(MDAEngine):
                         data_dict["Camera"]["camera_crop"][3],
                     )
                     self._mmc.setProperty(
-                        "OrcaFusionBT", 
+                        str(config["Camera"]["camera_id"]), 
                         "Exposure", 
                         np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                     )
-                    self._mmc.waitForDevice("OrcaFusionBT")
+                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                     for chan_idx, chan_bool in enumerate(data_dict["AO"]["active_channels"]):
                         if chan_bool:
                             self._mmc.setProperty(
@@ -122,20 +124,21 @@ class OPMENGINE(MDAEngine):
                                 str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                                 0.0
                             )
-                    self._mmc.waitForDevice("OrcaFusionBT")
-                    
-            elif action_name == "DAQ-projection":
+                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            
+            elif "DAQ" in action_name:
                 opmDAQ_setup.stop_waveform_playback()
                 opmDAQ_setup.clear_tasks()
                 self._mmc.clearROI()
-                self._mmc.waitForDevice("OrcaFusionBT")
+                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 self._mmc.setROI(
                     data_dict["Camera"]["camera_crop"][0],
                     data_dict["Camera"]["camera_crop"][1],
                     data_dict["Camera"]["camera_crop"][2],
                     data_dict["Camera"]["camera_crop"][3],
                 )
-                self._mmc.waitForDevice("OrcaFusionBT")
+                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                
                 for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
                     if chan_bool:
                         self._mmc.setProperty(
@@ -151,7 +154,7 @@ class OPMENGINE(MDAEngine):
                             0.0
                         )
                 self._mmc.setProperty(
-                    "OrcaFusionBT", 
+                    str(config["Camera"]["camera_id"]), 
                     "Exposure", 
                     exposure_ms
                 )
@@ -164,45 +167,6 @@ class OPMENGINE(MDAEngine):
                     exposure_ms = exposure_ms
                 )
                 
-            elif action_name == "DAQ-mirror":
-                opmDAQ_setup.stop_waveform_playback()
-                opmDAQ_setup.clear_tasks()
-                self._mmc.clearROI()
-                self._mmc.waitForDevice("OrcaFusionBT")
-                self._mmc.setROI(
-                    data_dict["Camera"]["camera_crop"][0],
-                    data_dict["Camera"]["camera_crop"][1],
-                    data_dict["Camera"]["camera_crop"][2],
-                    data_dict["Camera"]["camera_crop"][3],
-                )
-                self._mmc.waitForDevice("OrcaFusionBT")
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
-                    if chan_bool:
-                        self._mmc.setProperty(
-                            config["Lasers"]["name"],
-                            str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            float(data_dict["DAQ"]["laser_powers"][chan_idx])
-                        )
-                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),0)
-                    else:
-                        self._mmc.setProperty(
-                            config["Lasers"]["name"],
-                            str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            0.0
-                        )
-                self._mmc.setProperty(
-                    "OrcaFusionBT", 
-                    "Exposure", 
-                    exposure_ms
-                )
-                opmDAQ_setup.set_acquisition_params(
-                    scan_type = str(data_dict["DAQ"]["mode"]),
-                    channel_states = data_dict["DAQ"]["active_channels"],
-                    image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
-                    image_mirror_sweep_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
-                    laser_blanking = bool(data_dict["DAQ"]["blanking"]),
-                    exposure_ms = exposure_ms
-                )
             elif action_name == "Fluidics":
                 print(action_name)
         else:
@@ -240,7 +204,7 @@ class OPMENGINE(MDAEngine):
             #             pos_idx=int(data_dict["AO"]["pos_idx"])
             #         )
             #         opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = opmAOmirror_exec.current_positions().copy()
-            elif action_name == "DAQ-projection" or action_name == "DAQ-mirror":
+            elif "DAQ" in action_name:
                 opmDAQ_exec.generate_waveforms()
                 opmDAQ_exec.prepare_waveform_playback()
                 opmDAQ_exec.start_waveform_playback()
