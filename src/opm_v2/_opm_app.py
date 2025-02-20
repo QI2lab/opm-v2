@@ -594,15 +594,13 @@ def main() -> None:
         # setup AO using values in config.json
         if not(AO_mode == "Optimize-now"):
             AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
-            AO_active_channels = [False] * len(channel_names) 
-            AO_laser_powers = [0.] * len(channel_names)
             AO_active_channels = list(map(bool,updated_config["AO-projection"]["active_channels"]))
             AO_laser_powers = list(float(_) for _ in updated_config["AO-projection"]["laser_power"])
             AO_camera_crop_y = int(updated_config["AO-projection"]["camera_crop_y"])
             AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
             AO_image_mirror_step_um = float(updated_config["AO-projection"]["image_mirror_step_um"])
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
-            AO_mode = str(updated_config["AO-projection"]["mode"])
+            AO_metric = str(updated_config["AO-projection"]["mode"])
         
         # setup AO using values in GUI
         else:
@@ -610,11 +608,11 @@ def main() -> None:
             AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
             AO_active_channels = [False] * len(channel_names) 
             AO_laser_powers = [0.] * len(channel_names)
-            AO_camera_crop_y = int(updated_config["AO-projection"]["camera_crop_y"])
+            AO_camera_crop_y = int(updated_config["AO-projection"]["camera_crop_y"]) # This value will be determined
             AO_image_mirror_range_um = float(image_mirror_range_um)
             AO_image_mirror_step_um = float(image_mirror_step_um)
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
-            AO_mode = str(updated_config["AO-projection"]["mode"])
+            AO_metric = str(updated_config["AO-projection"]["mode"])
         
             # Set the active channel 
             for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
@@ -648,7 +646,7 @@ def main() -> None:
                         "opm_mode": str("projection"),
                         "active_channels": AO_active_channels,
                         "laser_power" : AO_laser_powers,
-                        "mode": AO_mode,
+                        "mode": AO_metric,
                         "iterations": AO_iterations,
                         "image_mirror_step_um" : AO_image_mirror_step_um,
                         "image_mirror_range_um" : AO_image_mirror_range_um,
@@ -909,7 +907,6 @@ def main() -> None:
     # Connect the above callback to the event that a continuous sequence is starting
     # Because callbacks are blocking, our custom setup code is called before the preview mode starts. 
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
-
 
 
     # --------------------------------------------------------------------------------
