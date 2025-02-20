@@ -17,25 +17,24 @@ def run_fluidic_program(verbose: bool = False):
         handle to initialized pump
 
     :return True: boolean
-        TO DO: need to work this into try/except statements to catch any pump errors
     """
     opmOB1_local = OB1Controller.instance()
     opmOB1_local.init_board()
-    
+        
     # wait for user to verify ESI sequence is running
-    input("press enter after starting ESI sequence")
+    # input("press enter after starting ESI sequence")
     
     opmOB1_local.trigger_OB1()
     if verbose:
-        print("Triggering OB1")
+        print(" Triggering OB1")
         
     time.sleep(1)
     if verbose:
-        print("Waiting for OB1 trigger")
+        print(" Waiting for OB1 trigger")
     opmOB1_local.wait_for_OB1()
     
     if verbose:
-        print("OB1 trigger recieved, ESI sequence complete")
+        print(" OB1 trigger recieved, ESI sequence complete")
     opmOB1_local.close_board()
     
     return True

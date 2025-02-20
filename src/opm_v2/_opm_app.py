@@ -185,31 +185,31 @@ def main() -> None:
     )
     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
 
-    def set_projection_roi(_image_mirror_sweep_um):
+    def calculate_projection_crop(image_mirror_range_um):
         # Calculate the the number of Y pixels for the scan range
-        roi_height_um = _image_mirror_sweep_um
-        roi_height_px = int((roi_height_um / mmc.getPixelSizeUm()) * np.cos(np.deg2rad(30)))
-        # TODO: Verify the image stretch factor using SIMpatterns
-
-        # Set the camera ROI to the image sweep range
-        if not(roi_height_px == mmc.getROI()[-1]): 
-            current_roi = mmc.getROI()
-            mmc.clearROI()
-            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-            mmc.setROI(
-                config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                config["Camera"]["camera_center_y"] - int(roi_height_px//2),
-                config["Camera"]["camera_crop_x"],
-                roi_height_px
-        )
-        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+        roi_height_um = image_mirror_range_um * np.cos(np.deg2rad(30))
+        roi_height_px = int(roi_height_um / mmc.getPixelSizeUm())
         return roi_height_px
     
-    def update_state(*signal_args):
+    def update_state():
         """
         Update microscope states and values upon changes to in the GUI
         """
-        # Stop the DAQ playback if running.
+        # Get the selected imaging mode
+        opm_mode = mmc.getProperty("OPM-mode", "Label")
+        
+        # Define the scan type based on imaging mode
+        if "Standard" in opm_mode:
+            _scan_type = "2d"
+        elif "Stage" in opm_mode:
+            _scan_type = "2d"
+        elif "Projection" in opm_mode:
+            _scan_type = "projection"
+        elif "Mirror" in opm_mode:
+            _scan_type = "mirror"
+            
+        #--------------------------------------------------------------------#
+        # Stop DAQ playback
         opmNIDAQ_update_state = OPMNIDAQ.instance()
         restart_sequence = False
         if mmc.isSequenceRunning():
@@ -218,160 +218,106 @@ def main() -> None:
             
         if opmNIDAQ_update_state.running():
             opmNIDAQ_update_state.stop_waveform_playback()
+            # if not (_scan_type == opmNIDAQ_update_state.scan_type):
+            #     opmNIDAQ.clear_tasks()
+            
+        #--------------------------------------------------------------------#
+        # Grab gui values 
+        #--------------------------------------------------------------------#
         
-        # get the current operating mode
-        # if we are in any mode besides Standard, we must regenerate the waveforms.
-        # current_mode = mmc.getProperty("")
+        # Get the gui exposure
+        _exposure_ms = round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 0)
         
-        # Check the signal arguments to determine which property or config state was changed.
-        if len(signal_args)==3:
-            # Extract changed property names and values   
-            property_name = signal_args[0]
-            property_label = signal_args[1]
-            property_value = signal_args[2]
+        # Get the current ImageGalvoMirror parameters
+        _image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
+        _image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
+        
+        # Get the selected active channel and populate channel_states
+        _active_channel_id = mmc.getProperty("LED", "Label")
+        _channel_states = [False] * len(config["OPM"]["channel_ids"])
+        for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
+            if _active_channel_id==ch_str:
+                _channel_states[ch_i] = True
+        
+        # Get the current LaserBlanking State
+        if mmc.getProperty("LaserBlanking", "Label")=="On":
+            _laser_blanking = True
+        else:
+            _laser_blanking = False
+        
+        # Get the current gui crop value (not used in Projection)
+        gui_camera_crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
             
-            if property_name=="OrcaFusionBT" and property_label=="Exposure":
-                _exposure_ms = round(float(property_value), 0)
-                opmNIDAQ_update_state.exposure_ms = _exposure_ms
-            elif property_name == "ImageGalvoMirrorRange":
-                _image_mirror_range_um = np.round(float(property_value), 0)
-                opmNIDAQ_update_state.image_mirror_sweep_um = _image_mirror_range_um
-
-        elif len(signal_args)==2:
-            # update configurations
-            config_name = signal_args[0]
-            config_state = signal_args[1]
+        # The Camera's current sensor mode 
+        # TODO
+        # current_sensor_mode = mmc.getProperty(config["Camera"]["camera_id"], "SENSOR MODE")
+        
+        #--------------------------------------------------------------------#
+        # Reinforce camera state
+        #--------------------------------------------------------------------#
+        
+        # Configure the camera sensor mode (switches for projection mode, TODO)
+        if _scan_type=="projection":
+            # if not (current_sensor_mode=="PROGRESSIVE"):
+            #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "PROGRESSIVE")
+            #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
             
-            if config_name == "OPM-Mode":
-                # If the OPM-Mode changes, update and re-generate the waveforms
-                opm_mode = config_state
-                                
-                # Get DAQ the current exposure
-                _exposure_ms = round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 0)
-                
-                # Define the current channel states
-                active_channel_id = mmc.getProperty("LED", "Label")
-                _channel_states = [False,False,False,False,False]
-                for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
-                    if active_channel_id==ch_str:
-                        _channel_states[ch_i] = True
-                        
-                # Get the current ImageGalvoMirror parameters
-                _image_mirror_sweep_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-                _image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
-                
-                # Get the current LaserBlanking State
-                if mmc.getProperty("LaserBlanking", "Label")=="On":
-                    _laser_blanking = True
-                else:
-                    _laser_blanking = False
-                
-                # Get the current camera sensor mode
-                current_sensor_mode = mmc.getProperty(config["Camera"]["camera_id"], "SENSOR MODE")
-                
-                # Define the current scan type based on opm-mode
-                if "Standard" in opm_mode:
-                    _scan_type = "2d"
-                    if current_sensor_mode=="PROGRESSIVE":
-                        # Configure the camera to run in full chip
-                        mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
-                        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-    
-                elif "Stage" in opm_mode:
-                    # TODO
-                    _scan_type = "2d"
-                    if current_sensor_mode=="PROGRESSIVE":
-                        # Configure the camera to run in full chip
-                        mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
-                        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    
-                elif "Projection" in opm_mode:
-                    _scan_type = "projection"
-                    
-                    # Calculate the the number of Y pixels for the scan range
-                    roi_height_um = _image_mirror_sweep_um # / np.cos(np.deg2rad(30))
-                    roi_height_px = int((roi_height_um / mmc.getPixelSizeUm()))
-            
-                    # Set the camera ROI to the image sweep range
-                    if not(roi_height_px == mmc.getROI()[-1]): 
-                        current_roi = mmc.getROI()
-                        print(current_roi)
-                        mmc.clearROI()
-                        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                        mmc.setROI(
-                            config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                            config["Camera"]["camera_center_y"] - int(roi_height_px//2),
-                            config["Camera"]["camera_crop_x"],
-                            roi_height_px
-                    )
-                    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    
-                    # Configure the camera to run in light sheet mode
-                    # mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "PROGRESSIVE")
-                    # mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    
-                    # # Configure the line readout time, units==ms
-                    # mmc.setProperty(config["Camera"]["camera_id"], "INTERNAL LINE INTERVAL", config["Camera"]["line_readout_ms"])
-                    # mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    
-                    
-                    # Configure the exposure
-                    # line_readout_time = float(mmc.getProperty(config["Camera"]["camera_id"], "INTERNAL LINE INTERVAL"))
-                    # print(f"Line readout {float(line_readout_time)}")
-                    # _exposure_ms = roi_height_px * line_readout_time
-                    # print(f"calculated exp: {_exposure_ms}")
-                    # _exposure_ms =  round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 1)
-                    # print(f"from property expected exposure: {_exposure_ms}")
-                    # _exposure_ms = round(float(mmc.getExposure()), 1)
-                    # print(f"from property exposure: {_exposure_ms}")
-                    
-                    
-                elif "Mirror" in opm_mode:
-                    _scan_type = "mirror"
-                
-                    if current_sensor_mode=="PROGRESSIVE":
-                        # Configure the camera to run in full chip
-                        mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
-                        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                        
-                # Set the DAQ acquisition params.
-                opmNIDAQ_update_state.set_acquisition_params(
-                    scan_type=_scan_type,
-                    channel_states=_channel_states,
-                    image_mirror_step_size_um=_image_mirror_step_um,
-                    image_mirror_sweep_um=_image_mirror_sweep_um,
-                    laser_blanking=_laser_blanking,
-                    exposure_ms=_exposure_ms,
+            # Crop the chip down to determined size
+            camara_crop_y = calculate_projection_crop(_image_mirror_range_um)
+            if not (camara_crop_y == mmc.getROI()[-1]): 
+                current_roi = mmc.getROI()
+                mmc.clearROI()
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                mmc.setROI(
+                    config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                    config["Camera"]["camera_center_y"] - int(camara_crop_y//2),
+                    config["Camera"]["camera_crop_x"],
+                    camara_crop_y
                 )
-                # opmNIDAQ_update_state.clear_tasks()
-                # opmNIDAQ_update_state.generate_waveforms()
-                # opmNIDAQ_update_state.prepare_waveform_playback()
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            
+        else :
+            # if not (current_sensor_mode=="AREA"):
+            #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
+            #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 
-            elif config_name == "Channel":
-                active_channel_id = config_state
-                channel_states = [False,False,False,False,False]
-                for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
-                    if active_channel_id==ch_str:
-                        channel_states[ch_i] = True
-                opmNIDAQ_update_state.channel_states = channel_states
-            elif config_name == "ImageGalvoMirrorStep":
-                image_mirror_step_um =  float(config_state.split("-")[0]) 
-                opmNIDAQ_update_state.image_mirror_step_size_um = image_mirror_step_um
-            elif config_name == "Camera-CropY":
-                camera_crop_y = int(config_state.split("-")[0])
-                if not(camera_crop_y == mmc.getROI()[-1]): 
-                    mmc.clearROI()
-                    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    mmc.setROI(
-                        config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                        config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
-                        config["Camera"]["camera_crop_x"],
-                        camera_crop_y
-                    )
-                    mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            # Crop the chip down to determined size
+            if not (gui_camera_crop_y == mmc.getROI()[-1]): 
+                current_roi = mmc.getROI()
+                print(current_roi)
+                mmc.clearROI()
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                mmc.setROI(
+                    config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                    config["Camera"]["camera_center_y"] - int(gui_camera_crop_y//2),
+                    config["Camera"]["camera_crop_x"],
+                    gui_camera_crop_y
+                )
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                
+        # Set the camera exposure
+        mmc.setProperty(str(config["Camera"]["camera_id"]),"Exposure",_exposure_ms)
+        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
         
+        #--------------------------------------------------------------------#
+        # update DAQ values and prepare new waveform
+        #--------------------------------------------------------------------#
         
+        opmNIDAQ_update_state.set_acquisition_params(
+            scan_type=_scan_type,
+            channel_states=_channel_states,
+            image_mirror_step_size_um=_image_mirror_step_um,
+            image_mirror_range_um=_image_mirror_range_um,
+            laser_blanking=_laser_blanking,
+            exposure_ms=_exposure_ms,
+        )
+        # opmNIDAQ_update_state.generate_waveforms()
+        # opmNIDAQ_update_state.prepare_waveform_playback()
+        
+        #--------------------------------------------------------------------#
         # Restart acquisition if needed
+        #--------------------------------------------------------------------#
+        
         if restart_sequence:
             opmNIDAQ_update_state.start_waveform_playback()
             mmc.startContinuousSequenceAcquisition()
@@ -418,7 +364,7 @@ def main() -> None:
             scan_type="mirror",
             channel_states = [False,False,False,False,False],
             image_mirror_step_size_um=image_mirror_step_um,
-            image_mirror_sweep_um=image_mirror_range_um,
+            image_mirror_range_um=image_mirror_range_um,
             laser_blanking=True,
             exposure_ms=100.
         )
@@ -607,9 +553,9 @@ def main() -> None:
             AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
             AO_active_channels = [False] * len(channel_names) 
             AO_laser_powers = [0.] * len(channel_names)
-            AO_camera_crop_y = int(updated_config["AO-projection"]["camera_crop_y"]) # This value will be determined
             AO_image_mirror_range_um = float(image_mirror_range_um)
             AO_image_mirror_step_um = float(image_mirror_step_um)
+            AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um)) # This value will be determined
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
         
@@ -635,6 +581,7 @@ def main() -> None:
             with open(config_path, "w") as file:
                 json.dump(updated_config, file, indent=4)
         
+        print(f"output: {output}")
         # Create AO event
         AO_event = MDAEvent(
             exposure = AO_exposure_ms,
@@ -650,6 +597,9 @@ def main() -> None:
                         "image_mirror_step_um" : AO_image_mirror_step_um,
                         "image_mirror_range_um" : AO_image_mirror_range_um,
                         "blanking": bool(True),
+                        "apply_existing": bool(False),
+                        "pos_idx":int(0),
+                        "output_path":Path(output)
                     },
                     "Camera" : {
                         "exposure_ms": AO_exposure_ms,
@@ -862,6 +812,7 @@ def main() -> None:
 
         handler = TensorStoreHandler(path= Path(output) / Path("data.zarr"), delete_existing=True)
         mda_widget._mmc.run_mda(opm_events, output=handler)
+        opmAOmirror_local.savepath = output # save path here pass path
 
     # modify the method on the instance
     mda_widget.execute_mda = custom_execute_mda
@@ -881,20 +832,7 @@ def main() -> None:
         opmNIDAQ_setup_preview = OPMNIDAQ.instance()
 
         if opmNIDAQ_setup_preview.running():
-            print("DAQ is running, stopping now.")
             opmNIDAQ_setup_preview.stop_waveform_playback()
-        
-        
-        
-        # Update device states from the configuration entries
-        # opmNIDAQ_setup_preview.set_acquisition_params(
-        #     scan_type=,
-        #     channel_states=,
-        #     image_mirror_step_size_um=,
-        #     image_mirror_sweep_um=,
-        #     laser_blanking=,
-        #     exposure_ms=
-        # )
         
         # check if any channels are active. If not, don't setup DAQ.
         if any(opmNIDAQ_setup_preview.channel_states):

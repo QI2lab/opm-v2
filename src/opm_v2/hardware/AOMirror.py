@@ -4,6 +4,7 @@ from numpy.typing import NDArray
 from typing import List
 import wavekit_py as wkpy
 import time
+import json
 
 _instance_mirror = None
 
@@ -54,27 +55,28 @@ class AOMirror:
         coeff_file_path: Path = None,
         n_modes: int = 32,
         n_positions: int = 1,
-        modes_to_ignore: List[int] = []
-    ):
+        modes_to_ignore: List[int] = [],
+        output_path: Path = Path("G:")):
         
         # Set the first instance of this class as the global singleton
         global _instance_mirror
         if _instance_mirror is None:
             _instance_mirror = self
 
-        self.haso_config_file_path = haso_config_file_path
-        self.wfc_config_file_path = wfc_config_file_path
-        self.interaction_matrix_file_path = interaction_matrix_file_path
-        self.coeff_file_path = coeff_file_path
-        self.flat_positions_file_path = flat_positions_file_path
-        self.n_modes = n_modes
-        self.modes_to_ignore = modes_to_ignore
+        self._haso_config_file_path = haso_config_file_path
+        self._wfc_config_file_path = wfc_config_file_path
+        self._interaction_matrix_file_path = interaction_matrix_file_path
+        self._coeff_file_path = coeff_file_path
+        self._flat_positions_file_path = flat_positions_file_path
+        self._n_modes = n_modes
+        self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
+        self._output_path = output_path
         
         # create wkpy sub class objects
         # Wavefront corrector and set objects
         self.wfc = wkpy.WavefrontCorrector(
-            config_file_path = str(self.wfc_config_file_path)
+            config_file_path = str(self._wfc_config_file_path)
         )
         self.wfc_set = wkpy.WavefrontCorrectorSet(wavefrontcorrector = self.wfc)
         self.wfc.connect(True)
@@ -85,13 +87,13 @@ class AOMirror:
             haso_config_file_path = str(haso_config_file_path),
             interaction_matrix_file_path = str(interaction_matrix_file_path)
         )
-        self.corr_data_manager.set_command_matrix_prefs(self.n_modes,True)
+        self.corr_data_manager.set_command_matrix_prefs(self._n_modes,True)
         self.corr_data_manager.compute_command_matrix()
            
         self.wfc.set_temporization(20)
 
         # create the configuration object
-        self.haso_config, self.haso_specs, _ = wkpy.HasoConfig.get_config(config_file_path=str(self.haso_config_file_path))
+        self.haso_config, self.haso_specs, _ = wkpy.HasoConfig.get_config(config_file_path=str(self._haso_config_file_path))
         
         # construct pupil dimensions from haso specs
         pupil_dimensions = wkpy.dimensions(self.haso_specs.nb_subapertures,self.haso_specs.ulens_step)
@@ -118,15 +120,15 @@ class AOMirror:
         self.modal_coeff = wkpy.ModalCoef(modal_type=wkpy.E_MODAL.ZERNIKE)
         self.modal_coeff.set_zernike_prefs(
             zernike_normalisation=wkpy.E_ZERNIKE_NORM.RMS, 
-            nb_zernike_coefs_total=self.n_modes, 
-            coefs_to_filter=self.modes_to_ignore,
+            nb_zernike_coefs_total=self._n_modes, 
+            coefs_to_filter=self._modes_to_ignore,
             projection_pupil=wkpy.ZernikePupil_t(
                 center,
                 radius
             )
         )
 
-        if self.flat_positions_file_path is not None:
+        if self._flat_positions_file_path is not None:
             # Configure mirror in the flat position
             self.flat_positions = np.asarray(self.wfc.get_positions_from_file(str(flat_positions_file_path)))
         else:
@@ -175,7 +177,35 @@ class AOMirror:
             "Vert. 9th Asm.",
             "Oblq. 9th Asm.",
         ]
+
+
+    @property
+    def output_path(self) -> str|Path:
+        """Output path.
         
+        Returns
+        -------
+        output_path: str
+            output path
+        """
+        
+        return getattr(self,"_output_path",None)
+    
+    @output_path.setter
+    def output_path(self, value: str|Path):
+        """Set the output path.
+        
+        Parameters
+        ----------
+        value: str|Path
+            output_path 
+        """
+        
+        if not hasattr(self, "_output_path") or self._output_path is None:
+            self._output_path = value
+        else:
+            self._output_path = value
+            
     @property
     def n_positions(self) -> int:
         """Number of experimental "positions".
@@ -203,7 +233,7 @@ class AOMirror:
         else:
             self._n_positions = value
             
-        self.wfc_positions_array = np.zeros((self.n_positions,self.wfc.nb_actuators))
+        self.wfc_positions_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
 
     
     def __del__(self):
@@ -269,18 +299,18 @@ class AOMirror:
             Flatten array of Zernike modes.
         """
 
-        assert amps.shape[0]==self.n_modes, "amps array must have the same shape as the number of Zernike modes."
+        assert amps.shape[0]==self._n_modes, "amps array must have the same shape as the number of Zernike modes."
         # update modal data
         self.modal_coeff.set_data(
             coef_array = amps,
-            index_array = np.arange(1, self.n_modes+1, 1),
+            index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
         ) 
         
         # create a new haso_slope from the new modal coefficients
         haso_slopes = wkpy.HasoSlopes(
             modalcoef = self.modal_coeff, 
-            config_file_path=str(self.haso_config_file_path)
+            config_file_path=str(self._haso_config_file_path)
         )
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
@@ -307,6 +337,7 @@ class AOMirror:
     # Steven - this is a slightly confusing function name. I would expect
     # "update" to change the mirror settings, but this updates the internal class.
     # should these move to class properties?
+    # TODO Create properties and setters for these...
     def update_mirror_positions(self):
         """Update stored mirror positions from wavefront corrector."""
         self.current_positions = np.array(self.wfc.get_current_positions())
@@ -324,6 +355,28 @@ class AOMirror:
         self.wfc.save_current_positions_to_file(pmc_file_path=str(wfc_save_path))
     
     
+    def save_acq_positions(self, fname : str = "exp_ao_positions"):
+        """Save wfc positions array to disk
+        
+        Parameters
+        ----------
+        fname : str
+        """
+        positions_file_path = self._output_path / Path(f"{fname}.json")
+        wfc_positions_list = self.wfc_positions_array.tolist()
+        with open(positions_file_path, "w") as f:
+            json.dump(wfc_positions_list, f)
+            
+            
+    def load_acq_positions(self, fname : str = "exp_ao_positions"):
+        positions_file_path = self._output_path / Path(f"{fname}.json")
+        with open(positions_file_path, "r") as f:
+            wfc_positions_list = json.load(f)
+
+        # Convert the loaded list back to a NumPy array
+        self.wfc_positions_array = np.asarray(wfc_positions_list)
+
+        
     def save_mirror_positions(self, name: str):
         """Save current mirror positions to disk.
 
@@ -335,11 +388,11 @@ class AOMirror:
         self.update_mirror_positions()
         self.wfc_positions[name] = self.current_positions
         
-        actuator_save_path = self.interaction_matrix_file_path.parent / Path(f"{name}_actuator_positions.wcs") 
+        actuator_save_path = self._interaction_matrix_file_path.parent / Path(f"{name}_actuator_positions.wcs") 
         self.wfc.save_current_positions_to_file(pmc_file_path=str(actuator_save_path))
         
         # save last updated
-        coeff_save_path = self.interaction_matrix_file_path.parent / Path(f"{name}_modalcoeffs.json")
+        coeff_save_path = self._interaction_matrix_file_path.parent / Path(f"{name}_modalcoeffs.json")
         
         # copied from navigate
         coefs = self.current_coeffs
@@ -347,16 +400,13 @@ class AOMirror:
         for c in range(len(self.mode_names)):
             mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
 
-        import json
-
         with open(coeff_save_path, "w") as f:
             json.dump(mode_dict, f)
-        f.close()
-        
+            
         if name=="flat":
             self.flat_positions = self.current_positions
             self.flat_coeffs = self.current_coeffs
-            self.flat_positions_file_path = actuator_save_path
+            self._flat_positions_file_path = actuator_save_path
 
 def DM_voltage_to_map(v):
     """Reshape mirror to a map.

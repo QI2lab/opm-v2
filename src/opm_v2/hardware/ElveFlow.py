@@ -18,11 +18,11 @@ class OB1Controller():
             _instance_ob1 = cls()
         return _instance_ob1
         
-        
+
     def __init__( self,
                   port: str = 'COM9',
-                  to_OB1_pin: int = 8,
-                  from_OB1_pin: int = 6):
+                  to_OB1_pin: int = 7,
+                  from_OB1_pin: int = 8):
         """Arduino controller for the Elveflow OB1 controller.
         Send and receive signals to the input/output ports
 
@@ -35,6 +35,10 @@ class OB1Controller():
         from_OB1_pin : int, optional
             _description_, by default 6
         """
+        
+        global _instance_ob1
+        if _instance_ob1 is None:
+            _instance_ob1 = self
         
         self.port = port
         self.to_OB1_pin_location= f'd:{to_OB1_pin}:o'
@@ -112,4 +116,3 @@ class OB1Controller():
         while (perf_counter() - timer_start < pulse_duration):
             continue
         self.to_OB1_pin.write(False)
-

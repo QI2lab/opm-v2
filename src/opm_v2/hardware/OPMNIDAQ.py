@@ -318,25 +318,25 @@ class OPMNIDAQ:
             self._image_mirror_step_size_um = value
 
         self._image_axis_step_volts = self._image_mirror_step_size_um * self._image_mirror_calibration
-        # temp = self.image_mirror_sweep_um.copy()
-        # self.image_mirror_sweep_um = temp
+        # temp = self.image_mirror_range_um.copy()
+        # self.image_mirror_range_um = temp
             
     @property
-    def image_mirror_sweep_um(self) -> float:
+    def image_mirror_range_um(self) -> float:
         """Image mirror sweep in microns.
         
         This is the lateral footprint of sweep, symmetric around the zero point, along the coverslip.
         
         Returns
         -------
-        image_mirror_sweep_um: float
+        image_mirror_range_um: float
             Image mirror sweep in microns.
         """
         
-        return getattr(self,"_image_mirror_sweep_um",None)
+        return getattr(self,"_image_mirror_range_um",None)
     
-    @image_mirror_sweep_um.setter
-    def image_mirror_sweep_um(self, value: float):
+    @image_mirror_range_um.setter
+    def image_mirror_range_um(self, value: float):
         """Set the image mirror sweep in microns.
         
         Parameters
@@ -345,18 +345,18 @@ class OPMNIDAQ:
             Image mirror sweep in microns.
         """
         
-        if not hasattr(self, "_image_mirror_sweep_um") or self._image_mirror_sweep_um is None:
-            self._image_mirror_sweep_um = value
+        if not hasattr(self, "_image_mirror_range_um") or self._image_mirror_range_um is None:
+            self._image_mirror_range_um = value
         else:
-            self._image_mirror_sweep_um = value
+            self._image_mirror_range_um = value
 
         # setup image galvo mirror
-        self._image_mirror_min_volt = -(self._image_mirror_sweep_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
-        self._image_axis_range_volts = self._image_mirror_sweep_um * self._image_mirror_calibration
+        self._image_mirror_min_volt = -(self._image_mirror_range_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
+        self._image_axis_range_volts = self._image_mirror_range_um * self._image_mirror_calibration
         self._image_scan_steps = int(np.rint(self._image_axis_range_volts / self._image_axis_step_volts)) # galvo steps
 
         # setup projection galvo mirror
-        self._projection_scan_range_volts = self._image_mirror_sweep_um * self._projection_mirror_calibration
+        self._projection_scan_range_volts = self._image_mirror_range_um * self._projection_mirror_calibration
         
     @property
     def n_scan_steps(self) -> int:
@@ -411,7 +411,7 @@ class OPMNIDAQ:
         scan_type: str = None,
         channel_states: Sequence[bool] = None,
         image_mirror_step_size_um: float = None,
-        image_mirror_sweep_um: float = None,
+        image_mirror_range_um: float = None,
         laser_blanking: bool = None,
         exposure_ms: float = None
     ):
@@ -426,7 +426,7 @@ class OPMNIDAQ:
             channel states, in order of [405nm, 488nm, 561nm, 637nm, 730nm].
         image_mirror_step_size_um: float
             Image mirror step size in microns. This is the lateral footprint along the coverslip.
-        image_mirror_sweep_um: float
+        image_mirror_range_um: float
             Image mirror sweep in microns.
         laser_blanking: bool
             Laser blanking state: Active (True) or Inactive (False) 
@@ -444,8 +444,8 @@ class OPMNIDAQ:
             self.exposure_ms = exposure_ms
         if image_mirror_step_size_um:
             self.image_mirror_step_size_um = image_mirror_step_size_um
-        if image_mirror_sweep_um:
-            self.image_mirror_sweep_um = image_mirror_sweep_um
+        if image_mirror_range_um:
+            self.image_mirror_range_um = image_mirror_range_um
                 
     def reset(self):
         """Reset the device."""

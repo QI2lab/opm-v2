@@ -162,7 +162,7 @@ class OPMENGINE(MDAEngine):
                     scan_type = str(data_dict["DAQ"]["mode"]),
                     channel_states = data_dict["DAQ"]["active_channels"],
                     image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
-                    image_mirror_sweep_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
+                    image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                     laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                     exposure_ms = exposure_ms
                 )
@@ -181,7 +181,7 @@ class OPMENGINE(MDAEngine):
         """
 
         opmDAQ_exec = OPMNIDAQ.instance()
-        # opmAOmirror_exec = AOMirror.instance()
+        opmAOmirror_exec = AOMirror.instance()
 
         if isinstance(event.action,CustomAction):
    
@@ -190,20 +190,21 @@ class OPMENGINE(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 manage_O3_focus(config["O2O3-autofocus"]["O3_stage_name"])
-            # elif action_name == "AO-projection":
-            #     if data_dict["AO"]["apply_existing"]:
-            #         wfc_positions_to_use = opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
-            #         opmAOmirror_exec.update_mirror_positions(wfc_positions_to_use)
-            #     else:
-            #         run_ao_optimization(
-            #             image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
-            #             image_mirror_sweep_um=float(data_dict["AO"]["image_mirror_range_um"]),
-            #             exposure_ms=float(data_dict["AO"]["exposure_ms"]),
-            #             channel_states=data_dict["AO"]["active_channels"],
-            #             num_iterations=int(data_dict["AO"]["iterations"]),
-            #             pos_idx=int(data_dict["AO"]["pos_idx"])
-            #         )
-            #         opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = opmAOmirror_exec.current_positions().copy()
+            elif action_name == "AO-projection":               
+                if data_dict["AO"]["apply_existing"]:
+                    wfc_positions_to_use = opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    opmAOmirror_exec.set_mirror_positions(wfc_positions_to_use)
+                else:
+                    opmAOmirror_exec.output_path = data_dict["AO"]["output_path"]
+                    run_ao_optimization(
+                        image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
+                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
+                        exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
+                        channel_states=data_dict["AO"]["active_channels"],
+                        num_iterations=int(data_dict["AO"]["iterations"]),
+                        verbose=True
+                    )
+                    opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = opmAOmirror_exec.current_positions.copy()
             elif "DAQ" in action_name:
                 opmDAQ_exec.generate_waveforms()
                 opmDAQ_exec.prepare_waveform_playback()
@@ -223,6 +224,7 @@ class OPMENGINE(MDAEngine):
         super().teardown_sequence(sequence)
         
         # Shut down DAQ
+        print("in teardown sequence")
         opmDAQ_teardown = OPMNIDAQ.instance()
         opmDAQ_teardown.stop_waveform_playback()
         opmDAQ_teardown.clear_tasks()
@@ -235,3 +237,6 @@ class OPMENGINE(MDAEngine):
                 laser + " - PowerSetpoint (%)",
                 0.0
             )
+            
+        opmAOmirror_teardown = AOMirror.instance()
+        opmAOmirror_teardown.save_acq_positions()

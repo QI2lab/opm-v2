@@ -21,7 +21,7 @@ from tifffile import imwrite
     
 def run_ao_optimization(
     image_mirror_step_size_um: float,
-    image_mirror_sweep_um: float,
+    image_mirror_range_um: float,
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
@@ -52,13 +52,12 @@ def run_ao_optimization(
         scan_type="projection",
         channel_states=channel_states,
         image_mirror_step_size_um=image_mirror_step_size_um,
-        image_mirror_sweep_um=image_mirror_sweep_um,
+        image_mirror_range_um=image_mirror_range_um,
         laser_blanking=True,
         exposure_ms=exposure_ms
     )
     opmNIDAQ_local.generate_waveforms()
     opmNIDAQ_local.prepare_waveform_playback()
-    opmNIDAQ_local.start_waveform_playback()
     
     mmc.setProperty("OrcaFusionBT", "Exposure",float(exposure_ms))
     mmc.waitForDevice("OrcaFusionBT")
@@ -90,7 +89,9 @@ def run_ao_optimization(
     if verbose:
         print(f"Starting A.O. optimization using {metric_to_use} metric")
     
+    
     # Snap an image and calculate the starting metric.
+    opmNIDAQ_local.start_waveform_playback()
     mmc.snapImage()
     starting_image = mmc.getImage()
     imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
@@ -103,7 +104,7 @@ def run_ao_optimization(
 
     # initialize delta range
     delta_range=init_delta_range
-    
+        
     # Start AO iterations 
     for k in range(num_iterations): 
         if k==0:       
@@ -144,10 +145,13 @@ def run_ao_optimization(
                         
                 else:
                     """acquire projection image"""
+                    if not opmNIDAQ_local.running():
+                        opmNIDAQ_local.start_waveform_playback()
+        
                     mmc.snapImage()
                     image = mmc.getImage()
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
-                        
+                    print(f"after image snap: {opmNIDAQ_local.running()}")
                     """Calculate metric."""
                     metric = metric_shannon_dct(
                         image=image,
@@ -215,6 +219,8 @@ def run_ao_optimization(
                 coeff_to_keep = init_iter_zern_modes[mode]
             else:
                 """acquire projection image"""
+                if not opmNIDAQ_local.running():
+                    opmNIDAQ_local.start_waveform_playback()
                 mmc.snapImage()
                 image = mmc.getImage()
                     
