@@ -289,9 +289,8 @@ def main() -> None:
                     _scan_type = "projection"
                     
                     # Calculate the the number of Y pixels for the scan range
-                    roi_height_um = _image_mirror_sweep_um
-                    roi_height_px = int((roi_height_um / mmc.getPixelSizeUm()) * np.cos(np.deg2rad(30)))
-                    # TODO: Verify the image stretch factor using SIMpatterns
+                    roi_height_um = _image_mirror_sweep_um # / np.cos(np.deg2rad(30))
+                    roi_height_px = int((roi_height_um / mmc.getPixelSizeUm()))
             
                     # Set the camera ROI to the image sweep range
                     if not(roi_height_px == mmc.getROI()[-1]): 
