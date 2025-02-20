@@ -100,7 +100,8 @@ def find_best_O3_focus_metric(
         mmc.snapImage()
         test_image = mmc.getImage()
         focus_metrics[i] = calculate_focus_metric(test_image)
-        if verbose: print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
+        if verbose: 
+            print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
         i = i+1
 
     # find best rough focus position

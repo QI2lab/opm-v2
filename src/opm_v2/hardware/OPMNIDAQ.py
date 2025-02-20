@@ -34,8 +34,10 @@ import PyDAQmx as daqmx
 import ctypes as ct
 import numpy as np
 from typing import Sequence
+import warnings
 
-
+# Suppress the specific warning
+warnings.filterwarnings("ignore", category=daqmx.DAQmxFunctions.StoppedBeforeDoneWarning)
 _instance_daq = None
 
 class OPMNIDAQ:
@@ -351,11 +353,23 @@ class OPMNIDAQ:
         # setup image galvo mirror
         self._image_mirror_min_volt = -(self._image_mirror_sweep_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
         self._image_axis_range_volts = self._image_mirror_sweep_um * self._image_mirror_calibration
-        self._image_scan_steps = np.rint(self._image_axis_range_volts / self._image_axis_step_volts) # galvo steps
+        self._image_scan_steps = int(np.rint(self._image_axis_range_volts / self._image_axis_step_volts)) # galvo steps
 
         # setup projection galvo mirror
         self._projection_scan_range_volts = self._image_mirror_sweep_um * self._projection_mirror_calibration
+        
+    @property
+    def n_scan_steps(self) -> int:
+        """Image mirror scan steps.
+        
+        Returns
+        -------
+        n_scan_steps: int
+            Number of scan steps for a mirror sweep.
             
+        """
+        
+        return int(getattr(self,"_image_scan_steps",None))
             
     @property
     def channel_states(self) -> Sequence:
@@ -432,19 +446,6 @@ class OPMNIDAQ:
             self.image_mirror_step_size_um = image_mirror_step_size_um
         if image_mirror_sweep_um:
             self.image_mirror_sweep_um = image_mirror_sweep_um
-        
-        # if self.scan_type is not None:
-        #     if channel_states:
-        #         self.channel_states = channel_states
-        #     if laser_blanking:
-        #         self.laser_blanking = laser_blanking
-        #     if exposure_ms:
-        #         self.exposure_ms = exposure_ms
-                
-        #     if self.scan_type == "mirror" or self.scan_type == "projection":
-        #         if image_mirror_step_size_um and image_mirror_sweep_um:
-        #             self.image_mirror_step_size_um = image_mirror_step_size_um
-        #             self.image_mirror_sweep_um = image_mirror_sweep_um
                 
     def reset(self):
         """Reset the device."""
@@ -628,7 +629,7 @@ class OPMNIDAQ:
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
             # Collect one frame for each scan position
-            n_voltage_steps = self._image_scan_steps
+            n_voltage_steps = int(self._image_scan_steps)
             self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
             self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
             
@@ -661,7 +662,8 @@ class OPMNIDAQ:
                 _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(scan_mirror_volts[1:], np.ones(2 * self._n_active_channels))
             
             # set back to initial value at end
-            _ao_waveform[-1] = scan_mirror_volts[0]
+            _ao_waveform[-1,0] = scan_mirror_volts[0]
+            _ao_waveform[:,1] = self._ao_neutral_positions[1]
         
         elif self.scan_type == 'stage':
             """Only fire the active channel lasers,keep the mirrors in their neutral positions"""
@@ -793,6 +795,7 @@ class OPMNIDAQ:
                     ct.byref(samples_per_ch_ct), 
                     None
                 )
+                _task.StartTask()
                 _task.StopTask()
                 _task.ClearTask()
                 

@@ -110,3 +110,8 @@ ENV/
 .vscode/
 .idea/
 src/opm_v2/test_seq_events.py
+positions.json
+settings.yaml
+src/opm_v2/PiUsb.dll
+src/opm_v2/PiUsbNet.dll
+src/opm_v2/PiUsbNet.xml
