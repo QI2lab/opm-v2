@@ -39,7 +39,6 @@ class OPMENGINE(MDAEngine):
         (The sequence object needn't be used here if not necessary)
         """
 
-        print(sequence)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -60,7 +59,8 @@ class OPMENGINE(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 opmDAQ_setup.stop_waveform_playback()
-                opmDAQ_setup.clear_tasks()               
+                opmDAQ_setup.clear_tasks()
+                opmDAQ_setup.reset()               
                 self._mmc.clearROI()
                 self._mmc.waitForDevice("OrcaFusionBT")
                 self._mmc.setROI(
@@ -256,8 +256,18 @@ class OPMENGINE(MDAEngine):
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
 
+        super().teardown_sequence(sequence)
+        
+        # Shut down DAQ
         opmDAQ_teardown = OPMNIDAQ.instance()
         opmDAQ_teardown.stop_waveform_playback()
         opmDAQ_teardown.clear_tasks()
-
-        super().teardown_sequence(sequence)
+        opmDAQ_teardown.reset()
+        
+        # Set all lasers to zero emission
+        for laser in config["Lasers"]["laser_names"]:
+            self._mmc.setProperty(
+                config["Lasers"]["name"],
+                laser + " - PowerSetpoint (%)",
+                0.0
+            )
