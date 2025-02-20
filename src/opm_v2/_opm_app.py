@@ -677,6 +677,8 @@ def main() -> None:
                
         if AO_mode == "Optimize-now":
             opm_events.append(AO_event)
+            mda_widget._mmc.run_mda(opm_events, output=None)
+            return
             
         #--------------------------------------------------------------------#
         # Create MDAevents for time and positions
