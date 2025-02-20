@@ -160,6 +160,7 @@ def main() -> None:
     )
     
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
+    opmPicardShutter.closeShutter()
     
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
@@ -382,7 +383,7 @@ def main() -> None:
     mmc.events.configSet.connect(update_state)
     
     # grab handle to the Stage widget
-    stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
+    # stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
 
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
@@ -490,7 +491,7 @@ def main() -> None:
                     config["Lasers"]["laser_names"][ch_idx] + " - PowerSetpoint (%)"
                     )
                 )
-        active_channel_ids = [_ch for _, _ch in zip(active_channels, config["OPM"]["channel_ids"]) if _]
+
         active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
 
         # TODO need to understand the interleave logic

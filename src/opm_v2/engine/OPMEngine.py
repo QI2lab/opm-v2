@@ -1,4 +1,4 @@
-"""OPM py_mmcore-plus MDA Engine
+"""OPM pymmcore-plus MDA Engine
 
 TO DO: Fix init so we only have one instance of OPMNIDAQ, OPMAOMIRROR, and config is not global.
 
