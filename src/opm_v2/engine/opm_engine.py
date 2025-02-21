@@ -25,20 +25,24 @@ import json
 from pathlib import Path
 import numpy as np
 
-
 config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218.json")
 with open(config_path, "r") as config_file:
     config = json.load(config_file)
 
 class OPMEngine(MDAEngine):
-   
+    def __init__(self, mmc, use_hardware_sequencing: bool = True) -> None:
+        # Call parent __init__
+        super().__init__(mmc, use_hardware_sequencing)
+        # Save the unique device control instances once, so that each method can use them.
+        self.opmDAQ = OPMNIDAQ.instance()
+        self.AOMirror = AOMirror.instance()
+
     def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
         """Setup state of system (hardware, etc.) before an MDA is run.
 
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
-
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -49,19 +53,16 @@ class OPMEngine(MDAEngine):
         The engine should be in a state where it can call `exec_event`
         without any additional preparation.
         """
-
-        opmDAQ_setup = OPMNIDAQ.instance()
-
-        if isinstance(event.action,CustomAction):
-
+        # Use the stored opmDAQ instance instead of fetching a singleton every time.
+        if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
                 # Stop DAQ playback and clear 
-                opmDAQ_setup.stop_waveform_playback()
-                opmDAQ_setup.clear_tasks()
-                opmDAQ_setup.reset()               
+                self.opmDAQ.stop_waveform_playback()
+                self.opmDAQ.clear_tasks()
+                self.opmDAQ.reset()               
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -79,7 +80,6 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
-                
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 self._mmc.setXYPosition(
@@ -94,8 +94,8 @@ class OPMEngine(MDAEngine):
                     print("load AO-projection\n")
                     pass
                 else:
-                    opmDAQ_setup.stop_waveform_playback()
-                    opmDAQ_setup.clear_tasks()
+                    self.opmDAQ.stop_waveform_playback()
+                    self.opmDAQ.clear_tasks()
                     
                     self._mmc.clearROI()
                     self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
@@ -111,24 +111,10 @@ class OPMEngine(MDAEngine):
                         np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                     )
                     self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["active_channels"]):
-                        if chan_bool:
-                            self._mmc.setProperty(
-                                config["Lasers"]["name"],
-                                str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                                float(data_dict["AO"]["laser_power"][chan_idx])
-                            )
-                        else:
-                            self._mmc.setProperty(
-                                config["Lasers"]["name"],
-                                str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                                0.0
-                            )
-                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
             
             elif "DAQ" in action_name:
-                opmDAQ_setup.stop_waveform_playback()
-                opmDAQ_setup.clear_tasks()
+                self.opmDAQ.stop_waveform_playback()
+                self.opmDAQ.clear_tasks()
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -158,7 +144,7 @@ class OPMEngine(MDAEngine):
                     "Exposure", 
                     exposure_ms
                 )
-                opmDAQ_setup.set_acquisition_params(
+                self.opmDAQ.set_acquisition_params(
                     scan_type = str(data_dict["DAQ"]["mode"]),
                     channel_states = data_dict["DAQ"]["active_channels"],
                     image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
@@ -179,11 +165,7 @@ class OPMEngine(MDAEngine):
         executing the event. The default assumption is to acquire an image,
         but more elaborate events will be possible.
         """
-
-        opmDAQ_exec = OPMNIDAQ.instance()
-        opmAOmirror_exec = AOMirror.instance()
-
-        if isinstance(event.action,CustomAction):
+        if isinstance(event.action, CustomAction):
    
             action_name = event.action.name
             data_dict = event.action.data
@@ -192,10 +174,10 @@ class OPMEngine(MDAEngine):
                 manage_O3_focus(config["O2O3-autofocus"]["O3_stage_name"])
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:
-                    wfc_positions_to_use = opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
-                    opmAOmirror_exec.set_mirror_positions(wfc_positions_to_use)
+                    wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
-                    opmAOmirror_exec.output_path = data_dict["AO"]["output_path"]
+                    self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
                         image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
@@ -204,11 +186,11 @@ class OPMEngine(MDAEngine):
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         verbose=True
                     )
-                    opmAOmirror_exec.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = opmAOmirror_exec.current_positions.copy()
+                    self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
             elif "DAQ" in action_name:
-                opmDAQ_exec.generate_waveforms()
-                opmDAQ_exec.prepare_waveform_playback()
-                opmDAQ_exec.start_waveform_playback()
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.prepare_waveform_playback()
+                self.opmDAQ.start_waveform_playback()
             # elif action_name == "Fluidics":
             #     print(action_name)
         else:
@@ -216,19 +198,15 @@ class OPMEngine(MDAEngine):
             return result
         
     def teardown_event(self, event):
-        
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
-
         super().teardown_sequence(sequence)
         
         # Shut down DAQ
-        print("in teardown sequence")
-        opmDAQ_teardown = OPMNIDAQ.instance()
-        opmDAQ_teardown.stop_waveform_playback()
-        opmDAQ_teardown.clear_tasks()
-        opmDAQ_teardown.reset()
+        self.opmDAQ.stop_waveform_playback()
+        self.opmDAQ.clear_tasks()
+        self.opmDAQ.reset()
         
         # Set all lasers to zero emission
         for laser in config["Lasers"]["laser_names"]:
@@ -238,5 +216,4 @@ class OPMEngine(MDAEngine):
                 0.0
             )
             
-        opmAOmirror_teardown = AOMirror.instance()
-        opmAOmirror_teardown.save_acq_positions()
+        self.AOMirror.save_acq_positions()
