@@ -34,7 +34,9 @@ from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.hardware.PicardShutter import PicardShutter
 from opm_v2.engine.OPMEngine import OPMENGINE
+from opm_v2.handlers.OPMMirrorHandler import OPMMirrorHandler
 from pymmcore_plus.mda.handlers import TensorStoreHandler
+
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -810,8 +812,31 @@ def main() -> None:
         # elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
         #     print("Thick 22bit fluidics")
 
-        handler = TensorStoreHandler(path= Path(output) / Path("data.zarr"), delete_existing=True)
+
+        # Check if path ends if .zarr. If so, use our OutputHandler
+        if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
+            # Create dictionary of maximum axes sizes.
+            indice_sizes = {
+                't' : np.max(1,n_time_steps),
+                'p' : np.max(1,n_stage_pos),
+                'c' : np.max(1,n_active_channels),
+                'z' : np.max(1,n_scan_steps)
+            }
+
+            # Setup modified tensorstore handler
+            handler = OPMMirrorHandler(
+                path=Path(output),
+                indice_sizes=indice_sizes,
+                delete_existing=True
+            )
+        # If not, use built-in handler based on suffix
+        else:
+            handler = output.copy()
+
+        # run MDA with our event structure and modified tensorstore handler 
         mda_widget._mmc.run_mda(opm_events, output=handler)
+
+        # tell AO mirror class where to save mirror information
         opmAOmirror_local.savepath = output # save path here pass path
 
     # modify the method on the instance
