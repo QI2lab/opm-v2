@@ -845,7 +845,7 @@ def main() -> None:
     mda_widget.execute_mda = custom_execute_mda
 
     # Register the custom OPM MDA engine with mmc
-    mmc.mda.set_engine(OPMEngine(mmc))
+    mmc.mda.set_engine(OPMEngine(mmc,config_path))
 
     # This section sets up a callback to intercept the preview mode 
     # and setup the OPM accordingly.

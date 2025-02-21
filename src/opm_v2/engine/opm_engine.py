@@ -25,17 +25,18 @@ import json
 from pathlib import Path
 import numpy as np
 
-config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218.json")
-with open(config_path, "r") as config_file:
-    config = json.load(config_file)
+
 
 class OPMEngine(MDAEngine):
-    def __init__(self, mmc, use_hardware_sequencing: bool = True) -> None:
-        # Call parent __init__
+    def __init__(self, mmc, config_path: Path, use_hardware_sequencing: bool = True) -> None:
+
         super().__init__(mmc, use_hardware_sequencing)
-        # Save the unique device control instances once, so that each method can use them.
+
         self.opmDAQ = OPMNIDAQ.instance()
         self.AOMirror = AOMirror.instance()
+
+        with open(config_path, "r") as config_file:
+            self._config = json.load(config_file)
 
     def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
         """Setup state of system (hardware, etc.) before an MDA is run.
@@ -53,7 +54,6 @@ class OPMEngine(MDAEngine):
         The engine should be in a state where it can call `exec_event`
         without any additional preparation.
         """
-        # Use the stored opmDAQ instance instead of fetching a singleton every time.
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
@@ -64,20 +64,20 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.clear_tasks()
                 self.opmDAQ.reset()               
                 self._mmc.clearROI()
-                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
                     data_dict["Camera"]["camera_crop"][0],
                     data_dict["Camera"]["camera_crop"][1],
                     data_dict["Camera"]["camera_crop"][2],
                     data_dict["Camera"]["camera_crop"][3],
                 )
-                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setProperty(
-                    str(config["Camera"]["camera_id"]), 
+                    str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
                     np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                 )
-                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
@@ -98,7 +98,7 @@ class OPMEngine(MDAEngine):
                     self.opmDAQ.clear_tasks()
                     
                     self._mmc.clearROI()
-                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                     self._mmc.setROI(
                         data_dict["Camera"]["camera_crop"][0],
                         data_dict["Camera"]["camera_crop"][1],
@@ -106,41 +106,41 @@ class OPMEngine(MDAEngine):
                         data_dict["Camera"]["camera_crop"][3],
                     )
                     self._mmc.setProperty(
-                        str(config["Camera"]["camera_id"]), 
+                        str(self._config["Camera"]["camera_id"]), 
                         "Exposure", 
                         np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                     )
-                    self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
             
             elif "DAQ" in action_name:
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
                 self._mmc.clearROI()
-                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
                     data_dict["Camera"]["camera_crop"][0],
                     data_dict["Camera"]["camera_crop"][1],
                     data_dict["Camera"]["camera_crop"][2],
                     data_dict["Camera"]["camera_crop"][3],
                 )
-                self._mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
                 for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
                     if chan_bool:
                         self._mmc.setProperty(
-                            config["Lasers"]["name"],
-                            str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                             float(data_dict["DAQ"]["laser_powers"][chan_idx])
                         )
                         exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),0)
                     else:
                         self._mmc.setProperty(
-                            config["Lasers"]["name"],
-                            str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                             0.0
                         )
                 self._mmc.setProperty(
-                    str(config["Camera"]["camera_id"]), 
+                    str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
                     exposure_ms
                 )
@@ -171,7 +171,7 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                manage_O3_focus(config["O2O3-autofocus"]["O3_stage_name"])
+                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"])
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
@@ -209,9 +209,9 @@ class OPMEngine(MDAEngine):
         self.opmDAQ.reset()
         
         # Set all lasers to zero emission
-        for laser in config["Lasers"]["laser_names"]:
+        for laser in self._config["Lasers"]["laser_names"]:
             self._mmc.setProperty(
-                config["Lasers"]["name"],
+                self._config["Lasers"]["name"],
                 laser + " - PowerSetpoint (%)",
                 0.0
             )
