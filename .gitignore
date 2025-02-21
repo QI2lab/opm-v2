@@ -116,3 +116,4 @@ src/opm_v2/PiUsb.dll
 src/opm_v2/PiUsbNet.dll
 src/opm_v2/PiUsbNet.xml
 tests/test_tensorstore.py
+tests/test_MDAwidget.py

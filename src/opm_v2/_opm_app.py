@@ -399,7 +399,48 @@ def main() -> None:
         
         # extract the relevant portions for qi2lab-OPM
         # Stage positions
-        stage_positions = sequence_dict["stage_positions"]
+        # Extract stage positions from either (1) list of stage positions or (2) grid plan
+        # For grid plan to work correctly, the microscope pixel size needs to be set
+        mda_stage_positions = sequence_dict["stage_positions"]
+        if mda_stage_positions is not None:
+            if len(mda_stage_positions) == 1:
+                grid_plan = sequence_dict["grid_plan"]
+                if grid_plan is not None:
+                    stage_positions = []
+                    for event in sequence:
+                        json_event = json.loads(event.model_dump_json())
+                        stage_positions.append({
+                            'x': float(json_event['x_pos']),
+                            'y': float(json_event['y_pos']),
+                            'z': float(json_event['z_pos'])
+                        })
+                else:
+                    stage_positions = [{
+                        'x': mda_widget._mmc.getXPosition(),
+                        'y': mda_widget._mmc.getYPosition(),
+                        'z': mda_widget._mmc.getPosition(),
+                    }]
+            else:
+                stage_positions = []
+                for stage_pos in mda_stage_positions:
+                    stage_positions.append({
+                                'x': float(stage_pos['x']),
+                                'y': float(stage_pos['y']),
+                                'z': float(stage_pos['z'])
+                            })
+        else:
+            grid_plan = sequence_dict["grid_plan"]
+            if grid_plan is not None:
+                stage_positions = []
+                for event in sequence:
+                    json_event = json.loads(event.model_dump_json())
+                    stage_positions.append({
+                        'x': float(json_event['x_pos']),
+                        'y': float(json_event['y_pos']),
+                        'z': float(json_event['z_pos'])
+                    })
+            else:
+                return
         n_stage_pos = len(stage_positions)
         opmAOmirror_local.n_positions = n_stage_pos
         
