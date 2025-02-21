@@ -360,7 +360,6 @@ class OPMMirrorHandler:
                 for k, v in self._frame_indices.items()
             ]
         
-
         if self.ts_driver.startswith("zarr"):
             store.kvstore.write(".zattrs", json_dumps(metadata).decode("utf-8")).result()
         elif self.ts_driver == "n5":  # pragma: no cover

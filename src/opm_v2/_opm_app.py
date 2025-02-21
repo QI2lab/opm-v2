@@ -440,6 +440,7 @@ def main() -> None:
                 )
 
         n_active_channels = sum(active_channels)
+        active_channel_names = [_exp for _, _exp in zip(active_channels, channels) if _]
         active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
         
         # Interleave only available if all channels have the same exposure.
@@ -722,6 +723,7 @@ def main() -> None:
                                         "interleaved" : interleaved_acq,
                                         "laser_powers" : laser_powers,
                                         "blanking" : laser_blanking,
+                                        "current_channel" : active_channel_names[chan_idx]
                                     },
                                     "Camera" : {
                                         "exposure_ms" : float(exposure_channels[chan_idx]),
@@ -775,6 +777,7 @@ def main() -> None:
                                             "interleaved" : interleaved_acq,
                                             "laser_powers" : laser_powers,
                                             "blanking" : laser_blanking,
+                                            "current_channel" : channels[chan_idx]
                                         },
                                         "Camera" : {
                                             "exposure_ms" : exposure_channels[chan_idx],
