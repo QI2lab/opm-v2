@@ -30,7 +30,7 @@ config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218
 with open(config_path, "r") as config_file:
     config = json.load(config_file)
 
-class OPMENGINE(MDAEngine):
+class OPMEngine(MDAEngine):
    
     def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
         """Setup state of system (hardware, etc.) before an MDA is run.

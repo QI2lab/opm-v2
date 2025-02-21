@@ -33,9 +33,8 @@ from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.hardware.PicardShutter import PicardShutter
-from opm_v2.engine.OPMEngine import OPMENGINE
-from opm_v2.handlers.OPMMirrorHandler import OPMMirrorHandler
-from pymmcore_plus.mda.handlers import TensorStoreHandler
+from opm_v2.engine.opm_engine import OPMEngine
+from opm_v2.handlers.opm_mirror_handler import OPMMirrorHandler
 
 
 if TYPE_CHECKING:
@@ -846,7 +845,7 @@ def main() -> None:
     mda_widget.execute_mda = custom_execute_mda
 
     # Register the custom OPM MDA engine with mmc
-    mmc.mda.set_engine(OPMENGINE(mmc))
+    mmc.mda.set_engine(OPMEngine(mmc))
 
     # This section sets up a callback to intercept the preview mode 
     # and setup the OPM accordingly.
