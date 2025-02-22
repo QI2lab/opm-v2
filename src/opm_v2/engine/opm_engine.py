@@ -217,7 +217,6 @@ class OPMEngine(MDAEngine):
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
-        super().teardown_sequence(sequence)
         
         # Shut down DAQ
         self.opmDAQ.stop_waveform_playback()
@@ -233,3 +232,5 @@ class OPMEngine(MDAEngine):
             )
             
         self.AOMirror.save_acq_positions()
+
+        super().teardown_sequence(sequence)

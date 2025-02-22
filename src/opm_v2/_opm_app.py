@@ -903,7 +903,7 @@ def main() -> None:
         mda_widget._mmc.run_mda(opm_events, output=handler)
 
         # tell AO mirror class where to save mirror information
-        opmAOmirror_local.savepath = output # save path here pass path
+        opmAOmirror_local.output_path = output.parents[0]
 
     # modify the method on the instance
     mda_widget.execute_mda = custom_execute_mda
