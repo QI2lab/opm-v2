@@ -360,6 +360,20 @@ def main() -> None:
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
         image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
         
+        # try to get camera conversion factor information
+        try:
+            offset = mmc.getProperty(
+                config["Camera"]["camera_id"],
+                "CONVERSION FACTOR OFFSET"
+            )
+            e_to_ADU = mmc.getProperty(
+                config["Camera"]["camera_id"],
+                "CONVERSION FACTOR COEFF"
+            )
+        except Exception:
+            offset = 0.
+            e_to_ADU = 1.
+
         # use OPMNIDAQ class calculation for number of scan steps to ensure consistency
         opmNIDAQ_custom.set_acquisition_params(
             scan_type="mirror",
@@ -766,18 +780,21 @@ def main() -> None:
                                         "interleaved" : interleaved_acq,
                                         "laser_powers" : laser_powers,
                                         "blanking" : laser_blanking,
-                                        # "current_channel" : active_channel_names[chan_idx]
+                                        "current_channel" : active_channel_names[chan_idx]
                                     },
                                     "Camera" : {
                                         "exposure_ms" : float(exposure_channels[chan_idx]),
                                         "camera_center_x" : updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
                                         "camera_center_y" : updated_config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
                                         "camera_crop_x" : updated_config["Camera"]["camera_crop_x"],
-                                        "camera_crop_y" : int(camera_crop_y)
+                                        "camera_crop_y" : int(camera_crop_y),
+                                        "offset" : float(offset),
+                                        "e_to_ADU": float(e_to_ADU)
                                     },
                                     "OPM" : {
                                         "angle_deg" : float(updated_config["OPM"]["angle_deg"]),
-                                        "camera_stage_orientation" : str(updated_config["OPM"]["camera_stage_orientation"]),
+                                        "camera_Zstage_orientation" : str(updated_config["OPM"]["camera_Zstage_orientation"]),
+                                        "camera_XYstage_orientation" : str(updated_config["OPM"]["camera_XYstage_orientation"]),
                                         "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"])
                                     },
                                     "Stage" : {
@@ -820,18 +837,21 @@ def main() -> None:
                                             "interleaved" : interleaved_acq,
                                             "laser_powers" : laser_powers,
                                             "blanking" : laser_blanking,
-                                            # "current_channel" : channels[chan_idx] # needs
+                                            "current_channel" : updated_config["OPM"]["channel_ids"][chan_idx]
                                         },
                                         "Camera" : {
                                             "exposure_ms" : exposure_channels[chan_idx],
                                             "camera_center_x" : updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
                                             "camera_center_y" : updated_config["Camera"]["camera_center_y"] - int(camera_crop_y//2),
                                             "camera_crop_x" : updated_config["Camera"]["camera_crop_x"],
-                                            "camera_crop_y" : int(camera_crop_y)
+                                            "camera_crop_y" : int(camera_crop_y),
+                                            "offset" : float(offset),
+                                            "e_to_ADU": float(e_to_ADU)
                                         },
                                         "OPM" : {
                                             "angle_deg" : float(updated_config["OPM"]["angle_deg"]),
-                                            "camera_stage_orientation" : str(updated_config["OPM"]["camera_stage_orientation"]),
+                                            "camera_Zstage_orientation" : str(updated_config["OPM"]["camera_Zstage_orientation"]),
+                                            "camera_XYstage_orientation" : str(updated_config["OPM"]["camera_XYstage_orientation"]),
                                             "camera_mirror_orientation" : str(updated_config["OPM"]["camera_mirror_orientation"])
                                         },
                                         "Stage" : {

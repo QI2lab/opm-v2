@@ -69,7 +69,8 @@
     },
     "OPM": {
         "angle_deg": 30.0,
-        "camera_stage_orientation": "positive",
+        "camera_Zstage_orientation": "negative",
+        "camera_XYstage_orientation": "positive",
         "camera_mirror_orientation": "positive",
         "channel_ids": [
             "405nm",

@@ -117,3 +117,7 @@ src/opm_v2/PiUsbNet.dll
 src/opm_v2/PiUsbNet.xml
 tests/test_tensorstore.py
 tests/test_MDAwidget.py
+src/opm_v2/processing/deskew.py
+src/opm_v2/processing/imageprocessing.py
+src/opm_v2/processing/petakit_deconvolution.py
+src/opm_v2/processing/qi2lab_opm_processing.py
