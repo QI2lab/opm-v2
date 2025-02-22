@@ -6,7 +6,7 @@ Change Log:
 2025/02: Initial version of the script.
 """
 from __future__ import annotations
-
+# TODO AO getting values from gui instead of json.
 import argparse
 import importlib
 import importlib.util
@@ -16,6 +16,7 @@ import traceback
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
+from datetime import datetime
 
 from PyQt6.QtCore import pyqtSignal
 from PyQt6.QtGui import QIcon
@@ -151,7 +152,6 @@ def main() -> None:
         verbose = bool(config["NIDAQ"]["verbose"])
     )
     opmNIDAQ.reset()
-
 
     # Initialize ElveFlow OB1 Controller
     opmOB1 = OB1Controller(
@@ -578,17 +578,20 @@ def main() -> None:
         #--------------------------------------------------------------------#
         # Create CustomAction events for running AO optimization
         #--------------------------------------------------------------------#
+        now = datetime.now()
+        timestamp = f"{now.year:4d}{now.month:2d}{now.day:2d}_{now.hour:2d}{now.minute:2d}{now.second:2d}"
         
         # setup AO using values in config.json
         if not(AO_mode == "Optimize-now"):
             AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
             AO_active_channels = list(map(bool,updated_config["AO-projection"]["active_channels"]))
             AO_laser_powers = list(float(_) for _ in updated_config["AO-projection"]["laser_power"])
-            AO_camera_crop_y = int(updated_config["AO-projection"]["camera_crop_y"])
+            AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
             AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
             AO_image_mirror_step_um = float(updated_config["AO-projection"]["image_mirror_step_um"])
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimizeNOW")
         
         # setup AO using values in GUI
         else:
@@ -601,6 +604,7 @@ def main() -> None:
             AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um)) # This value will be determined
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
         
             # Set the active channel 
             for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
@@ -624,7 +628,6 @@ def main() -> None:
             with open(config_path, "w") as file:
                 json.dump(updated_config, file, indent=4)
         
-        print(f"output: {output}")
         # Create AO event
         AO_event = MDAEvent(
             exposure = AO_exposure_ms,
@@ -634,7 +637,7 @@ def main() -> None:
                     "AO" : {
                         "opm_mode": str("projection"),
                         "active_channels": AO_active_channels,
-                        "laser_power" : AO_laser_powers,
+                        "laser_powers" : AO_laser_powers,
                         "mode": AO_metric,
                         "iterations": AO_iterations,
                         "image_mirror_step_um" : AO_image_mirror_step_um,
@@ -642,7 +645,7 @@ def main() -> None:
                         "blanking": bool(True),
                         "apply_existing": bool(False),
                         "pos_idx":int(0),
-                        "output_path":Path(output)
+                        "output_path":AO_save_path
                     },
                     "Camera" : {
                         "exposure_ms": AO_exposure_ms,
@@ -763,7 +766,7 @@ def main() -> None:
                                         "interleaved" : interleaved_acq,
                                         "laser_powers" : laser_powers,
                                         "blanking" : laser_blanking,
-                                        "current_channel" : active_channel_names[chan_idx]
+                                        # "current_channel" : active_channel_names[chan_idx]
                                     },
                                     "Camera" : {
                                         "exposure_ms" : float(exposure_channels[chan_idx]),
@@ -817,7 +820,7 @@ def main() -> None:
                                             "interleaved" : interleaved_acq,
                                             "laser_powers" : laser_powers,
                                             "blanking" : laser_blanking,
-                                            "current_channel" : channels[chan_idx]
+                                            # "current_channel" : channels[chan_idx] # needs
                                         },
                                         "Camera" : {
                                             "exposure_ms" : exposure_channels[chan_idx],
@@ -860,10 +863,10 @@ def main() -> None:
         if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
             # Create dictionary of maximum axes sizes.
             indice_sizes = {
-                't' : np.max(1,n_time_steps),
-                'p' : np.max(1,n_stage_pos),
-                'c' : np.max(1,n_active_channels),
-                'z' : np.max(1,n_scan_steps)
+                't' : int(np.maximum(1,n_time_steps)),
+                'p' : int(np.maximum(1,n_stage_pos)),
+                'c' : int(np.maximum(1,n_active_channels)),
+                'z' : int(np.maximum(1,n_scan_steps))
             }
 
             # Setup modified tensorstore handler

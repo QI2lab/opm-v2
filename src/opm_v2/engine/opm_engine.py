@@ -111,6 +111,20 @@ class OPMEngine(MDAEngine):
                         np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    
+                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["active_channels"]):
+                        if chan_bool:
+                            self._mmc.setProperty(
+                                self._config["Lasers"]["name"],
+                                str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                                float(data_dict["AO"]["laser_powers"][chan_idx])
+                            )
+                        else:
+                            self._mmc.setProperty(
+                                self._config["Lasers"]["name"],
+                                str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                                0.0
+                            )
             
             elif "DAQ" in action_name:
                 self.opmDAQ.stop_waveform_playback()
@@ -172,6 +186,7 @@ class OPMEngine(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"])
+                
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
@@ -184,6 +199,7 @@ class OPMEngine(MDAEngine):
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["active_channels"],
                         num_iterations=int(data_dict["AO"]["iterations"]),
+                        save_dir_path=data_dict["AO"]["output_path"],
                         verbose=True
                     )
                     self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()

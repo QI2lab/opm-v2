@@ -18,7 +18,49 @@ from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
 from pathlib import Path
 from tifffile import imwrite
-    
+import zarr
+
+mode_names = [
+            "Vert. Tilt",
+            "Horz. Tilt",
+            "Defocus",
+            "Vert. Asm.",
+            "Oblq. Asm.",
+            "Vert. Coma",
+            "Horz. Coma",
+            "3rd Spherical",
+            "Vert. Tre.",
+            "Horz. Tre.",
+            "Vert. 5th Asm.",
+            "Oblq. 5th Asm.",
+            "Vert. 5th Coma",
+            "Horz. 5th Coma",
+            "5th Spherical",
+            "Vert. Tetra.",
+            "Oblq. Tetra.",
+            "Vert. 7th Tre.",
+            "Horz. 7th Tre.",
+            "Vert. 7th Asm.",
+            "Oblq. 7th Asm.",
+            "Vert. 7th Coma",
+            "Horz. 7th Coma",
+            "7th Spherical",
+            "Vert. Penta.",
+            "Horz. Penta.",
+            "Vert. 9th Tetra.",
+            "Oblq. 9th Tetra.",
+            "Vert. 9th Tre.",
+            "Horz. 9th Tre.",
+            "Vert. 9th Asm.",
+            "Oblq. 9th Asm.",
+        ]
+
+
+#-------------------------------------------------#
+# AO optimization
+#-------------------------------------------------#
+
+
 def run_ao_optimization(
     image_mirror_step_size_um: float,
     image_mirror_range_um: float,
@@ -28,11 +70,11 @@ def run_ao_optimization(
     shannon_psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
-    init_delta_range: Optional[float] = 0.300,
+    init_delta_range: Optional[float] = 0.400,
     delta_range_alpha_per_iter: Optional[float] = 0.5,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
-    save_results: Optional[bool] = False,
+    save_dir_path: Optional[Path] = None,
     verbose: Optional[bool] = True,
     ):
     
@@ -59,7 +101,8 @@ def run_ao_optimization(
     opmNIDAQ_local.generate_waveforms()
     opmNIDAQ_local.prepare_waveform_playback()
     
-    mmc.setProperty("OrcaFusionBT", "Exposure",float(exposure_ms))
+    # Re-enforce camera exposure
+    mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
     mmc.waitForDevice("OrcaFusionBT")
     
     #---------------------------------------------#
@@ -71,36 +114,47 @@ def run_ao_optimization(
     optimized_zern_modes = initial_zern_modes.copy() # Mode coeffs after running all iterations
 
     #----------------------------------------------
-    # TODO
-    save_path = None
-    save_results = True
-    display_images = True
-    if save_results:
-        optimal_metrics = []
-        optimal_coefficients = []
-        mode_images = []
-        iteration_images = []
+    # Setup saving of AO results
     #----------------------------------------------
     
-    
+    if save_dir_path:
+        if verbose:
+            print(f"Saving AO results at:\n  {save_dir_path}\n")
+        metrics_per_mode = [] # starting metric + optimal metric at the end of each mode
+        images_per_mode = [] # starting image + image at the end of each mode
+        mode_images = [] # all images acquired testing mode deltas
+        metrics_per_iteration = [] # n_iters nested list containing that iterations optimal metrics
+        coefficients_per_iteration = [] # starting coeffs + coeffs at the end of each iteration
+        images_per_iteration = [] # lit of n_iters + 1 images
+        
     #---------------------------------------------#
     # Start AO optimization
     #---------------------------------------------#   
+    
     if verbose:
         print(f"Starting A.O. optimization using {metric_to_use} metric")
     
-    
     # Snap an image and calculate the starting metric.
     opmNIDAQ_local.start_waveform_playback()
+    
+    print(mmc.getExposure())
     mmc.snapImage()
     starting_image = mmc.getImage()
-    imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
-
+    print(starting_image.max())
     starting_metric = metric_shannon_dct(
         image=starting_image,
         shannon_psf_radius_px=shannon_psf_radius_px,
         crop_size=None
-        )
+        )  
+    
+    # update saved results
+    if save_dir_path:
+        metrics_per_mode.append(starting_metric)
+        images_per_mode.append(starting_image)
+        coefficients_per_iteration.append(initial_zern_modes)
+        images_per_iteration.append(starting_image)
+        
+    imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
 
     # initialize delta range
     delta_range=init_delta_range
@@ -109,15 +163,20 @@ def run_ao_optimization(
     for k in range(num_iterations): 
         if k==0:       
             # initialize the optimal metric, only gets updated when a better metric is obtained.
-            optimal_metric = starting_metric 
-            if save_results:
-                iteration_images.append(starting_image)
-        
+            optimal_metric = starting_metric
+            image = starting_image
+            
+        if save_dir_path:
+            # initiate list of metrics for this iteration
+            iter_metrics = [optimal_metric]
+            
         # Iterate over modes to optimize
         for mode in modes_to_optimize:
             if verbose:
-                print(f"AO iteration: {k+1} / {num_iterations}")
-                print(f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}")
+                print(
+                    f"AO iteration: {k+1} / {num_iterations}",
+                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}\n"
+                    )
                 
             # Grab the current starting mode coeff for this iteration
             init_iter_zern_modes = aoMirror_local.current_coeffs.copy()
@@ -137,21 +196,15 @@ def run_ao_optimization(
                     # Force metric and image to zero
                     metric = 0
                     image = np.zeros_like(starting_image)
-                    
-                    if display_images:
-                        pass
-                    if save_results:
-                        mode_images.append(image)
-                        
+                                            
                 else:
                     """acquire projection image"""
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
-        
                     mmc.snapImage()
                     image = mmc.getImage()
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
-                    print(f"after image snap: {opmNIDAQ_local.running()}")
+                    
                     """Calculate metric."""
                     metric = metric_shannon_dct(
                         image=image,
@@ -166,7 +219,9 @@ def run_ao_optimization(
                         print(f"      Metric = {metric:.4f}")
                     
                 metrics.append(metric)
-            
+                if save_dir_path:
+                    mode_images.append(image)
+                    
             """After looping through all mirror pertubations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
@@ -204,7 +259,6 @@ def run_ao_optimization(
                     if verbose:
                         print(f"        Exception in fit occurred, optimal delta = {optimal_delta:.4f}")
 
-            
             #---------------------------------------------#
             # Test the new optimal mode coeff. to verify the metric improves
             #---------------------------------------------#   
@@ -220,7 +274,7 @@ def run_ao_optimization(
             else:
                 """acquire projection image"""
                 if not opmNIDAQ_local.running():
-                    opmNIDAQ_local.start_waveform_playback()
+                    opmNIDAQ_local.start_waveform_playback()          
                 mmc.snapImage()
                 image = mmc.getImage()
                     
@@ -250,16 +304,24 @@ def run_ao_optimization(
                             )
                     coeff_to_keep = init_iter_zern_modes[mode]
             
-            if save_results:
-                optimal_metrics.append(optimal_metric)
-                
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
             #---------------------------------------------# 
             active_zern_modes[mode] = coeff_to_keep
             _ = aoMirror_local.set_modal_coefficients(active_zern_modes)
-            """Loop back to top and do the next mode until all modes are done"""
             
+            if save_dir_path:
+                """acquire projection image"""
+                if not opmNIDAQ_local.running():
+                    opmNIDAQ_local.start_waveform_playback()
+                mmc.snapImage()
+                image = mmc.getImage()
+                
+                metrics_per_mode.append(optimal_metric)
+                images_per_mode.append(image)
+
+            
+            """Loop back to top and do the next mode until all modes are done"""
         #---------------------------------------------#
         # After all modes, reduce the delta range for the next iteration
         #---------------------------------------------# 
@@ -270,12 +332,13 @@ def run_ao_optimization(
                 f"  Current metric: {metric:.4f}"
                 )
         
-        if save_results: 
-            optimal_coefficients.append(aoMirror_local.current_coeffs.copy())
-            iteration_images.append(image)
+        if save_dir_path:
+            metrics_per_iteration.append(iter_metrics)
+            coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
+            images_per_iteration.append(image)
             
         """Loop back to top and do the next iteration"""
-    
+        
     #---------------------------------------------#
     # After all the iterations the mirror state will be optimized
     #---------------------------------------------# 
@@ -290,7 +353,36 @@ def run_ao_optimization(
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
     aoMirror_local.save_mirror_positions(name="opm_current_flat")
     opmNIDAQ_local.stop_waveform_playback()
-         
+    
+    if save_dir_path:
+        images_per_mode = np.asarray(images_per_mode)
+        metrics_per_mode = np.asarray(metrics_per_mode)
+        images_per_iteration = np.asarray(images_per_iteration)
+        metrics_per_iteration = np.asarray(metrics_per_iteration)
+        coefficients_per_iteration = np.asarray(coefficients_per_iteration)
+        mode_images = np.asarray(mode_images)
+        
+        # save and produce
+        save_optimization_results(
+            images_per_mode,
+            metrics_per_mode,
+            images_per_iteration,
+            metrics_per_iteration,
+            coefficients_per_iteration,
+            modes_to_optimize,
+            save_dir_path
+        )        
+        plot_zernike_coeffs(
+            coefficients_per_iteration,
+            mode_names,
+            save_dir_path=save_dir_path
+        )        
+        plot_metric_progress(
+            metrics_per_iteration,
+            modes_to_optimize,
+            mode_names,
+            save_dir_path
+        )
 
 
 #-------------------------------------------------#
@@ -299,7 +391,7 @@ def run_ao_optimization(
 
 def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
                         zernike_mode_names: ArrayLike,
-                        save_path: Optional[Path] = None,
+                        save_dir_path: Optional[Path] = None,
                         show_fig: Optional[bool] = False):
     """_summary_
 
@@ -307,7 +399,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     ----------
     optimal_coefficients : ArrayLike
         _description_
-    save_path : Path
+    save_dir_path : Path
         _description_
     showfig : bool
         _description_
@@ -347,26 +439,26 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     plt.tight_layout()
     if show_fig:
         plt.show()
-    if save_path:
-        fig.savefig(save_path)
+    if save_dir_path:
+        fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
 
-def plot_metric_progress(optimal_metrics: ArrayLike,
+def plot_metric_progress(metrics_per_iteration: ArrayLike,
                          modes_to_optimize: List[int],
                          zernike_mode_names: List[str],
-                         save_path: Optional[Path] = None,
+                         save_dir_path: Optional[Path] = None,
                          show_fig: Optional[bool] = False):
     """_summary_
 
     Parameters
     ----------
-    metrics : ArrayLike
-        _description_
+    metrics_per_iteration : ArrayLike
+        N_iter x N_modes array of the metric value per mode
     modes_to_optmize : List[int]
         _description_
     zernike_mode_names : List[str]
         _description_
-    save_path : Optional[Path], optional
+    save_dir_path : Optional[Path], optional
         _description_, by default None
     show_fig : Optional[bool], optional
         _description_, by default False
@@ -380,7 +472,7 @@ def plot_metric_progress(optimal_metrics: ArrayLike,
     markers = ['x', 'o', '^', 's', '*']
 
     # Loop over iterations and plot each series
-    for ii, series in enumerate(optimal_metrics):
+    for ii, series in enumerate(metrics_per_iteration):
         ax.plot(series, color=colors[ii], label=f"iteration {ii}", marker=markers[ii], linestyle="--", linewidth=1)
 
     # Set the x-axis to correspond to the modes_to_optimize
@@ -398,15 +490,15 @@ def plot_metric_progress(optimal_metrics: ArrayLike,
     
     if show_fig:
         plt.show()
-    if save_path:
-        fig.savefig(save_path)
+    if save_dir_path:
+        fig.savefig(save_dir_path / Path("ao_metrics.png"))
 
 
 def plot_2d_localization_fit_summary(
     fit_results,
     img,
     coords_2d,
-    save_path: Path = None,
+    save_dir_path: Path = None,
     showfig: bool = False
     ):
     """_summary_
@@ -419,7 +511,7 @@ def plot_2d_localization_fit_summary(
         _description_
     coords_2d : _type_
         _description_
-    save_path : Path, optional
+    save_dir_path : Path, optional
         _description_, by default None
     showfig : bool, optional
         _description_, by default False
@@ -519,8 +611,8 @@ def plot_2d_localization_fit_summary(
         plt.show()
     else:
         plt.close(figh_sum)
-    if save_path:
-        figh_sum.savefig(save_path, dpi=150)
+    if save_dir_path:
+        figh_sum.savefig(save_dir_path / Path("ao_localization_results.png"), dpi=150)
     
     figh_sum = None
     del figh_sum
@@ -1155,8 +1247,8 @@ def metric_gauss3d(
 def metric_shannon_dct(
     image: ArrayLike, 
     shannon_psf_radius_px: float = 3,
-    crop_size: Optional[int] = 501,
-    threshold: Optional[float] = 100,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = None,
     image_center: Optional[int] = None,
     return_image: Optional[bool] = False
     ) -> float:
@@ -1183,15 +1275,16 @@ def metric_shannon_dct(
         Shannon entropy metric.
     """
     # Crop image if necessary
-    if crop_size:
-        if image_center is None:
-            center = get_image_center(image, threshold)  # Ensure this function is defined
-        else:
-            center = image_center
-
+    if not crop_size:
+        crop_size = min(image.shape)-1
+        
+    if image_center is None:
+        center = get_image_center(image, threshold)  # Ensure this function is defined
+    else:
+        center = image_center
         # Crop image (ensure get_cropped_image is correctly implemented)
         image = get_cropped_image(image, crop_size, center)
-
+    
     # Compute the cutoff frequency based on OTF radius
     cutoff = otf_radius(image, shannon_psf_radius_px)
 
@@ -1244,52 +1337,78 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
 # Helper functions for saving optmization results
 #-------------------------------------------------#
 
-# def save_optimization_results(iteration_images: ArrayLike,
-#                               mode_delta_images: ArrayLike,
-#                               optimal_coefficients: ArrayLike,
-#                               optimal_metrics: ArrayLike,
-#                               modes_to_optimize: List[int],
-#                               results_save_path: Path):
-#     """_summary_
+def save_optimization_results(images_per_mode: ArrayLike,
+                              metrics_per_mode: ArrayLike,
+                              images_per_iteration: ArrayLike,
+                              metrics_per_iteration: ArrayLike,
+                              coefficients_per_iteration: ArrayLike,
+                              modes_to_optimize: List[int],
+                              save_dir_path: Path):
+    """_summary_
 
-#     Parameters
-#     ----------
-#     optimal_coefficients : ArrayLike
-#         _description_
-#     optimal_metrics : ArrayLike
-#         _description_
-#     modes_to_optimize : List[int]
-#         _description_
-#     results_save_path : Path
-#         _description_
-#     """
-#     with h5py.File(str(results_save_path), "w") as f:
-#                 f.create_dataset("optimal_images", data=iteration_images)
-#                 f.create_dataset("mode_delta_images", data=mode_delta_images)
-#                 f.create_dataset("optimal_coefficients", data=optimal_coefficients)
-#                 f.create_dataset("optimal_metrics", data=optimal_metrics)
-#                 f.create_dataset("modes_to_optimize", data=modes_to_optimize)
-#                 f.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"))
+    Parameters
+    ----------
+    images_per_mode : ArrayLike
+        _description_
+    metrics_per_mode : ArrayLike
+        _description_
+    images_per_iteration : ArrayLike
+        _description_
+    metrics_per_iteration : ArrayLike
+        _description_
+    coefficients_per_iteration : ArrayLike
+        _description_
+    modes_to_optimize : List[int]
+        _description_
+    save_dir_path : Path
+        _description_
+    """
+
+    # Create the Zarr directory if it doesn't exist
+    store = zarr.DirectoryStore(str(save_dir_path / Path("ao_results.zarr")))
+    root = zarr.group(store=store)
+
+    # Create datasets in the Zarr store
+    root.create_dataset("images_per_mode", data=images_per_mode, overwrite=True)
+    root.create_dataset("metrics_per_mode", data=metrics_per_mode, overwrite=True)
+    root.create_dataset("images_per_iteration", data=images_per_iteration, overwrite=True)
+    root.create_dataset("metrics_per_iteration", data=metrics_per_iteration, overwrite=True)
+    root.create_dataset("coefficients_per_iteration", data=coefficients_per_iteration, overwrite=True)
+    root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
+    root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True)
+
+
+def load_optimization_results(results_path: Path):
+    """Load optimization results from a Zarr store.
+
+    Parameters
+    ----------
+    results_path : Path
+        Path to the Zarr directory containing the data.
+    """
+    # Open the Zarr store
+    store = zarr.DirectoryStore(str(results_path))
+    results = zarr.open(store)
     
     
-# def load_optimization_results(results_path: Path):
-#     """_summary_
+    images_per_mode = results["images_per_mode"][:]
+    metrics_per_mode = results["metrics_per_mode"][:]
+    images_per_iteration = results["images_per_iteration"][:]
+    metrics_per_iteration = results["metrics_per_iteration"][:]
+    coefficients_per_iteration = results["coefficients_per_iteration"][:]
+    modes_to_optimize = results["modes_to_optimize"][:]
+    zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
 
-#     Parameters
-#     ----------
-#     results_path : Path
-#         _description_
-#     """
-#     # Load the mixed dictionary from HDF5
-#     with h5py.File(str(results_path), "r") as f:
-#         optimal_images = f["optimal_images"][:]
-#         mode_delta_images = f["mode_delta_images"][:]
-#         optimal_coefficients = f["optimal_coefficients"][:]
-#         optimal_metrics = f["optimal_metrics"][:]
-#         modes_to_optimize = f["modes_to_optimize"][:]
-#         zernike_mode_names = [name.decode("utf-8") for name in f["zernike_mode_names"][:]]
-
-#     return optimal_images, mode_delta_images, optimal_coefficients, optimal_metrics, modes_to_optimize, zernike_mode_names
+    ao_results = {
+        "images_per_mode":images_per_mode,
+        "metrics_per_mode":metrics_per_mode,
+        "metrics_per_iteration":metrics_per_iteration,
+        "images_per_iteration":images_per_iteration,
+        "coefficients_per_iteration":coefficients_per_iteration,
+        "modes_to_optimize":modes_to_optimize,
+        "mode_names":zernike_mode_names,
+    }
+    return ao_results
 
 
 #-------------------------------------------------#
