@@ -11,6 +11,8 @@ from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.utils.elveflow_control import run_fluidic_program
 from pymmcore_plus.metadata import (
     FrameMetaV1,
     PropertyValue,
@@ -168,7 +170,9 @@ class OPMEngine(MDAEngine):
                 )
                 
             elif action_name == "Fluidics":
+                # Nothing to prep, the user should have already confirmed its ready to go.
                 print(action_name)
+                
         else:
             super().setup_event(event)
                                         
@@ -207,8 +211,10 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.prepare_waveform_playback()
                 self.opmDAQ.start_waveform_playback()
-            # elif action_name == "Fluidics":
-            #     print(action_name)
+            elif action_name == "Fluidics":
+                print(action_name)
+                run_fluidic_program()
+                
         else:
             result = super().exec_event(event)
             return result

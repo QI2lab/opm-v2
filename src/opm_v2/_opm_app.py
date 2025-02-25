@@ -160,6 +160,7 @@ def main() -> None:
         from_OB1_pin=config["OB1"]["from_OB1_pin"]
     )
     
+    # Initialize and close alignment laser shutter
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
     opmPicardShutter.closeShutter()
     
@@ -282,7 +283,7 @@ def main() -> None:
             #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
             #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 
-            # Crop the chip down to determined size
+            # Crop the chip down to gui size
             if not (gui_camera_crop_y == mmc.getROI()[-1]): 
                 current_roi = mmc.getROI()
                 print(current_roi)
@@ -406,6 +407,23 @@ def main() -> None:
             O2O3_mode = "After-30min"
         elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
             O2O3_mode = "None"
+
+        # check fluidics mode
+        if "None" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "None"
+            print("No fluidics")
+        elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thin_16bit"
+            print("Thin 16bit fluidics")
+        elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thin_22bit"
+            print("Thin 22bit fluidics")
+        elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thick_16bit"
+            print("Thick 16bit fluidics")
+        elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thick_22bit"
+            print("Thick 22bit fluidics")
 
         # Get the current MDAsequence and convert to dictionary 
         sequence = mda_widget.value()
@@ -673,13 +691,46 @@ def main() -> None:
                 }
             )
         )
-            
+         
+        #--------------------------------------------------------------------#
+        # Create CustomAction Fluidics program
+        #--------------------------------------------------------------------#
+
+        # Create Fluidics program event
+        FP_event = MDAEvent(
+            # exposure = AO_exposure_ms,
+            action=CustomAction(
+                name="FluidicsProgram",
+                data = {
+                    "Fluidics" : {
+                        "wait_time" : float(15)
+                    }
+                    }
+            )
+        )
+        
         #--------------------------------------------------------------------#
         # Create event structure
         #--------------------------------------------------------------------#
         
         opm_events: list[MDAEvent] = []
         
+        if not FP_mode=="None":
+            opm_events.append(FP_event)
+            # load dialog to interupt user.
+            from PyQt6.QtWidgets import QMessageBox
+            # this blocks the main thread until the dialog is closed
+            response = QMessageBox.information(
+                mda_widget,  # parent
+                'title',
+                'Proceed?',
+                QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
+            )
+
+            #  `response` is which button was clicked
+            if response is not QMessageBox.StandardButton.Ok:
+                return
+            
         # run O2-O3 autofocus if only initially
         if O2O3_mode=="Initial-only":
             # opm_events.append(MDAEvent(**O2O3_event.model_dump()))
@@ -689,7 +740,7 @@ def main() -> None:
             opm_events.append(AO_event)
             mda_widget._mmc.run_mda(opm_events, output=None)
             return
-            
+
         #--------------------------------------------------------------------#
         # Create MDAevents for time and positions
         #--------------------------------------------------------------------#
@@ -865,18 +916,6 @@ def main() -> None:
 
         # elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
         #     print("stage mode")
-
-        # # check fluidics mode
-        # if "None" in mmc.getProperty("Fluidics-mode", "Label"):
-        #     print("No fluidics")
-        # elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-        #     print("Thin 16bit fluidics")
-        # elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
-        #     print("Thin 22bit fluidics")
-        # elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-        #     print("Thick 16bit fluidics")
-        # elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
-        #     print("Thick 22bit fluidics")
 
 
         # Check if path ends if .zarr. If so, use our OutputHandler
