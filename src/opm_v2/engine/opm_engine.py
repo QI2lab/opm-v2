@@ -213,7 +213,7 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.start_waveform_playback()
             elif action_name == "Fluidics":
                 print(action_name)
-                run_fluidic_program()
+                run_fluidic_program(True)
                 
         else:
             result = super().exec_event(event)

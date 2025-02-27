@@ -286,7 +286,6 @@ def main() -> None:
             # Crop the chip down to gui size
             if not (gui_camera_crop_y == mmc.getROI()[-1]): 
                 current_roi = mmc.getROI()
-                print(current_roi)
                 mmc.clearROI()
                 mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 mmc.setROI(
@@ -414,15 +413,21 @@ def main() -> None:
             print("No fluidics")
         elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_16bit"
+            # SJS: Hard code number of test rounds, to be reverted.
+            # Subtract 1 from num rounds to account for manually applying first round.
+            FP_num_rounds = 2 - 1
             print("Thin 16bit fluidics")
         elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_22bit"
+            FP_num_rounds = 22
             print("Thin 22bit fluidics")
         elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thick_16bit"
+            FP_num_rounds = 16
             print("Thick 16bit fluidics")
         elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thick_22bit"
+            FP_num_rounds = 22
             print("Thick 22bit fluidics")
 
         # Get the current MDAsequence and convert to dictionary 
@@ -476,17 +481,21 @@ def main() -> None:
         n_stage_pos = len(stage_positions)
         opmAOmirror_local.n_positions = n_stage_pos
         
-        # timelapse values 
-        time_plan = sequence_dict["time_plan"]
-        if time_plan is not None:
-            try:
-                n_time_steps = time_plan["loops"]
-            except Exception:
-                n_time_steps = 1
-            time_interval = time_plan["interval"]
-        else:
-            n_time_steps = 1
+        # timelapse values
+        if not (FP_mode == "None"): 
+            n_time_steps = FP_num_rounds
             time_interval = 0
+        else:
+            time_plan = sequence_dict["time_plan"]
+            if time_plan is not None:
+                try:
+                    n_time_steps = time_plan["loops"]
+                except Exception:
+                    n_time_steps = 1
+                time_interval = time_plan["interval"]
+            else:
+                n_time_steps = 1
+                time_interval = 0
 
         # Define channels, state and exposures from MDA
         channels = sequence_dict["channels"]
@@ -512,7 +521,7 @@ def main() -> None:
                 )
 
         n_active_channels = sum(active_channels)
-        active_channel_names = [_exp for _, _exp in zip(active_channels, channels) if _]
+        active_channel_names = [_name for _, _name in zip(active_channels, channel_names) if _]
         active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
         
         # Interleave only available if all channels have the same exposure.
@@ -700,10 +709,11 @@ def main() -> None:
         FP_event = MDAEvent(
             # exposure = AO_exposure_ms,
             action=CustomAction(
-                name="FluidicsProgram",
+                name="Fluidics",
                 data = {
                     "Fluidics" : {
-                        "wait_time" : float(15)
+                        "mode" : FP_mode,
+                        "round" : int(0)
                     }
                     }
             )
@@ -716,21 +726,23 @@ def main() -> None:
         opm_events: list[MDAEvent] = []
         
         if not FP_mode=="None":
-            opm_events.append(FP_event)
             # load dialog to interupt user.
             from PyQt6.QtWidgets import QMessageBox
             # this blocks the main thread until the dialog is closed
             response = QMessageBox.information(
                 mda_widget,  # parent
-                'title',
-                'Proceed?',
+                'WARNING ! ! ! ! FLUIDICS MUST BE RUNNING ! ! !',
+                'IS ESI SEQUENCE LOADED AND STARTED?',
                 QMessageBox.StandardButton.Ok | QMessageBox.StandardButton.Cancel,
             )
 
             #  `response` is which button was clicked
             if response is not QMessageBox.StandardButton.Ok:
                 return
-            
+            else:
+                print("ESI Sequence accepted")
+                # opm_events.append(FP_event)
+                
         # run O2-O3 autofocus if only initially
         if O2O3_mode=="Initial-only":
             # opm_events.append(MDAEvent(**O2O3_event.model_dump()))
@@ -750,9 +762,18 @@ def main() -> None:
 
         # setup nD mirror-based AO-OPM acquisition event structure
         for time_idx in range(n_time_steps):
+            # Check if fluidics active
+            if not(FP_mode=="None") and not(time_idx==0):
+                
+                # time_idx + 1 becuase the first round (round 0) was done manually
+                current_FP_event = MDAEvent(**FP_event.model_dump())
+                current_FP_event.action.data["Fluidics"]["round"] = int(time_idx+1)
+                opm_events.append(current_FP_event)
+            
             # Check if autofocus before each timepoint and not initial-only mode
             if O2O3_mode == "Before-each-t" and not(O2O3_mode == "Initial-only"):
                 opm_events.append(O2O3_event)
+                
                 
             # Check for multi-position acq.
             for pos_idx in range(n_stage_pos):
