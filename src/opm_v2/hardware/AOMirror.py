@@ -139,7 +139,7 @@ class AOMirror:
         self.set_mirror_flat()
         self.wfc_positions = {"flat":self.flat_positions,
                               "opm_current_flat":self.flat_positions}
-
+        self.update_mirror_positions()
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
 
         self.mode_names = [

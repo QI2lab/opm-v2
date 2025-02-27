@@ -415,7 +415,7 @@ def main() -> None:
             FP_mode = "thin_16bit"
             # SJS: Hard code number of test rounds, to be reverted.
             # Subtract 1 from num rounds to account for manually applying first round.
-            FP_num_rounds = 2 - 1
+            FP_num_rounds = 2
             print("Thin 16bit fluidics")
         elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_22bit"
@@ -753,6 +753,11 @@ def main() -> None:
             mda_widget._mmc.run_mda(opm_events, output=None)
             return
 
+        elif AO_mode == "System-correction":
+            # populate the mirror positions array with the current positions.
+            for ii in range(n_stage_pos):
+                opmAOmirror.wfc_positions_array[ii,:] = opmAOmirror.current_positions.copy()
+                
         #--------------------------------------------------------------------#
         # Create MDAevents for time and positions
         #--------------------------------------------------------------------#
@@ -830,7 +835,7 @@ def main() -> None:
                     # Setup DAQ for acquisition
                     if need_to_setup_DAQ:
                         # The DAQ waveform can be repeated for all time and space points
-                        need_to_setup_DAQ = False
+                        need_to_setup_DAQ = True
                         opm_events.append(MDAEvent(**DAQ_event.model_dump()))
                     # create camera events
                     for scan_idx in range(n_scan_steps):
