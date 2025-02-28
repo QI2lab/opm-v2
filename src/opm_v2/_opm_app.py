@@ -138,7 +138,7 @@ def main() -> None:
         modes_to_ignore = []
     )
     
-    opmAOmirror.set_mirror_flat()
+    opmAOmirror.set_mirror_positions_flat()
 
     # load OPM NIDAQ and OPM AO mirror classes
     opmNIDAQ = OPMNIDAQ(
@@ -413,9 +413,7 @@ def main() -> None:
             print("No fluidics")
         elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_16bit"
-            # SJS: Hard code number of test rounds, to be reverted.
-            # Subtract 1 from num rounds to account for manually applying first round.
-            FP_num_rounds = 2
+            FP_num_rounds = 16
             print("Thin 16bit fluidics")
         elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_22bit"
@@ -498,21 +496,21 @@ def main() -> None:
                 time_interval = 0
 
         # Define channels, state and exposures from MDA
-        channels = sequence_dict["channels"]
-        channel_names = config["OPM"]["channel_ids"]
-        active_channels = [False] * len(channel_names) #[False,False,False,False,False]
-        exposure_channels = [0.] * len(channel_names) #[0.,0.,0.,0.,0.,0.]
-        laser_powers = [0.] * len(channel_names) # [0.,0.,0.,0.,0.]
+        mda_channels = sequence_dict["channels"] # list of checked channels in mda
+        channel_names = config["OPM"]["channel_ids"] # list of all channel ids
+        active_channels = [False] * len(channel_names) 
+        exposure_channels = [0.] * len(channel_names) 
+        laser_powers = [0.] * len(channel_names) 
         
-        # Iterate through MDA checked channels and update active lasers
-        for channel in channels:
-            # Get the matching channel idx in the config
-            ch_id = channel["config"]
+        # Iterate through MDA checked channels and update active lasers list
+        for mda_ch in mda_channels:
+            # Get the matching channel idx active lasers list
+            ch_id = mda_ch["config"]
             ch_idx = config["OPM"]["channel_ids"].index(ch_id)
             
             # update active channel and powers
             active_channels[ch_idx] = True
-            exposure_channels[ch_idx] = channel["exposure"]
+            exposure_channels[ch_idx] = mda_ch["exposure"]
             laser_powers[ch_idx] = float(
                 mmc.getProperty(
                     "Coherent-Scientific Remote",
@@ -521,6 +519,7 @@ def main() -> None:
                 )
 
         n_active_channels = sum(active_channels)
+        # Create lists containing only the active channel names and exposures
         active_channel_names = [_name for _, _name in zip(active_channels, channel_names) if _]
         active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
         
@@ -982,7 +981,7 @@ def main() -> None:
         """Callback to intercept preview mode and setup the OPM.
         
         This function parses the various configuration groups and creates
-        the appropiate NIDAQ waveforms for the selected OPM mode and channel.
+        the appropriate NIDAQ waveforms for the selected OPM mode and channel.
         """
         # get instance of opmnidaq here
         opmNIDAQ_setup_preview = OPMNIDAQ.instance()

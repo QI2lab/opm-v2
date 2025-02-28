@@ -62,9 +62,12 @@ class OPMEngine(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 # Stop DAQ playback and clear 
-                self.opmDAQ.stop_waveform_playback()
-                self.opmDAQ.clear_tasks()
-                self.opmDAQ.reset()               
+                if self.opmDAQ.running():
+                    self.opmDAQ.stop_waveform_playback()
+                # self.opmDAQ.clear_tasks()
+                # self.opmDAQ.reset()         
+                
+                # Setup camera properties
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -98,7 +101,7 @@ class OPMEngine(MDAEngine):
                 else:
                     self.opmDAQ.stop_waveform_playback()
                     self.opmDAQ.clear_tasks()
-                    
+                        
                     self._mmc.clearROI()
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                     self._mmc.setROI(
@@ -131,6 +134,7 @@ class OPMEngine(MDAEngine):
             elif "DAQ" in action_name:
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
+                
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -168,6 +172,8 @@ class OPMEngine(MDAEngine):
                     laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                     exposure_ms = exposure_ms
                 )
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.prepare_waveform_playback()
                 
             elif action_name == "Fluidics":
                 # Nothing to prep, the user should have already confirmed its ready to go.
@@ -207,12 +213,11 @@ class OPMEngine(MDAEngine):
                         verbose=True
                     )
                     self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
+                    
             elif "DAQ" in action_name:
-                self.opmDAQ.generate_waveforms()
-                self.opmDAQ.prepare_waveform_playback()
                 self.opmDAQ.start_waveform_playback()
+                
             elif action_name == "Fluidics":
-                print(action_name)
                 run_fluidic_program(True)
                 
         else:
@@ -237,6 +242,6 @@ class OPMEngine(MDAEngine):
                 0.0
             )
             
-        self.AOMirror.save_acq_positions()
+        self.AOMirror.save_wfc_positions_array()
 
         super().teardown_sequence(sequence)

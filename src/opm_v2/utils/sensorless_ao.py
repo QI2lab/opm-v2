@@ -351,7 +351,7 @@ def run_ao_optimization(
     
     # apply optimized Zernike mode coefficients to the mirror
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
-    aoMirror_local.save_mirror_positions(name="opm_current_flat")
+    aoMirror_local.save_wfc_state(name="opm_current_flat")
     opmNIDAQ_local.stop_waveform_playback()
     
     if save_dir_path:
