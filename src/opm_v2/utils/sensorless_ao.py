@@ -141,11 +141,20 @@ def run_ao_optimization(
     mmc.snapImage()
     starting_image = mmc.getImage()
     print(starting_image.max())
-    starting_metric = metric_shannon_dct(
-        image=starting_image,
-        shannon_psf_radius_px=shannon_psf_radius_px,
-        crop_size=None
-        )  
+    
+    if "shannon" in metric_to_use:
+        starting_metric = metric_shannon_dct(
+            image=starting_image,
+            shannon_psf_radius_px=shannon_psf_radius_px,
+            crop_size=None
+            )  
+    elif "localize_gauss_2d" in metric_to_use:        
+        starting_metric = metric_localize_gauss2d(
+            image=starting_image
+            )  
+    else:
+        print(f"Warning: AO metric '{metric_to_use}' not supported. Exiting function.")
+        return  
     
     # update saved results
     if save_dir_path:
@@ -153,7 +162,7 @@ def run_ao_optimization(
         images_per_mode.append(starting_image)
         coefficients_per_iteration.append(initial_zern_modes)
         images_per_iteration.append(starting_image)
-        
+
     imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
 
     # initialize delta range
@@ -206,12 +215,17 @@ def run_ao_optimization(
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
                     
                     """Calculate metric."""
-                    metric = metric_shannon_dct(
-                        image=image,
-                        shannon_psf_radius_px=shannon_psf_radius_px,
-                        crop_size=None
-                        )
-                    
+                    if "shannon" in metric_to_use:
+                        metric = metric_shannon_dct(
+                            image=image,
+                            shannon_psf_radius_px=shannon_psf_radius_px,
+                            crop_size=None
+                            )  
+                    elif "localize_gauss_2d" in metric_to_use:        
+                        metric = metric_localize_gauss2d(
+                            image=image
+                            )
+
                     if metric==np.nan:
                         print("Metric is NAN, setting to 0")
                         metric = float(np.nan_to_num(metric))
@@ -222,7 +236,7 @@ def run_ao_optimization(
                 if save_dir_path:
                     mode_images.append(image)
                     
-            """After looping through all mirror pertubations for this mode, decide if mirror is updated"""
+            """After looping through all mirror perturbations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
             # Fit metrics to determine optimal metric
@@ -279,11 +293,16 @@ def run_ao_optimization(
                 image = mmc.getImage()
                     
                 """Calculate metric."""
-                metric = metric_shannon_dct(
-                    image=image,
-                    shannon_psf_radius_px=shannon_psf_radius_px,
-                    crop_size=None
-                    )
+                if "shannon" in metric_to_use:
+                    metric = metric_shannon_dct(
+                        image=image,
+                        shannon_psf_radius_px=shannon_psf_radius_px,
+                        crop_size=None
+                        )  
+                elif "localize_gauss_2d" in metric_to_use:        
+                    metric = metric_localize_gauss2d(
+                        image=image
+                        )
                     
                 if metric==np.nan:
                     print("    Metric is NAN, setting to 0")
@@ -1011,6 +1030,62 @@ def metric_brightness(image: ArrayLike,
         return np.mean(max_pixels)
 
 
+def metric_shannon_dct(
+    image: ArrayLike, 
+    shannon_psf_radius_px: float = 3,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = None,
+    image_center: Optional[int] = None,
+    return_image: Optional[bool] = False
+    ) -> float:
+    """Compute the Shannon entropy metric using DCT.
+
+    Parameters
+    ----------
+    image : ArrayLike
+        2D image.
+    shannon_psf_radius_px : float, optional
+        Estimated point spread function (PSF) radius in pixels (default: 3).
+    crop_size : Optional[int], optional
+        Crop size for image (default: 501).
+    threshold : Optional[float], optional
+        Intensity threshold to find the center (default: 100).
+    image_center : Optional[int], optional
+        Custom image center (default: None).
+    return_image : Optional[bool], optional
+        Whether to return the image along with the metric (default: False).
+    
+    Returns
+    -------
+    entropy_metric : float
+        Shannon entropy metric.
+    """
+    # Crop image if necessary
+    if not crop_size:
+        crop_size = min(image.shape)-1
+        
+    if image_center is None:
+        center = get_image_center(image, threshold)  # Ensure this function is defined
+    else:
+        center = image_center
+        # Crop image (ensure get_cropped_image is correctly implemented)
+        image = get_cropped_image(image, crop_size, center)
+    
+    # Compute the cutoff frequency based on OTF radius
+    cutoff = otf_radius(image, shannon_psf_radius_px)
+
+    # Compute DCT
+    dct_result = dct_2d(image)
+
+    # Compute Shannon entropy within the cutoff radius
+    shannon_dct = shannon(dct_result, cutoff)
+
+    if return_image:
+        return shannon_dct, image
+    else:
+        return shannon_dct
+
+
 def metric_gauss2d(image: ArrayLike,
                    crop_size: Optional[int] = None,
                    threshold: Optional[float] = 100,
@@ -1083,7 +1158,7 @@ def metric_gauss2d(image: ArrayLike,
         return weighted_metric
 
 
-def metric_gauss3d(
+def metric_localize_gauss3d(
     image: ArrayLike,
     metric_value: str = "mean",
     crop_size: Optional[int] = None,
@@ -1244,62 +1319,6 @@ def metric_gauss3d(
     #         return weighted_metric
 
 
-def metric_shannon_dct(
-    image: ArrayLike, 
-    shannon_psf_radius_px: float = 3,
-    crop_size: Optional[int] = None,
-    threshold: Optional[float] = None,
-    image_center: Optional[int] = None,
-    return_image: Optional[bool] = False
-    ) -> float:
-    """Compute the Shannon entropy metric using DCT.
-
-    Parameters
-    ----------
-    image : ArrayLike
-        2D image.
-    shannon_psf_radius_px : float, optional
-        Estimated point spread function (PSF) radius in pixels (default: 3).
-    crop_size : Optional[int], optional
-        Crop size for image (default: 501).
-    threshold : Optional[float], optional
-        Intensity threshold to find the center (default: 100).
-    image_center : Optional[int], optional
-        Custom image center (default: None).
-    return_image : Optional[bool], optional
-        Whether to return the image along with the metric (default: False).
-    
-    Returns
-    -------
-    entropy_metric : float
-        Shannon entropy metric.
-    """
-    # Crop image if necessary
-    if not crop_size:
-        crop_size = min(image.shape)-1
-        
-    if image_center is None:
-        center = get_image_center(image, threshold)  # Ensure this function is defined
-    else:
-        center = image_center
-        # Crop image (ensure get_cropped_image is correctly implemented)
-        image = get_cropped_image(image, crop_size, center)
-    
-    # Compute the cutoff frequency based on OTF radius
-    cutoff = otf_radius(image, shannon_psf_radius_px)
-
-    # Compute DCT
-    dct_result = dct_2d(image)
-
-    # Compute Shannon entropy within the cutoff radius
-    shannon_dct = shannon(dct_result, cutoff)
-
-    if return_image:
-        return shannon_dct, image
-    else:
-        return shannon_dct
-
-
 def metric_localize_gauss2d(image: ArrayLike) -> float:
     """_summary_
 
@@ -1328,7 +1347,7 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
     
     to_keep = fit_results["to_keep"]
     sxy = fit_results["fit_params"][to_keep, 4]
-    metric = np.median(sxy)
+    metric = 1 / np.median(sxy)
     
     return metric
 
