@@ -195,7 +195,7 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"])
+                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
                 
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:

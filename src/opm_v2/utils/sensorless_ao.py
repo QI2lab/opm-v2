@@ -60,7 +60,6 @@ mode_names = [
 # AO optimization
 #-------------------------------------------------#
 
-
 def run_ao_optimization(
     image_mirror_step_size_um: float,
     image_mirror_range_um: float,
@@ -104,6 +103,7 @@ def run_ao_optimization(
     # Re-enforce camera exposure
     mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
     mmc.waitForDevice("OrcaFusionBT")
+    print(exposure_ms)
     
     #---------------------------------------------#
     # Setup Zernike modal coeff arrays
@@ -137,9 +137,9 @@ def run_ao_optimization(
     # Snap an image and calculate the starting metric.
     opmNIDAQ_local.start_waveform_playback()
     
-    mmc.snapImage()
-    starting_image = mmc.getImage()
-    print(starting_image.max())
+    #mmc.snapImage()
+    starting_image = mmc.snap()
+    print(f"starting image: {starting_image.max()}")    
     
     if "shannon" in metric_to_use:
         starting_metric = metric_shannon_dct(
@@ -198,7 +198,7 @@ def run_ao_optimization(
                 
                 # Write zernike modes to the mirror
                 success = aoMirror_local.set_modal_coefficients(active_zern_modes)
-                print(f"setting mirror: {success}")
+                
                 if not(success):
                     print("    Setting mirror coefficients failed!")
                     # Force metric and image to zero
@@ -209,10 +209,11 @@ def run_ao_optimization(
                     """acquire projection image"""
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
-                    mmc.snapImage()
-                    image = mmc.getImage()
-                    imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
+                    image = mmc.snap()
+                    print(f"          image: {image.max()}")    
                     
+                    imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
+
                     """Calculate metric."""
                     if "shannon" in metric_to_use:
                         metric = metric_shannon_dct(
@@ -288,8 +289,7 @@ def run_ao_optimization(
                 """acquire projection image"""
                 if not opmNIDAQ_local.running():
                     opmNIDAQ_local.start_waveform_playback()          
-                mmc.snapImage()
-                image = mmc.getImage()
+                image = mmc.snap()
                     
                 """Calculate metric."""
                 if "shannon" in metric_to_use:
@@ -333,7 +333,7 @@ def run_ao_optimization(
                 if not opmNIDAQ_local.running():
                     opmNIDAQ_local.start_waveform_playback()
                 mmc.snapImage()
-                image = mmc.getImage()
+                image = mmc.snap()
                 
                 metrics_per_mode.append(optimal_metric)
                 images_per_mode.append(image)
@@ -401,7 +401,6 @@ def run_ao_optimization(
             mode_names,
             save_dir_path
         )
-
 
 #-------------------------------------------------#
 # Plotting functions

@@ -97,8 +97,8 @@ def find_best_O3_focus_metric(
 
         mmc.setPosition(O3_stage_pos)
         mmc.waitForDevice(O3_stage_name)
-        mmc.snapImage()
-        test_image = mmc.getImage()
+        test_image = mmc.snap()
+        print(f"AF max(img) = {np.max(test_image)}")
         focus_metrics[i] = calculate_focus_metric(test_image)
         if verbose: 
             print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
@@ -139,8 +139,8 @@ def find_best_O3_focus_metric(
 
             mmc.setPosition(O3_stage_pos)
             mmc.waitForDevice(O3_stage_name)
-            mmc.snapImage()
-            test_image = mmc.getImage()
+            test_image = mmc.snap()
+            print(f"AF max(img) = {np.max(test_image)}")
             focus_metrics[i] = calculate_focus_metric(test_image)
             if verbose: 
                 print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')

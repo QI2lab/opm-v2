@@ -51,14 +51,14 @@
         ],
         "laser_power": [
             0.0,
-            60.0,
+            20.0,
             0.0,
             0.0,
             0.0
         ],
         "exposure_ms": 500.0,
         "mode": "shannon",
-        "iterations": 3,
+        "iterations": 1,
         "image_mirror_range_um": 100.0,
         "image_mirror_step_um": 0.4,
         "camera_crop_y": 869

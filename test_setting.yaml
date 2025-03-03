@@ -1,5 +1,4 @@
 axis_order:
-- t
 - p
 - c
 channels:
@@ -7,20 +6,12 @@ channels:
   exposure: 100.0
 metadata:
   pymmcore_widgets:
+    format: ome-zarr
+    save_dir: G:/20250225_opm
+    save_name: isolated_beads_000.zarr.ome.zarr
+    should_save: true
     version: 0.9.0
 stage_positions:
-- x: -1002.24
-  y: -8529.91
-  z: -14.67
-- x: -1010.59
-  y: -8353.04
-  z: -14.67
-- x: -1199.18
-  y: -8396.57
-  z: -3.68
-- x: -1339.71
-  y: -8639.1
-  z: -13.12
-time_plan:
-  interval: 1.0
-  loops: 2
+- x: -2545.2
+  y: -10100.94
+  z: -80.42

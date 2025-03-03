@@ -637,7 +637,8 @@ def main() -> None:
             AO_image_mirror_step_um = float(updated_config["AO-projection"]["image_mirror_step_um"])
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
-            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimizeNOW")
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
+            
         
         # setup AO using values in GUI
         else:
@@ -650,7 +651,7 @@ def main() -> None:
             AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um))
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
-            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimizeNOW")
         
             # Set the active channel 
             for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
@@ -662,7 +663,7 @@ def main() -> None:
                             str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)"
                         )
                     )
-      
+            
             # Update the AO configuration with this run's values
             updated_config["AO-projection"]["active_channels"] = AO_active_channels
             updated_config["AO-projection"]["laser_power"] = AO_laser_powers
@@ -673,7 +674,14 @@ def main() -> None:
 
             with open(config_path, "w") as file:
                 json.dump(updated_config, file, indent=4)
-        
+        # print(f"{AO_active_channels}",
+        #     f"{AO_laser_powers}",
+        #     f"{AO_active_channels}",
+        #     f"{AO_active_channels}",
+        #     f"{AO_active_channels}",
+        #     f"{AO_active_channels}")
+
+          
         # Create AO event
         AO_event = MDAEvent(
             exposure = AO_exposure_ms,
@@ -967,7 +975,7 @@ def main() -> None:
             )
         # If not, use built-in handler based on suffix
         else:
-            handler = output.copy()
+            handler = Path(output)
 
         # run MDA with our event structure and modified tensorstore handler 
         mda_widget._mmc.run_mda(opm_events, output=handler)

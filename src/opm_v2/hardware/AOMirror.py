@@ -321,6 +321,7 @@ class AOMirror:
         if self._validate_positions(positions):
             self.wfc.move_to_absolute_positions(positions)
             self.get_mirror_positions()
+            print("mirror is set")
             return True
         else:
             return False    
