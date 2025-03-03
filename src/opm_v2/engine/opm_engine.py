@@ -204,6 +204,7 @@ class OPMEngine(MDAEngine):
                 else:
                     self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
+                        metric_to_use=data_dict["AO"]["mode"],
                         image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
