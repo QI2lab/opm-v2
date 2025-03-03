@@ -647,7 +647,7 @@ def main() -> None:
             AO_laser_powers = [0.] * len(channel_names)
             AO_image_mirror_range_um = float(image_mirror_range_um)
             AO_image_mirror_step_um = float(image_mirror_step_um)
-            AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um)) # This value will be determined
+            AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um))
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
             AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
