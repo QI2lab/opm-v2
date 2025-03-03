@@ -123,7 +123,7 @@ def main() -> None:
     # --------------------------------------------------------------------------------
 
     # load hardware configuration file
-    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218.json")
+    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250228.json")
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
     
@@ -443,10 +443,10 @@ def main() -> None:
             if len(mda_stage_positions) == 1:
                 # TODO is where is the grid setup
                 grid_plan = sequence_dict["grid_plan"]
-                print(grid_plan.keys())
-                print(grid_plan)
                 
                 if grid_plan is not None:
+                    print(grid_plan.keys())
+                    print(grid_plan)
                     stage_positions = []
                     for event in sequence:
                         json_event = json.loads(event.model_dump_json())

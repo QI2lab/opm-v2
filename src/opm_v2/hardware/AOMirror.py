@@ -125,7 +125,13 @@ class AOMirror:
                 radius
             )
         )
-
+        # update modal data with zero coeffs.
+        self.modal_coeff.set_data(
+            coef_array = np.zeros(n_modes),
+            index_array = np.arange(1, self._n_modes+1, 1),
+            pupil = self.pupil
+        ) 
+        
         if self._flat_positions_file_path is not None:
             # Configure mirror in the flat position
             self.flat_positions = np.asarray(self.wfc.get_positions_from_file(str(flat_positions_file_path)))
@@ -265,16 +271,20 @@ class AOMirror:
     def _validate_positions(self, positions: NDArray) -> bool:
         """Ensure mirror positions are within safe voltage limits."""
         if positions.shape[0] != self.wfc.nb_actuators:
-            raise ValueError(f"Positions array must have shape = {self.wfc.nb_actuators}")
+            raise Exception(f"Positions array must have shape = {self.wfc.nb_actuators}")
+            return False
 
-        if np.sum(np.abs(positions) >= 0.99) > 1:
+        if np.sum(np.where(np.abs(positions) >= 0.99,1,0)) > 1:
             print('Individual actuator voltage too high.')
             return False
 
         if np.sum(np.abs(positions)) >= 25:
             print('Total voltage too high.')
             return False
-
+        
+        else:
+            return True
+        
     def get_mirror_positions(self):
         """Update stored mirror positions from wavefront corrector."""
         self.current_positions = np.array(self.wfc.get_current_positions())
@@ -297,6 +307,8 @@ class AOMirror:
         """
     
         self.set_mirror_positions(self.wfc_positions_array[idx,:])
+        self.get_mirror_positions()
+        
 
     def set_mirror_positions(self, positions: NDArray):
         """Set mirror positions.
@@ -308,6 +320,7 @@ class AOMirror:
         """
         if self._validate_positions(positions):
             self.wfc.move_to_absolute_positions(positions)
+            self.get_mirror_positions()
             return True
         else:
             return False    
@@ -345,9 +358,6 @@ class AOMirror:
             self.wfc.move_to_absolute_positions(new_positions)
             time.sleep(0.01)
             self.get_mirror_positions()
-            
-            # TODO: Validate refresh method
-            print(f"mirror attributs vs applied amps: \n{self.current_coeffs}, \n{amps}\n")
             return True
         else:
             return False  

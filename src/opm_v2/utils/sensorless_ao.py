@@ -137,10 +137,8 @@ def run_ao_optimization(
     # Snap an image and calculate the starting metric.
     opmNIDAQ_local.start_waveform_playback()
     
-    print(mmc.getExposure())
     mmc.snapImage()
     starting_image = mmc.getImage()
-    print(starting_image.max())
     starting_metric = metric_shannon_dct(
         image=starting_image,
         shannon_psf_radius_px=shannon_psf_radius_px,
@@ -190,7 +188,7 @@ def run_ao_optimization(
                 
                 # Write zernike modes to the mirror
                 success = aoMirror_local.set_modal_coefficients(active_zern_modes)
-                
+                print(f"setting mirror: {success}")
                 if not(success):
                     print("    Setting mirror coefficients failed!")
                     # Force metric and image to zero
@@ -405,6 +403,8 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
         _description_
     """
     import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Agg')
     # Create the plot
     fig, ax = plt.subplots(figsize=(6, 8))
     
@@ -462,8 +462,10 @@ def plot_metric_progress(metrics_per_iteration: ArrayLike,
         _description_, by default None
     show_fig : Optional[bool], optional
         _description_, by default False
-    """
+    """   
     import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Agg')
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -525,6 +527,8 @@ def plot_2d_localization_fit_summary(
     from localize_psf.fit_psf import sxy2na
     from localize_psf.localize import plot_bead_locations
     import matplotlib.pyplot as plt
+    import matplotlib
+    matplotlib.use('Agg')
     
     to_keep = fit_results["to_keep"]
     sxy = fit_results["fit_params"][to_keep, 4]

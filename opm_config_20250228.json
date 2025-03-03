@@ -22,8 +22,8 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.0052,
         "image_mirror_step_size_um": 0.4,
-        "image_mirror_neutral_um" : 0.7,
-        "projection_mirror_neutral_um" : 0.0,
+        "image_mirror_neutral_um": 0.7,
+        "projection_mirror_neutral_um": 0.0,
         "verbose": false
     },
     "Lasers": {
@@ -51,17 +51,17 @@
         ],
         "laser_power": [
             0.0,
-            20,
+            60.0,
             0.0,
             0.0,
             0.0
         ],
-        "exposure_ms": 400.0,
-        "mode": "dct",
+        "exposure_ms": 500.0,
+        "mode": "shannon",
         "iterations": 3,
-        "image_mirror_range_um": 50.0,
+        "image_mirror_range_um": 100.0,
         "image_mirror_step_um": 0.4,
-        "camera_crop_y": 376
+        "camera_crop_y": 869
     },
     "O2O3-autofocus": {
         "shutter_id": 712,
