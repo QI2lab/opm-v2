@@ -11,6 +11,8 @@ from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.utils.elveflow_control import run_fluidic_program
 from pymmcore_plus.metadata import (
     FrameMetaV1,
     PropertyValue,
@@ -60,9 +62,12 @@ class OPMEngine(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 # Stop DAQ playback and clear 
-                self.opmDAQ.stop_waveform_playback()
-                self.opmDAQ.clear_tasks()
-                self.opmDAQ.reset()               
+                if self.opmDAQ.running():
+                    self.opmDAQ.stop_waveform_playback()
+                # self.opmDAQ.clear_tasks()
+                # self.opmDAQ.reset()         
+                
+                # Setup camera properties
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -96,7 +101,7 @@ class OPMEngine(MDAEngine):
                 else:
                     self.opmDAQ.stop_waveform_playback()
                     self.opmDAQ.clear_tasks()
-                    
+                        
                     self._mmc.clearROI()
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                     self._mmc.setROI(
@@ -129,6 +134,7 @@ class OPMEngine(MDAEngine):
             elif "DAQ" in action_name:
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
+                
                 self._mmc.clearROI()
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setROI(
@@ -166,9 +172,13 @@ class OPMEngine(MDAEngine):
                     laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                     exposure_ms = exposure_ms
                 )
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.prepare_waveform_playback()
                 
             elif action_name == "Fluidics":
+                # Nothing to prep, the user should have already confirmed its ready to go.
                 print(action_name)
+                
         else:
             super().setup_event(event)
                                         
@@ -185,7 +195,7 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"])
+                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
                 
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:
@@ -194,6 +204,7 @@ class OPMEngine(MDAEngine):
                 else:
                     self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
+                        metric_to_use=data_dict["AO"]["mode"],
                         image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
@@ -203,12 +214,13 @@ class OPMEngine(MDAEngine):
                         verbose=True
                     )
                     self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
+                    
             elif "DAQ" in action_name:
-                self.opmDAQ.generate_waveforms()
-                self.opmDAQ.prepare_waveform_playback()
                 self.opmDAQ.start_waveform_playback()
-            # elif action_name == "Fluidics":
-            #     print(action_name)
+                
+            elif action_name == "Fluidics":
+                run_fluidic_program(True)
+                
         else:
             result = super().exec_event(event)
             return result
@@ -231,6 +243,6 @@ class OPMEngine(MDAEngine):
                 0.0
             )
             
-        self.AOMirror.save_acq_positions()
+        self.AOMirror.save_wfc_positions_array()
 
         super().teardown_sequence(sequence)

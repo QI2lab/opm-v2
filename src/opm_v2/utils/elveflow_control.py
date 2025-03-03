@@ -4,19 +4,20 @@ from opm_v2.hardware.ElveFlow import OB1Controller
 import time
 
 def run_fluidic_program(verbose: bool = False):
-
-    """
+    """Send a trigger pulse to OB1 Controller and wait for a return pulse.
     
-    :param r_idx: int
-        fluidics round to execute
-    :param df_program: dataframe
-        dataframe containing entire fluidics program
-    :param mvp_controller: HamiltonMVP
-        handle to initialized chain of Hamilton MVP valves
-    :param pump_controller: APump
-        handle to initialized pump
+    Requires the fluidics sequence to be running with a IF step before sequences to be run, 
+    and TRIG step after, or the acquisition will be stuck waiting here.
 
-    :return True: boolean
+    Parameters
+    ----------
+    verbose : bool, optional
+        Show print statements, by default False
+
+    Returns
+    -------
+    bool
+        Acknowledgment the sequence was completed
     """
     opmOB1_local = OB1Controller.instance()
     opmOB1_local.init_board()
