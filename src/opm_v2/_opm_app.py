@@ -148,6 +148,8 @@ def main() -> None:
         laser_blanking = bool(config["NIDAQ"]["laser_blanking"]),
         image_mirror_calibration = float(str(config["NIDAQ"]["image_mirror_calibration"])),
         projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
+        image_mirror_neutral_um = float(str(config["NIDAQ"]["image_mirror_neutral_um"])),
+        projection_mirror_neutral_um = float(str(config["NIDAQ"]["projection_mirror_neutral_um"])),
         image_mirror_step_size_um = float(str(config["NIDAQ"]["image_mirror_step_size_um"])),
         verbose = bool(config["NIDAQ"]["verbose"])
     )
@@ -189,7 +191,7 @@ def main() -> None:
 
     def calculate_projection_crop(image_mirror_range_um):
         # Calculate the the number of Y pixels for the scan range
-        roi_height_um = image_mirror_range_um * np.cos(np.deg2rad(30))
+        roi_height_um = image_mirror_range_um # * np.cos(np.deg2rad(30))
         roi_height_px = int(roi_height_um / mmc.getPixelSizeUm())
         return roi_height_px
     
@@ -439,7 +441,11 @@ def main() -> None:
         mda_stage_positions = sequence_dict["stage_positions"]
         if mda_stage_positions is not None:
             if len(mda_stage_positions) == 1:
+                # TODO is where is the grid setup
                 grid_plan = sequence_dict["grid_plan"]
+                print(grid_plan.keys())
+                print(grid_plan)
+                
                 if grid_plan is not None:
                     stage_positions = []
                     for event in sequence:
