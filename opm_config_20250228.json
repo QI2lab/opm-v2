@@ -51,17 +51,18 @@
         ],
         "laser_power": [
             0.0,
-            20.0,
+            60.0,
             0.0,
             0.0,
             0.0
         ],
         "exposure_ms": 500.0,
-        "mode": "shannon",
+        "mode": "shannon_dct",
         "iterations": 1,
         "image_mirror_range_um": 100.0,
         "image_mirror_step_um": 0.4,
-        "camera_crop_y": 869
+        "camera_crop_y": 869,
+        "optimize_now_path": "G:/optimize_now"
     },
     "O2O3-autofocus": {
         "shutter_id": 712,

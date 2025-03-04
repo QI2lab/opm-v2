@@ -69,7 +69,7 @@ def run_ao_optimization(
     shannon_psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
-    init_delta_range: Optional[float] = 0.400,
+    init_delta_range: Optional[float] = 0.200,
     delta_range_alpha_per_iter: Optional[float] = 0.5,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
@@ -139,7 +139,6 @@ def run_ao_optimization(
     
     #mmc.snapImage()
     starting_image = mmc.snap()
-    print(f"starting image: {starting_image.max()}")    
     
     if "shannon" in metric_to_use:
         starting_metric = metric_shannon_dct(
@@ -210,7 +209,6 @@ def run_ao_optimization(
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
                     image = mmc.snap()
-                    print(f"          image: {image.max()}")    
                     
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
 
@@ -307,7 +305,7 @@ def run_ao_optimization(
                     print("    Metric is NAN, setting to 0")
                     metric = float(np.nan_to_num(metric))
                 
-                if metric>=optimal_metric:
+                if round(metric,3)>=round(optimal_metric,3):
                     coeff_to_keep = coeff_opt
                     optimal_metric = metric
                     if verbose:
@@ -1336,23 +1334,27 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
     float
         _description_
     """
-    fit_results = localize_2d_img(
-        image, 
-        0.115,
-        {"threshold":3000,
-         "amp_bounds":(1000, 30000),
-         "sxy_bounds":(0.100, 1.0)
-         },
-        save_dir_path = None,
-        label = "", 
-        showfig = False,
-        verbose = False
-        )
-    
-    to_keep = fit_results["to_keep"]
-    sxy = fit_results["fit_params"][to_keep, 4]
-    metric = 1 / np.median(sxy)
-    
+    try:
+        fit_results = localize_2d_img(
+            image, 
+            0.115,
+            {"threshold":1000,
+            "amp_bounds":(500, 30000),
+            "sxy_bounds":(0.100, 1.0)
+            },
+            save_dir_path = None,
+            label = "", 
+            showfig = False,
+            verbose = False
+            )
+        
+        to_keep = fit_results["to_keep"]
+        sxy = fit_results["fit_params"][to_keep, 4]
+        metric = 1 / np.median(sxy)
+    except Exception as e:
+        print(f"2d localization and fit exceptions: {e}")
+        metric = 0
+        
     return metric
 
 

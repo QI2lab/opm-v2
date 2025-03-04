@@ -358,6 +358,51 @@ def main() -> None:
         # Get the acquisition parameters
         #--------------------------------------------------------------------#
         
+        # get AO mode / interval
+        if "System-correction" in mmc.getProperty("AO-mode", "Label"):
+            AO_mode = "System-correction"
+        elif "Before-each-XYZ" in mmc.getProperty("AO-mode", "Label"):
+            AO_mode = "Before-each-xyz"
+        elif "Before-every-acq" in mmc.getProperty("AO-mode", "Label"):
+            AO_mode = "Before-every-acq"
+        elif "Optimize-now" in mmc.getProperty("AO-mode", "Label"):
+            AO_mode = "Optimize-now"
+
+        # get O2-O3 focus mode / interval
+        if "Initial-only" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "Initial-only"
+        elif "Before-each-XYZ" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "Before-each-xyz"
+        elif "Before-each-t" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "Before-each-t"
+        elif "After-30min" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "After-30min"
+        elif "Optimize-now" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "Optimize-now"
+        elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
+            O2O3_mode = "None"
+
+        # check fluidics mode
+        if "None" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "None"
+            print("No fluidics")
+        elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thin_16bit"
+            FP_num_rounds = 16
+            print("Thin 16bit fluidics")
+        elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thin_22bit"
+            FP_num_rounds = 22
+            print("Thin 22bit fluidics")
+        elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thick_16bit"
+            FP_num_rounds = 16
+            print("Thick 16bit fluidics")
+        elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
+            FP_mode = "thick_22bit"
+            FP_num_rounds = 22
+            print("Thick 22bit fluidics")        
+            
         # get image galvo mirror range and step size
         image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
         image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
@@ -387,53 +432,11 @@ def main() -> None:
         )
         n_scan_steps = opmNIDAQ_custom.n_scan_steps
 
-        # get AO mode / interval
-        if "System-correction" in mmc.getProperty("AO-mode", "Label"):
-            AO_mode = "System-correction"
-        elif "Before-each-XYZ" in mmc.getProperty("AO-mode", "Label"):
-            AO_mode = "Before-each-xyz"
-        elif "Before-every-acq" in mmc.getProperty("AO-mode", "Label"):
-            AO_mode = "Before-every-acq"
-        elif "Optimize-now" in mmc.getProperty("AO-mode", "Label"):
-            AO_mode = "Optimize-now"
-
-        # get O2-O3 focus mode / interval
-        if "Initial-only" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "Initial-only"
-        elif "Before-each-XYZ" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "Before-each-xyz"
-        elif "Before-each-t" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "Before-each-t"
-        elif "After-30min" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "After-30min"
-        elif "None" in mmc.getProperty("O2O3focus-mode", "Label"):
-            O2O3_mode = "None"
-
-        # check fluidics mode
-        if "None" in mmc.getProperty("Fluidics-mode", "Label"):
-            FP_mode = "None"
-            print("No fluidics")
-        elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            FP_mode = "thin_16bit"
-            FP_num_rounds = 16
-            print("Thin 16bit fluidics")
-        elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            FP_mode = "thin_22bit"
-            FP_num_rounds = 22
-            print("Thin 22bit fluidics")
-        elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            FP_mode = "thick_16bit"
-            FP_num_rounds = 16
-            print("Thick 16bit fluidics")
-        elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
-            FP_mode = "thick_22bit"
-            FP_num_rounds = 22
-            print("Thick 22bit fluidics")
-
         # Get the current MDAsequence and convert to dictionary 
         sequence = mda_widget.value()
         sequence_dict = json.loads(sequence.model_dump_json())
-        
+        print(sequence_dict)
+        # {'metadata': {'pymmcore_widgets': {'version': '0.9.1', 'save_dir': 'G:\\20250303_opm_ao_testing', 'save_name': 'test_938.zarr', 'format': 'tiff-sequence', 'should_save': True}}, 'axis_order': ['p'], 'stage_positions': [{'x': 634.54, 'y': -2864.91, 'z': -8089.17, 'name': None, 'sequence': None}], 'grid_plan': None, 'channels': [], 'time_plan': None, 'z_plan': None, 'autofocus_plan': None, 'keep_shutter_open_across': []}
         # extract the relevant portions for qi2lab-OPM
         # Stage positions
         # Extract stage positions from either (1) list of stage positions or (2) grid plan
@@ -501,6 +504,8 @@ def main() -> None:
                 n_time_steps = 1
                 time_interval = 0
 
+        # if AO_mode is not optimize now, grab values from MDA window
+        # if not("Optimize-now" in AO_mode):
         # Define channels, state and exposures from MDA
         mda_channels = sequence_dict["channels"] # list of checked channels in mda
         channel_names = config["OPM"]["channel_ids"] # list of all channel ids
@@ -528,13 +533,13 @@ def main() -> None:
         # Create lists containing only the active channel names and exposures
         active_channel_names = [_name for _, _name in zip(active_channels, channel_names) if _]
         active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
-        
+    
         # Interleave only available if all channels have the same exposure.
         if len(set(active_channel_exps)) == 1:
             interleaved_acq = True
         else:
             interleaved_acq = False
-        
+    
         # laser blanking
         if "On" in mmc.getProperty("LaserBlanking","Label"):
             laser_blanking = True
@@ -640,7 +645,7 @@ def main() -> None:
             AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
             
         
-        # setup AO using values in GUI
+        # setup AO using values in GUI config
         else:
             active_channel_id = mmc.getProperty("LED", "Label")
             AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
@@ -651,7 +656,7 @@ def main() -> None:
             AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um))
             AO_iterations = int(updated_config["AO-projection"]["iterations"])
             AO_metric = str(updated_config["AO-projection"]["mode"])
-            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimizeNOW")
+            AO_save_path = Path(str(updated_config["AO-projection"]["optimize_now_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
         
             # Set the active channel 
             for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
@@ -674,13 +679,6 @@ def main() -> None:
 
             with open(config_path, "w") as file:
                 json.dump(updated_config, file, indent=4)
-        # print(f"{AO_active_channels}",
-        #     f"{AO_laser_powers}",
-        #     f"{AO_active_channels}",
-        #     f"{AO_active_channels}",
-        #     f"{AO_active_channels}",
-        #     f"{AO_active_channels}")
-
           
         # Create AO event
         AO_event = MDAEvent(
@@ -758,13 +756,15 @@ def main() -> None:
                 
         # run O2-O3 autofocus if only initially
         if O2O3_mode=="Initial-only":
-            # opm_events.append(MDAEvent(**O2O3_event.model_dump()))
             opm_events.append(O2O3_event)
                
         if AO_mode == "Optimize-now":
             opm_events.append(AO_event)
             mda_widget._mmc.run_mda(opm_events, output=None)
-        
+            
+            need_to_setup_stage = False
+            need_to_setup_DAQ = False
+            n_time_steps = 0
         else:
             
             #--------------------------------------------------------------------#
@@ -890,6 +890,7 @@ def main() -> None:
                                     }
                                 }
                             )
+                            print("in mda")
                             opm_events.append(image_event)
                 else:
                     # Mirror scan each channel separately
@@ -952,32 +953,32 @@ def main() -> None:
             # elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
             #     print("stage mode")
 
-
-            # Check if path ends if .zarr. If so, use our OutputHandler
-            if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-                # Create dictionary of maximum axes sizes.
-                indice_sizes = {
-                    't' : int(np.maximum(1,n_time_steps)),
-                    'p' : int(np.maximum(1,n_stage_pos)),
-                    'c' : int(np.maximum(1,n_active_channels)),
-                    'z' : int(np.maximum(1,n_scan_steps))
-                }
-
+        # Check if path ends if .zarr. If so, use our OutputHandler
+        if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
+            # Create dictionary of maximum axes sizes.
+            indice_sizes = {
+                't' : int(np.maximum(1,n_time_steps)),
+                'p' : int(np.maximum(1,n_stage_pos)),
+                'c' : int(np.maximum(1,n_active_channels)),
+                'z' : int(np.maximum(1,n_scan_steps))
+            }
+            print(indice_sizes)
             # Setup modified tensorstore handler
             handler = OPMMirrorHandler(
                 path=Path(output),
                 indice_sizes=indice_sizes,
                 delete_existing=True
-            )
+                )
+            print("using our handler")
         # If not, use built-in handler based on suffix
         else:
             handler = Path(output)
 
-            # run MDA with our event structure and modified tensorstore handler 
-            mda_widget._mmc.run_mda(opm_events, output=handler)
+        # run MDA with our event structure and modified tensorstore handler 
+        mda_widget._mmc.run_mda(opm_events, output=handler)
 
-            # tell AO mirror class where to save mirror information
-            opmAOmirror_local.output_path = output.parents[0]
+        # tell AO mirror class where to save mirror information
+        opmAOmirror_local.output_path = output.parents[0]
 
     # modify the method on the instance
     mda_widget.execute_mda = custom_execute_mda
