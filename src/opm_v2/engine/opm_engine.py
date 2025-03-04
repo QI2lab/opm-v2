@@ -96,7 +96,7 @@ class OPMEngine(MDAEngine):
             elif action_name == "AO-projection":
                 
                 if data_dict["AO"]["apply_existing"]:
-                    print("load AO-projection\n")
+                    print("load AO-projection mirror state\n")
                     pass
                 else:
                     self.opmDAQ.stop_waveform_playback()
@@ -199,6 +199,7 @@ class OPMEngine(MDAEngine):
                 
             elif action_name == "AO-projection":               
                 if data_dict["AO"]["apply_existing"]:
+                    # self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
                     self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
@@ -219,7 +220,7 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.start_waveform_playback()
                 
             elif action_name == "Fluidics":
-                run_fluidic_program(True)
+                run_fluidic_program(verbose=True)
                 
         else:
             result = super().exec_event(event)
@@ -242,7 +243,9 @@ class OPMEngine(MDAEngine):
                 laser + " - PowerSetpoint (%)",
                 0.0
             )
-            
-        self.AOMirror.save_wfc_positions_array()
-
+        
+        try:
+            self.AOMirror.save_wfc_positions_array()
+        except Exception as e:
+            print(f"Failed to write mirror positions: \n{e}")
         super().teardown_sequence(sequence)

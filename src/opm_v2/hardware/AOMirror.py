@@ -271,17 +271,14 @@ class AOMirror:
     def _validate_positions(self, positions: NDArray) -> bool:
         """Ensure mirror positions are within safe voltage limits."""
         if positions.shape[0] != self.wfc.nb_actuators:
-            raise Exception(f"Positions array must have shape = {self.wfc.nb_actuators}")
+            print(f"Positions array must have shape = {self.wfc.nb_actuators}")
             return False
-
         if np.sum(np.where(np.abs(positions) >= 0.99,1,0)) > 1:
             print('Individual actuator voltage too high.')
             return False
-
         if np.sum(np.abs(positions)) >= 25:
             print('Total voltage too high.')
             return False
-        
         else:
             return True
         
@@ -292,7 +289,6 @@ class AOMirror:
 
     def set_mirror_positions_flat(self):
         """Set mirror to positions in the "flat" file."""
-
         self.wfc.move_to_absolute_positions(self.flat_positions)
 
     def set_mirror_positions_from_array(self,idx: int = 0):
@@ -305,7 +301,6 @@ class AOMirror:
         idx: int, default = 0
             position index to use
         """
-    
         self.set_mirror_positions(self.wfc_positions_array[idx,:])
         self.get_mirror_positions()
         
@@ -362,24 +357,6 @@ class AOMirror:
             return True
         else:
             return False  
-        
-        # apply = True
-        # overage_acutators = np.sum(np.where(np.abs(new_positions) >= 0.99,1,0))
-        # if overage_acutators > 1:
-        #     print('individual actuator voltage too high.')
-        #     apply = False
-        
-        # total_actuators = np.sum(np.abs(new_positions))
-        # if total_actuators >= 25:
-        #     print('total voltage too high.')
-        #     apply = False
-        
-        # if apply:
-        #     self.wfc.move_to_absolute_positions(new_positions)
-        #     self.current_positions = new_positions.copy()
-        #     self.current_coeffs = amps
-        # time.sleep(.01)
-        # return apply
         
     def save_wfc_positions_file(self, wfc_save_path: Path):
         """Save current mirror state to disk.
