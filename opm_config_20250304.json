@@ -22,7 +22,7 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.0052,
         "image_mirror_step_size_um": 0.4,
-        "image_mirror_neutral_um": 0.7,
+        "image_mirror_neutral_um": 0.5,
         "projection_mirror_neutral_um": 0.0,
         "verbose": false
     },
@@ -51,16 +51,16 @@
         ],
         "laser_power": [
             0.0,
-            60.0,
+            30.0,
             0.0,
             0.0,
             0.0
         ],
         "exposure_ms": 500.0,
         "mode": "shannon_dct",
-        "iterations": 1,
+        "iterations": 2,
         "image_mirror_range_um": 100.0,
-        "image_mirror_step_um": 0.4,
+        "image_mirror_step_um": 0.350,
         "camera_crop_y": 869,
         "optimize_now_path": "G:/optimize_now"
     },

@@ -104,7 +104,7 @@ class OPMNIDAQ:
         laser_blanking: bool = True,
         image_mirror_calibration: float = .0433,
         projection_mirror_calibration: float = .0052,
-        image_mirror_neutral_um: float = 0.7,
+        image_mirror_neutral_um: float = 0.0,
         projection_mirror_neutral_um: float = 0.0,
         image_mirror_step_size_um = 0.4,
         verbose: bool=False
@@ -132,7 +132,7 @@ class OPMNIDAQ:
         self._num_do_channels = 8
         self._do_waveform = np.zeros((self._num_do_channels),dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
-        self._ao_neutral_positions = [0.7, 0.0]
+        self._ao_neutral_positions = [image_mirror_neutral_um, projection_mirror_neutral_um]
         
         # Configure hardware pin addresses.
         self._dev_name = name
