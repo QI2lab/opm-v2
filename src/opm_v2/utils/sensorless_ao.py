@@ -69,7 +69,7 @@ def run_ao_optimization(
     shannon_psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
-    init_delta_range: Optional[float] = 0.200,
+    init_delta_range: Optional[float] = 0.35,
     delta_range_alpha_per_iter: Optional[float] = 0.5,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
@@ -233,7 +233,7 @@ def run_ao_optimization(
                 metrics.append(metric)
                 if save_dir_path:
                     mode_images.append(image)
-                    
+                    # TODO: update iter_modes
             """After looping through all mirror perturbations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
@@ -305,7 +305,7 @@ def run_ao_optimization(
                     print("    Metric is NAN, setting to 0")
                     metric = float(np.nan_to_num(metric))
                 
-                if round(metric,3)>=round(optimal_metric,3):
+                if round(metric,4)>=round(optimal_metric,4):
                     coeff_to_keep = coeff_opt
                     optimal_metric = metric
                     if verbose:
@@ -353,6 +353,10 @@ def run_ao_optimization(
             coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
             images_per_iteration.append(image)
             
+            # check if we are in tissue!
+            if not(any(_m >= 1.0 for _m in metrics_per_mode)):
+                print("No metrics over 1.0 detected! We must not be tissue??, skipping next AO iteration.")
+                return
         """Loop back to top and do the next iteration"""
         
     #---------------------------------------------#

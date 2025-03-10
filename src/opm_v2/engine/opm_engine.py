@@ -26,6 +26,7 @@ from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
 from pathlib import Path
 import numpy as np
+from time import sleep
 
 
 
@@ -46,6 +47,8 @@ class OPMEngine(MDAEngine):
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
+
+        self._mmc.setCircularBufferMemoryFootprint(16000)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -68,21 +71,24 @@ class OPMEngine(MDAEngine):
                 # self.opmDAQ.reset()         
                 
                 # Setup camera properties
-                self._mmc.clearROI()
-                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                self._mmc.setROI(
-                    data_dict["Camera"]["camera_crop"][0],
-                    data_dict["Camera"]["camera_crop"][1],
-                    data_dict["Camera"]["camera_crop"][2],
-                    data_dict["Camera"]["camera_crop"][3],
-                )
-                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
+                    current_roi = self._mmc.getROI()
+                    self._mmc.clearROI()
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    self._mmc.setROI(
+                        data_dict["Camera"]["camera_crop"][0],
+                        data_dict["Camera"]["camera_crop"][1],
+                        data_dict["Camera"]["camera_crop"][2],
+                        data_dict["Camera"]["camera_crop"][3],
+                    )
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
                     np.round(float(data_dict["Camera"]["exposure_ms"]),0)
                 )
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                
                 
             elif action_name == "Stage-Move":
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
@@ -92,7 +98,7 @@ class OPMEngine(MDAEngine):
                     np.round(float(data_dict["Stage"]["y_pos"]),2)
                 )
                 self._mmc.waitForDevice(self._mmc.getXYStageDevice())
-                                
+   
             elif action_name == "AO-projection":
                 
                 if data_dict["AO"]["apply_existing"]:
@@ -101,15 +107,17 @@ class OPMEngine(MDAEngine):
                 else:
                     self.opmDAQ.stop_waveform_playback()
                     self.opmDAQ.clear_tasks()
-                        
-                    self._mmc.clearROI()
-                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                    self._mmc.setROI(
-                        data_dict["Camera"]["camera_crop"][0],
-                        data_dict["Camera"]["camera_crop"][1],
-                        data_dict["Camera"]["camera_crop"][2],
-                        data_dict["Camera"]["camera_crop"][3],
-                    )
+                    
+                    if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
+                        current_roi = self._mmc.getROI()
+                        self._mmc.clearROI()
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        self._mmc.setROI(
+                            data_dict["Camera"]["camera_crop"][0],
+                            data_dict["Camera"]["camera_crop"][1],
+                            data_dict["Camera"]["camera_crop"][2],
+                            data_dict["Camera"]["camera_crop"][3],
+                        )
                     self._mmc.setProperty(
                         str(self._config["Camera"]["camera_id"]), 
                         "Exposure", 
@@ -135,15 +143,17 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
                 
-                self._mmc.clearROI()
-                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                self._mmc.setROI(
-                    data_dict["Camera"]["camera_crop"][0],
-                    data_dict["Camera"]["camera_crop"][1],
-                    data_dict["Camera"]["camera_crop"][2],
-                    data_dict["Camera"]["camera_crop"][3],
-                )
-                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
+                    current_roi = self._mmc.getROI()
+                    self._mmc.clearROI()
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    self._mmc.setROI(
+                        data_dict["Camera"]["camera_crop"][0],
+                        data_dict["Camera"]["camera_crop"][1],
+                        data_dict["Camera"]["camera_crop"][2],
+                        data_dict["Camera"]["camera_crop"][3],
+                    )
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
                 for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
                     if chan_bool:
@@ -174,6 +184,8 @@ class OPMEngine(MDAEngine):
                 )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.prepare_waveform_playback()
+                self._mmc.waitForSystem()
+
                 
             elif action_name == "Fluidics":
                 # Nothing to prep, the user should have already confirmed its ready to go.
@@ -226,6 +238,8 @@ class OPMEngine(MDAEngine):
             return result
         
     def teardown_event(self, event):
+        if isinstance(event.action, CustomAction):
+            self._mmc.clearCircularBuffer()
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
@@ -244,5 +258,7 @@ class OPMEngine(MDAEngine):
             )
             
         self.AOMirror.save_wfc_positions_array()
+        
+        self._mmc.clearCircularBuffer()
 
         super().teardown_sequence(sequence)
