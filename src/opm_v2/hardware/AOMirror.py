@@ -148,38 +148,38 @@ class AOMirror:
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
 
         self.mode_names = [
-            "Vert. Tilt",
-            "Horz. Tilt",
-            "Defocus",
-            "Vert. Asm.",
-            "Oblq. Asm.",
-            "Vert. Coma",
-            "Horz. Coma",
-            "3rd Spherical",
-            "Vert. Tre.",
-            "Horz. Tre.",
-            "Vert. 5th Asm.",
-            "Oblq. 5th Asm.",
-            "Vert. 5th Coma",
-            "Horz. 5th Coma",
-            "5th Spherical",
-            "Vert. Tetra.",
-            "Oblq. Tetra.",
-            "Vert. 7th Tre.",
-            "Horz. 7th Tre.",
-            "Vert. 7th Asm.",
-            "Oblq. 7th Asm.",
-            "Vert. 7th Coma",
-            "Horz. 7th Coma",
-            "7th Spherical",
-            "Vert. Penta.",
-            "Horz. Penta.",
-            "Vert. 9th Tetra.",
-            "Oblq. 9th Tetra.",
-            "Vert. 9th Tre.",
-            "Horz. 9th Tre.",
-            "Vert. 9th Asm.",
-            "Oblq. 9th Asm.",
+            "Vert. Tilt", # 0
+            "Horz. Tilt", # 1
+            "Defocus", # 2
+            "Vert. Asm.", # 3
+            "Oblq. Asm.", # 4
+            "Vert. Coma", # 5
+            "Horz. Coma", # 6
+            "3rd Spherical",  # 7
+            "Vert. Tre.", # 8
+            "Horz. Tre.", # 9
+            "Vert. 5th Asm.", # 10
+            "Oblq. 5th Asm.", # 11
+            "Vert. 5th Coma", # 12
+            "Horz. 5th Coma", # 13
+            "5th Spherical", # 14
+            "Vert. Tetra.", # 15
+            "Oblq. Tetra.", # 16
+            "Vert. 7th Tre.", # 17
+            "Horz. 7th Tre.", # 18
+            "Vert. 7th Asm.", # 19
+            "Oblq. 7th Asm.", # 20
+            "Vert. 7th Coma", # 21
+            "Horz. 7th Coma", # 22
+            "7th Spherical", # 23
+            "Vert. Penta.", # 24
+            "Horz. Penta.", # 25
+            "Vert. 9th Tetra.", # 26
+            "Oblq. 9th Tetra.", # 27
+            "Vert. 9th Tre.", # 28
+            "Horz. 9th Tre.", # 29
+            "Vert. 9th Asm.", # 30
+            "Oblq. 9th Asm.", # 31
         ]
 
     @property

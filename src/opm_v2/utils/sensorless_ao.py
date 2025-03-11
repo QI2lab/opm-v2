@@ -16,6 +16,7 @@ from typing import Optional, Tuple, Sequence, List
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
+from scipy.interpolate import griddata, RegularGridInterpolator
 from pathlib import Path
 from tifffile import imwrite
 import zarr
@@ -66,7 +67,7 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
-    shannon_psf_radius_px: Optional[float] = 2,
+    psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.200,
@@ -143,7 +144,7 @@ def run_ao_optimization(
     if "shannon" in metric_to_use:
         starting_metric = metric_shannon_dct(
             image=starting_image,
-            shannon_psf_radius_px=shannon_psf_radius_px,
+            psf_radius_px=psf_radius_px,
             crop_size=None
             )  
     elif "localize_gauss_2d" in metric_to_use:        
@@ -216,7 +217,7 @@ def run_ao_optimization(
                     if "shannon" in metric_to_use:
                         metric = metric_shannon_dct(
                             image=image,
-                            shannon_psf_radius_px=shannon_psf_radius_px,
+                            psf_radius_px=psf_radius_px,
                             crop_size=None
                             )  
                     elif "localize_gauss_2d" in metric_to_use:        
@@ -293,7 +294,7 @@ def run_ao_optimization(
                 if "shannon" in metric_to_use:
                     metric = metric_shannon_dct(
                         image=image,
-                        shannon_psf_radius_px=shannon_psf_radius_px,
+                        psf_radius_px=psf_radius_px,
                         crop_size=None
                         )  
                 elif "localize_gauss_2d" in metric_to_use:        
@@ -740,7 +741,7 @@ def gauss2d(coords_xy: ArrayLike, amplitude: float, center_x: float, center_y: f
     return raveled_gauss2d
 
 
-def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
+def otf_radius(img: ArrayLike, psf_radius_px: float) -> int:
     """
     Computes the optical transfer function (OTF) cutoff frequency.
 
@@ -748,7 +749,7 @@ def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
     ----------
     img : ArrayLike
         2D image.
-    shannon_psf_radius_px : float
+    psf_radius_px : float
         Estimated point spread function (PSF) radius in pixels.
 
     Returns
@@ -757,8 +758,8 @@ def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
         OTF cutoff frequency in pixels.
     """
     w = min(img.shape)
-    shannon_psf_radius_px = max(1, np.ceil(shannon_psf_radius_px))  # clip all PSF radii below 1 px to 1.
-    cutoff = np.ceil(w / (2 * shannon_psf_radius_px)).astype(int)
+    psf_radius_px = max(1, np.ceil(psf_radius_px))  # clip all PSF radii below 1 px to 1.
+    cutoff = np.ceil(w / (2 * psf_radius_px)).astype(int)
 
     return cutoff
 
@@ -1034,7 +1035,7 @@ def metric_brightness(image: ArrayLike,
 
 def metric_shannon_dct(
     image: ArrayLike, 
-    shannon_psf_radius_px: float = 3,
+    psf_radius_px: float = 3,
     crop_size: Optional[int] = None,
     threshold: Optional[float] = None,
     image_center: Optional[int] = None,
@@ -1046,7 +1047,7 @@ def metric_shannon_dct(
     ----------
     image : ArrayLike
         2D image.
-    shannon_psf_radius_px : float, optional
+    psf_radius_px : float, optional
         Estimated point spread function (PSF) radius in pixels (default: 3).
     crop_size : Optional[int], optional
         Crop size for image (default: 501).
@@ -1074,7 +1075,7 @@ def metric_shannon_dct(
         image = get_cropped_image(image, crop_size, center)
     
     # Compute the cutoff frequency based on OTF radius
-    cutoff = otf_radius(image, shannon_psf_radius_px)
+    cutoff = otf_radius(image, psf_radius_px)
 
     # Compute DCT
     dct_result = dct_2d(image)
@@ -1357,6 +1358,162 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
         
     return metric
 
+#-------------------------------------------------#
+# Helper function for generating grid
+#-------------------------------------------------#
+
+
+def map_ao_grid(stage_positions: np.ndarray,
+                xy_ao_range: float,
+                z_ao_range: float,
+                xy_interp_range: float,
+                z_interp_range: float,
+                ao_dict: dict,
+                save_dir_path: Path = None,
+                verbose: bool = False,
+ ) -> np.ndarray:
+    """
+    Maps and interpolates adaptive optics (AO) mirror coefficients over a structured 
+    3D grid of stage positions.
+
+    This function:
+    1. Generates a structured grid of stage positions in a snake-like pattern.
+    2. Runs AO optimization at each sampled position to collect mirror coefficients.
+    3. Interpolates AO mirror coefficients over a finer 3D grid using linear interpolation.
+
+    Parameters:
+    -----------
+    stage_positions : np.ndarray
+        An array of dictionaries containing stage positions with keys "x", "y", and "z".
+    xy_ao_range : float
+        The spacing (in microns) between adjacent x and y sample points for AO optimization.
+    z_ao_range : float
+        The spacing (in microns) between adjacent z sample points for AO optimization.
+    xy_interp_range : float
+        The spacing (in microns) for interpolation along the x and y axes.
+    z_interp_range : float
+        The spacing (in microns) for interpolation along the z-axis.
+    ao_dict : dict
+        A dictionary containing AO optimization parameters, including:
+        - "image_mirror_step_size_um"
+        - "image_mirror_range_um"
+        - "exposure_ms"
+        - "channel_states"
+        - "shannon_dct" (metric)
+        - "psf_radius_px"
+        - "num_iterations"
+    save_dir_path : Path, optional
+        Path to save AO optimization data. Default is None.
+    verbose : bool, optional
+        If True, prints additional debugging information. Default is False.
+
+    Returns:
+    --------
+    np.ndarray
+        A 2D array where each row corresponds to an interpolated stage position,
+        and each column corresponds to an AO mirror coefficient.
+    np.ndarray
+        A 2D array where each row corresponds to a stage position where the mode coefficient was interpolated
+    """
+    aoMirror_local = AOMirror.instance()
+    mmc = CMMCorePlus.instance()
+    
+    stage_positions_array = np.array([
+        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+    ])
+    
+    # Generate array of stage positions to sample and run AO
+    max_z_pos = np.max(stage_positions_array[:, 0])
+    min_z_pos = np.min(stage_positions_array[:, 0])
+    max_y_pos = np.max(stage_positions_array[:, 1])
+    min_y_pos = np.min(stage_positions_array[:, 1])
+    max_x_pos = np.max(stage_positions_array[:, 2])
+    min_x_pos = np.min(stage_positions_array[:, 2])
+    
+    # Calculate number of grid points
+    n_z_samples = int(np.ceil(np.abs(max_z_pos - min_z_pos) / z_ao_range)) + 1
+    n_y_samples = int(np.ceil(np.abs(max_y_pos - min_y_pos) / xy_ao_range)) + 1
+    n_x_samples = int(np.ceil(np.abs(max_x_pos - min_x_pos) / xy_ao_range)) + 1
+    
+    # Generate stage positions in a snake-like pattern
+    sample_stage_positions = []
+    for x_idx in range(n_x_samples):
+        y_range = range(n_y_samples) if x_idx % 2 == 0 else range(n_y_samples - 1, -1, -1)
+        for y_idx in y_range:
+            for z_idx in range(n_z_samples):
+                sample_stage_positions.append([
+                    float(np.round(min_x_pos + x_idx * xy_ao_range, 2)),
+                    float(np.round(min_y_pos + y_idx * xy_ao_range, 2)),
+                    float(np.round(min_z_pos + z_idx * z_ao_range, 2))
+                ])
+    
+    sample_stage_positions = np.asarray(sample_stage_positions)
+    
+    # Extract unique grid points
+    unique_x = np.unique(sample_stage_positions[:, 2])  # x positions
+    unique_y = np.unique(sample_stage_positions[:, 1])  # y positions
+    unique_z = np.unique(sample_stage_positions[:, 0])  # z positions
+
+    # Storage for mirror coefficients
+    mirror_coeffs_grid = np.zeros((len(sample_stage_positions), aoMirror_local.n_positions))
+
+    # Run AO optimization for each stage position
+    for i, (z_pos, y_pos, x_pos) in enumerate(sample_stage_positions):
+        mmc.setPosition(z_pos)
+        mmc.waitForDevice(mmc.getFocusDevice())
+        mmc.setXYPosition(x_pos, y_pos)
+        mmc.waitForDevice(mmc.getXYStageDevice())
+
+        run_ao_optimization(
+            image_mirror_step_size_um=ao_dict["image_mirror_step_size_um"],
+            image_mirror_range_um=ao_dict["image_mirror_range_um"],
+            exposure_ms=ao_dict["exposure_ms"],
+            channel_states=ao_dict["channel_states"],
+            metric_to_use=ao_dict["shannon_dct"],
+            psf_radius_px=ao_dict["psf_radius_px"],
+            num_iterations=ao_dict["num_iterations"],
+            num_mode_steps=3,
+            init_delta_range=0.200,
+            delta_range_alpha_per_iter=0.5,
+            save_dir_path=save_dir_path,
+            verbose=verbose
+        )
+
+        mirror_coeffs_grid[i] = AOMirror.current_coeffs()
+    
+    # Reshape mirror coefficients into a structured grid
+    mirror_coeffs_grid_reshaped = mirror_coeffs_grid.reshape(
+        (len(unique_z), len(unique_y), len(unique_x), -1)  # -1 keeps last dimension
+    )
+
+    # Create interpolators for each AO mode
+    coeff_interp_functions = [
+        RegularGridInterpolator(
+            (unique_z, unique_y, unique_x),  
+            mirror_coeffs_grid_reshaped[:, :, :, coef_idx],  
+            method="linear",
+            bounds_error=False,
+            fill_value=None
+        )
+        for coef_idx in range(mirror_coeffs_grid.shape[1])  
+    ]
+
+    # Generate interpolation grid
+    interp_stage_positions = []
+    for x in np.arange(min_x_pos, max_x_pos + xy_interp_range, xy_interp_range):
+        for y in np.arange(min_y_pos, max_y_pos + xy_interp_range, xy_interp_range):
+            for z in np.arange(min_z_pos, max_z_pos + z_interp_range, z_interp_range):
+                interp_stage_positions.append([z, y, x])
+    
+    interp_stage_positions = np.array(interp_stage_positions)
+
+    # Interpolate mirror coefficients
+    interp_mirror_coeffs = np.zeros([interp_stage_positions.shape[0], aoMirror_local.n_positions])
+    for ii, pos in enumerate(interp_stage_positions):
+        for coef_idx, interp_func in enumerate(coeff_interp_functions):
+            interp_mirror_coeffs[ii, coef_idx] = interp_func(pos)
+
+    return interp_mirror_coeffs, interp_stage_positions
 
 #-------------------------------------------------#
 # Helper functions for saving optmization results
