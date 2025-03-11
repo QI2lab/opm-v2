@@ -56,7 +56,7 @@ class AOMirror:
         n_modes: int = 32,
         n_positions: int = 1,
         modes_to_ignore: List[int] = []
-    ):
+        ):
         
         # Set the first instance of this class as the global singleton
         global _instance_mirror
@@ -72,7 +72,10 @@ class AOMirror:
         self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
         
-        # create wkpy sub class objects
+        #---------------------------------------------#
+        # Start wfc 
+        #---------------------------------------------#
+        
         # Wavefront corrector and set objects
         self.wfc = wkpy.WavefrontCorrector(
             config_file_path = str(self._wfc_config_file_path)
@@ -132,21 +135,34 @@ class AOMirror:
             pupil = self.pupil
         ) 
         
+        #---------------------------------------------#
+        # Set up wfc positions and position tracking
+        #---------------------------------------------#
+        
         if self._flat_positions_file_path is not None:
-            # Configure mirror in the flat position
             self.flat_positions = np.asarray(self.wfc.get_positions_from_file(str(flat_positions_file_path)))
         else:
             self.flat_positions = np.zeros(self.wfc.nb_actuators)
                     
         self._current_coeffs = np.zeros(n_modes,dtype=np.float32)
         self._current_positions = np.asarray(self.flat_positions)
-            
-        self.set_mirror_positions_flat()
-        self.wfc_positions = {"flat":self.flat_positions,
-                              "opm_current_flat":self.flat_positions}
-        self.get_mirror_positions()
+        
+        # here is a spot to keep mirror position arrays
+        self.wfc_positions = {
+            "system_flat":self.flat_positions,
+            "last_optimization": self.flat_positions,
+            "grid": np.empty([1, 1, self.wfc.nb_actuators])
+            }          
+        # here we store a 1d array of ao mirror positions that correspond to stage positions array.
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
+          
+        self.set_mirror_positions_flat()
+        self.get_mirror_positions()
 
+        #---------------------------------------------#
+        # Define mode names matching the mirror modes
+        #---------------------------------------------#
+        
         self.mode_names = [
             "Vert. Tilt", # 0
             "Horz. Tilt", # 1
@@ -288,8 +304,8 @@ class AOMirror:
         self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
 
     def set_mirror_positions_flat(self):
-        """Set mirror to positions in the "flat" file."""
-        self.wfc.move_to_absolute_positions(self.flat_positions)
+        """Set mirror to positions to system flat."""
+        self.wfc.move_to_absolute_positions(self.wfc_positions["system_flat"])
 
     def set_mirror_positions_from_array(self,idx: int = 0):
         """Set mirror positions from stored array.
@@ -304,7 +320,6 @@ class AOMirror:
         self.set_mirror_positions(self.wfc_positions_array[idx,:])
         self.get_mirror_positions()
         
-
     def set_mirror_positions(self, positions: NDArray):
         """Set mirror positions.
 
@@ -315,16 +330,14 @@ class AOMirror:
         """
         if self._validate_positions(positions):
             self.wfc.move_to_absolute_positions(positions)
+            time.sleep(0.01)
             self.get_mirror_positions()
-            print("mirror is set")
             return True
         else:
             return False    
         
     def set_modal_coefficients(self,amps: NDArray):
         """Set modal coefficients.
-
-        Commonly in Zernike modes.
 
         Parameters
         ----------
@@ -349,7 +362,7 @@ class AOMirror:
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
         new_positions = np.asarray(self.flat_positions) + np.asarray(deltas)
-        
+                
         if self._validate_positions(new_positions):
             self.wfc.move_to_absolute_positions(new_positions)
             time.sleep(0.01)
@@ -368,6 +381,36 @@ class AOMirror:
         """
         self.wfc.save_current_positions_to_file(pmc_file_path=str(wfc_save_path))
     
+    def save_wfc_state(self, name: str):
+        """Save current mirror positions to disk.
+
+        Parameters
+        ----------
+        name : str
+            _description_
+        """
+        self.get_mirror_positions()
+        self.wfc_positions[name] = self.current_positions
+        
+        actuator_save_path = self._output_path / Path(f"{name}_actuator_positions.wcs") 
+        self.wfc.save_current_positions_to_file(pmc_file_path=str(actuator_save_path))
+        
+        # save last updated
+        coeff_save_path = self._output_path / Path(f"{name}_modalcoeffs.json")
+        
+        # copied from navigate
+        coefs = self.current_coeffs
+        mode_dict = {}
+        for c in range(len(self.mode_names)):
+            mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
+
+        with open(coeff_save_path, "w") as f:
+            json.dump(mode_dict, f)
+            
+        if "system_flat" in name:
+            self.flat_positions = self.current_positions
+            self._flat_positions_file_path = actuator_save_path    
+        
     def save_wfc_positions_array(self, fname : str = "exp_ao_positions"):
         """Save wfc positions array to disk
         
@@ -380,37 +423,6 @@ class AOMirror:
         with open(positions_file_path, "w") as f:
             json.dump(wfc_positions_list, f)
             
-    def save_wfc_state(self, name: str):
-        """Save current mirror positions to disk.
-
-        Parameters
-        ----------
-        name : str
-            _description_
-        """
-        self.get_mirror_positions()
-        self.wfc_positions[name] = self.current_positions
-        
-        actuator_save_path = self._interaction_matrix_file_path.parent / Path(f"{name}_actuator_positions.wcs") 
-        self.wfc.save_current_positions_to_file(pmc_file_path=str(actuator_save_path))
-        
-        # save last updated
-        coeff_save_path = self._interaction_matrix_file_path.parent / Path(f"{name}_modalcoeffs.json")
-        
-        # copied from navigate
-        coefs = self.current_coeffs
-        mode_dict = {}
-        for c in range(len(self.mode_names)):
-            mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
-
-        with open(coeff_save_path, "w") as f:
-            json.dump(mode_dict, f)
-            
-        if name=="flat":
-            self.flat_positions = self.current_positions
-            self.flat_coeffs = self.current_coeffs
-            self._flat_positions_file_path = actuator_save_path
-    
     def load_wfc_positions_array(self, fname : str = "exp_ao_positions"):
         positions_file_path = self._output_path / Path(f"{fname}.json")
         with open(positions_file_path, "r") as f:

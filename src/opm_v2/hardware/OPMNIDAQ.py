@@ -15,19 +15,6 @@ Change Log:
 2025/02: Projection mode
 2021/12: Initial version
 
-Example projection code
-nidaq.set_channels_to_use([True, False, False, False, False])
-nidaq.exposure = 0.10
-scan_mirror_sweep_um = 40
-proj_mirror_sweep_um = scan_mirror_sweep_um  #+ (30 * np.cos(30 * np.pi / 180))
-proj_mirror_calibration =  .0052
-nidaq.set_scan_mirror_range(0.4, scan_mirror_sweep_um)
-voltage = proj_mirror_sweep_um * proj_mirror_calibration 
-nidaq.proj_mirror_min_volt = -voltage/2
-nidaq.proj_mirror_max_volt = voltage/2
-nidaq.generate_waveforms()
-nidaq.prepare_waveform_playback()
-nidaq.start_waveform_playback()
 """
 
 import PyDAQmx as daqmx
@@ -36,7 +23,7 @@ import numpy as np
 from typing import Sequence
 import warnings
 
-# Suppress the specific warning
+# Suppress warning for stoping AO waveform before all samples are sent
 warnings.filterwarnings("ignore", category=daqmx.DAQmxFunctions.StoppedBeforeDoneWarning)
 _instance_daq = None
 
@@ -126,7 +113,7 @@ class OPMNIDAQ:
         # Define waveform generation parameters
         self._daq_sample_rate_hz = 10000
         self._do_ind = [0,1,2,3,4]
-        self._channel_states = [False, False, False, False]
+        self._channel_states = [False, False, False, False, False]
         self._active_channels_indices = None
         self._n_active_channels = 0
         self._num_do_channels = 8
@@ -152,7 +139,7 @@ class OPMNIDAQ:
         self._task_ao = None
         self._task_di = None
 
-        # daq data
+        # daq running
         self._running = False
         
     @property
@@ -405,8 +392,12 @@ class OPMNIDAQ:
 
     def running(self) -> bool:
         """Returns true is playback is active, false otherwise"""
-
+        
         return self._running
+    
+    #-----------------------------------------------------#
+    # Helper function for setting daq values
+    #-----------------------------------------------------#
         
     def set_acquisition_params(
         self,
@@ -448,7 +439,11 @@ class OPMNIDAQ:
             self.image_mirror_step_size_um = image_mirror_step_size_um
         if image_mirror_range_um:
             self.image_mirror_range_um = image_mirror_range_um
-                
+            
+    #-----------------------------------------------------#
+    # Reset device methods
+    #-----------------------------------------------------#
+    
     def reset(self):
         """Reset the device."""
 
@@ -515,7 +510,11 @@ class OPMNIDAQ:
                 _task.ClearTask()
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
             pass
-                
+    
+    #-----------------------------------------------------#
+    # Methods for generating / starting / stopping waveform playback 
+    #-----------------------------------------------------#
+    
     def generate_waveforms(self):
         """Generate waveforms necessary to capture 1 'scan_type'.
         
@@ -697,11 +696,9 @@ class OPMNIDAQ:
         self._do_waveform = _do_waveform
         self._ao_waveform = _ao_waveform
         
-            
-    def prepare_waveform_playback(self):
+    def program_daq_waveforms(self):
         """Create DAQ tasks for synchronizing camera output triggers to lasers and galvo mirrors."""
         
-        # self.stop_waveform_playback()
         try:
             #-------------------------------------------------#
             # Create DI trigger from camera task
