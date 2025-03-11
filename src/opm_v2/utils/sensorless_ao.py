@@ -16,6 +16,7 @@ from typing import Optional, Tuple, Sequence, List
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
+from scipy.interpolate import RegularGridInterpolator
 from pathlib import Path
 from tifffile import imwrite
 import zarr
@@ -55,7 +56,6 @@ mode_names = [
             "Oblq. 9th Asm.",
         ]
 
-
 #-------------------------------------------------#
 # AO optimization
 #-------------------------------------------------#
@@ -66,7 +66,7 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
-    shannon_psf_radius_px: Optional[float] = 2,
+    psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.35,
@@ -98,7 +98,7 @@ def run_ao_optimization(
         exposure_ms=exposure_ms
     )
     opmNIDAQ_local.generate_waveforms()
-    opmNIDAQ_local.prepare_waveform_playback()
+    opmNIDAQ_local.program_daq_waveforms()
     
     # Re-enforce camera exposure
     mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
@@ -108,7 +108,7 @@ def run_ao_optimization(
     #---------------------------------------------#
     # Setup Zernike modal coeff arrays
     #---------------------------------------------#
-    initial_zern_modes = aoMirror_local.current_coeffs.copy() # coeff before optmization
+    initial_zern_modes = aoMirror_local.current_coeffs.copy() # coeff before optimization
     init_iter_zern_modes = initial_zern_modes.copy() # Mirror coeffs at the start of optimizing a mode 
     active_zern_modes = initial_zern_modes.copy() # modified coeffs to be or are applied to mirror
     optimized_zern_modes = initial_zern_modes.copy() # Mode coeffs after running all iterations
@@ -136,14 +136,12 @@ def run_ao_optimization(
     
     # Snap an image and calculate the starting metric.
     opmNIDAQ_local.start_waveform_playback()
-    
-    #mmc.snapImage()
     starting_image = mmc.snap()
     
     if "shannon" in metric_to_use:
         starting_metric = metric_shannon_dct(
             image=starting_image,
-            shannon_psf_radius_px=shannon_psf_radius_px,
+            psf_radius_px=psf_radius_px,
             crop_size=None
             )  
     elif "localize_gauss_2d" in metric_to_use:        
@@ -216,7 +214,7 @@ def run_ao_optimization(
                     if "shannon" in metric_to_use:
                         metric = metric_shannon_dct(
                             image=image,
-                            shannon_psf_radius_px=shannon_psf_radius_px,
+                            psf_radius_px=psf_radius_px,
                             crop_size=None
                             )  
                     elif "localize_gauss_2d" in metric_to_use:        
@@ -293,7 +291,7 @@ def run_ao_optimization(
                 if "shannon" in metric_to_use:
                     metric = metric_shannon_dct(
                         image=image,
-                        shannon_psf_radius_px=shannon_psf_radius_px,
+                        psf_radius_px=psf_radius_px,
                         crop_size=None
                         )  
                 elif "localize_gauss_2d" in metric_to_use:        
@@ -371,7 +369,10 @@ def run_ao_optimization(
     
     # apply optimized Zernike mode coefficients to the mirror
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
-    aoMirror_local.save_wfc_state(name="opm_current_flat")
+    
+    # update mirror dict with current positions
+    aoMirror_local.wfc_positions["last_optimization"] = aoMirror_local.current_positions()
+    
     opmNIDAQ_local.stop_waveform_playback()
     
     if save_dir_path:
@@ -425,7 +426,9 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     """
     import matplotlib.pyplot as plt
     import matplotlib
-    matplotlib.use('Agg')
+    if not show_fig:
+        matplotlib.use('Agg')
+    
     # Create the plot
     fig, ax = plt.subplots(figsize=(6, 8))
     
@@ -437,8 +440,12 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     for i in range(len(zernike_mode_names)):
         for j in range(optimal_coefficients.shape[0]):
             marker_style = markers[j % len(markers)]
-            ax.scatter(optimal_coefficients[j, i], i, 
-                       color=colors[j % len(colors)], s=125, marker=marker_style)  
+            ax.scatter(
+                optimal_coefficients[j, i], i, 
+                color=colors[j % len(colors)],
+                s=125, 
+                marker=marker_style
+                )  
         ax.axhline(y=i, linestyle="--", linewidth=1, color='k')
         
     # Plot a vertical line at 0 for reference
@@ -449,10 +456,13 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     ax.set_yticklabels(zernike_mode_names)
     ax.set_xlabel("Coefficient Value")
     ax.set_title("Zernike mode coefficients at each iteration")
-    ax.set_xlim(-0.15, 0.15)
+    ax.set_xlim(-0.350, 0.350)
 
     # Add a legend for time points
-    ax.legend([f'Iteration: {i+1}' for i in range(optimal_coefficients.shape[0])], loc='upper right')
+    ax.legend(
+        [f'Iteration: {i+1}' for i in range(optimal_coefficients.shape[0])], 
+        loc='upper right'
+        )
 
     # Remove grid lines
     ax.grid(False)
@@ -463,8 +473,8 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
-
-def plot_metric_progress(metrics_per_iteration: ArrayLike,
+def plot_metric_progress(metrics_per_mode: ArrayLike,
+                         metrics_per_iteration: ArrayLike,
                          modes_to_optimize: List[int],
                          zernike_mode_names: List[str],
                          save_dir_path: Optional[Path] = None,
@@ -486,7 +496,14 @@ def plot_metric_progress(metrics_per_iteration: ArrayLike,
     """   
     import matplotlib.pyplot as plt
     import matplotlib
-    matplotlib.use('Agg')
+    if not show_fig:
+        matplotlib.use('Agg')
+    
+    metrics_per_mode = np.reshape(
+        metrics_per_mode[1:], # ignore the starting metric 
+        (len(metrics_per_iteration), len(modes_to_optimize))
+        )
+
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
 
@@ -495,7 +512,7 @@ def plot_metric_progress(metrics_per_iteration: ArrayLike,
     markers = ['x', 'o', '^', 's', '*']
 
     # Loop over iterations and plot each series
-    for ii, series in enumerate(metrics_per_iteration):
+    for ii, series in enumerate(metrics_per_mode):
         ax.plot(series, color=colors[ii], label=f"iteration {ii}", marker=markers[ii], linestyle="--", linewidth=1)
 
     # Set the x-axis to correspond to the modes_to_optimize
@@ -515,7 +532,6 @@ def plot_metric_progress(metrics_per_iteration: ArrayLike,
         plt.show()
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_metrics.png"))
-
 
 def plot_2d_localization_fit_summary(
     fit_results,
@@ -643,7 +659,6 @@ def plot_2d_localization_fit_summary(
     del figh_sum
     return None
 
-
 #-------------------------------------------------#
 # Functions for preparing data
 #-------------------------------------------------#
@@ -672,7 +687,6 @@ def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
         center = (image.shape[1]//2, image.shape[0]//2)
     return center
 
-
 def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int]) -> ArrayLike:
     """
     Extract a square region from an image centered at a given point.
@@ -700,7 +714,6 @@ def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int])
         y_min, y_max = max(center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[1])
         cropped_image = image[x_min:x_max, y_min:y_max]
     return cropped_image
-
 
 #-------------------------------------------------#
 # Functions for fitting and calculations
@@ -743,8 +756,7 @@ def gauss2d(coords_xy: ArrayLike, amplitude: float, center_x: float, center_y: f
 
     return raveled_gauss2d
 
-
-def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
+def otf_radius(img: ArrayLike, psf_radius_px: float) -> int:
     """
     Computes the optical transfer function (OTF) cutoff frequency.
 
@@ -752,7 +764,7 @@ def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
     ----------
     img : ArrayLike
         2D image.
-    shannon_psf_radius_px : float
+    psf_radius_px : float
         Estimated point spread function (PSF) radius in pixels.
 
     Returns
@@ -761,11 +773,10 @@ def otf_radius(img: ArrayLike, shannon_psf_radius_px: float) -> int:
         OTF cutoff frequency in pixels.
     """
     w = min(img.shape)
-    shannon_psf_radius_px = max(1, np.ceil(shannon_psf_radius_px))  # clip all PSF radii below 1 px to 1.
-    cutoff = np.ceil(w / (2 * shannon_psf_radius_px)).astype(int)
+    psf_radius_px = max(1, np.ceil(psf_radius_px))  # clip all PSF radii below 1 px to 1.
+    cutoff = np.ceil(w / (2 * psf_radius_px)).astype(int)
 
     return cutoff
-
 
 def normL2(x: ArrayLike) -> float:
     """
@@ -784,7 +795,6 @@ def normL2(x: ArrayLike) -> float:
     l2norm = np.sqrt(np.sum(x.flatten() ** 2))
 
     return l2norm
-
 
 def shannon(spectrum_2d: ArrayLike, otf_radius: int = 100) -> float:
     """
@@ -819,7 +829,6 @@ def shannon(spectrum_2d: ArrayLike, otf_radius: int = 100) -> float:
     metric = np.log10(entropy)
     return metric
 
-
 def dct_2d(image: ArrayLike, cutoff: int = 100) -> ArrayLike:
     """
     Computes the 2D discrete cosine transform (DCT) of an image with a cutoff.
@@ -839,7 +848,6 @@ def dct_2d(image: ArrayLike, cutoff: int = 100) -> ArrayLike:
     dct_2d = dct(dct(image.astype(np.float32), axis=0, norm='ortho'), axis=1, norm='ortho')
 
     return dct_2d
-
 
 def quadratic(x: float, a: float, b: float, c: float) -> ArrayLike:
     """
@@ -863,7 +871,6 @@ def quadratic(x: float, a: float, b: float, c: float) -> ArrayLike:
     """
     return a * x**2 + b * x + c
 
-
 def quadratic_fit(x: ArrayLike, y: ArrayLike) -> Sequence[float]:
     """
     Quadratic function for curve fitting.
@@ -884,7 +891,6 @@ def quadratic_fit(x: ArrayLike, y: ArrayLike) -> Sequence[float]:
     coeffs = np.linalg.lstsq(A, y, rcond=None)[0]
 
     return coeffs
-
 
 #-------------------------------------------------#
 # Localization methods to generate ROIs for fitting
@@ -1035,10 +1041,9 @@ def metric_brightness(image: ArrayLike,
     else:
         return np.mean(max_pixels)
 
-
 def metric_shannon_dct(
     image: ArrayLike, 
-    shannon_psf_radius_px: float = 3,
+    psf_radius_px: float = 3,
     crop_size: Optional[int] = None,
     threshold: Optional[float] = None,
     image_center: Optional[int] = None,
@@ -1050,7 +1055,7 @@ def metric_shannon_dct(
     ----------
     image : ArrayLike
         2D image.
-    shannon_psf_radius_px : float, optional
+    psf_radius_px : float, optional
         Estimated point spread function (PSF) radius in pixels (default: 3).
     crop_size : Optional[int], optional
         Crop size for image (default: 501).
@@ -1078,7 +1083,7 @@ def metric_shannon_dct(
         image = get_cropped_image(image, crop_size, center)
     
     # Compute the cutoff frequency based on OTF radius
-    cutoff = otf_radius(image, shannon_psf_radius_px)
+    cutoff = otf_radius(image, psf_radius_px)
 
     # Compute DCT
     dct_result = dct_2d(image)
@@ -1090,7 +1095,6 @@ def metric_shannon_dct(
         return shannon_dct, image
     else:
         return shannon_dct
-
 
 def metric_gauss2d(image: ArrayLike,
                    crop_size: Optional[int] = None,
@@ -1163,168 +1167,6 @@ def metric_gauss2d(image: ArrayLike,
     else:
         return weighted_metric
 
-
-def metric_localize_gauss3d(
-    image: ArrayLike,
-    metric_value: str = "mean",
-    crop_size: Optional[int] = None,
-    threshold: Optional[float] = 100,
-    image_center: Optional[int] = None,
-    verbose: Optional[bool] = False,
-    return_image: Optional[bool] = False
-    ):
-    """Compute weighted metric for 3D Gaussian using LocalizePSF
-    
-    Parameters
-    ----------
-    image : ArrayLike
-        2D image.
-    metric_value: str
-        Whether to average fit values or generate an average PSF and fit the result.
-    threshold : float, optional
-        Initial threshold to find spot (default is 100).
-    crop_size_px : int, optional
-        Crop size in pixels, one side (default is 20).
-    image_center : Optional[int], optional
-        Center of the image to crop (default is None).
-    return_image : Optional[bool], optional
-        Whether to return the cropped image (default is False).
-
-    Returns
-    -------
-    weighted_metric : float
-        Weighted metric value.
-    """
-    pass
-    """
-    Need to work on this:
-    1. is there a conflict installing any of the localize_psf packages?
-    """
-    # # Optionally crop the image
-    # if crop_size:    
-    #     if image_center is None:
-    #         center = get_image_center(image, threshold)
-    #     else:
-    #         center = image_center
-    #     # crop image
-    #     image = get_cropped_image(image, crop_size, center)
-        
-    # image = image / np.max(image)
-    # image = image.astype(np.float32)
-        
-    # # Define coordinates to pass to localization, use pixel units
-    # # Using pixel units, but assumes we are using 0.270 z-steps
-    # dxy = 1 # 0.115
-    # dz  = 0.250 / 0.115 # 0.250 
-    # coords_3d = get_coords(image.shape, (dz, dxy, dxy))
-    # # coords_2d = get_coords(cropped_image.shape[1:], (dxy, dxy))
-    
-    # # Prepare filter for localization
-    # sigma_bounds = ((0.1, 0.1),(100, 100)) # [xy min, xy max, z min, z max]
-    # amp_bounds = (0.1, 2.0) # [min / max]
-    # param_filter = get_param_filter(coords_3d,
-    #                                 fit_dist_max_err=(5, 5),
-    #                                 min_spot_sep=(10, 6),
-    #                                 amp_bounds=amp_bounds,
-    #                                 dist_boundary_min=[3, 3],
-    #                                 sigma_bounds=sigma_bounds
-    #                             )
-    # filter = param_filter  
-     
-    # # define roi sizes used in fitting, assumes a minimum 3um z-stack, dz=0.27um
-    # fit_roi_size = [9, 7, 7]
-    
-    # # Run localization function
-    # model = psf.gaussian3d_psf_model()
-    # _, r, img_filtered = localize_beads_generic(
-    #     image,
-    #     drs=(dz, dxy, dxy),
-    #     threshold=0.5,
-    #     roi_size=fit_roi_size,
-    #     filter_sigma_small=None,
-    #     filter_sigma_large=None,
-    #     min_spot_sep=(10,10),
-    #     model=model,
-    #     filter=filter,
-    #     max_nfit_iterations=100,
-    #     use_gpu_fit=False,
-    #     use_gpu_filter=False,
-    #     return_filtered_images=True,
-    #     fit_filtered_images=False,
-    #     verbose=True
-    #     )
-    
-    # if r is None:
-    #     print("no beads found!")
-    #     return 0, image[image.shape[0]//2]
-    # else:
-    #     to_keep = r["to_keep"]
-    #     fit_params = r["fit_params"]
-    #     sz = fit_params[to_keep, 5]
-    #     sxy = fit_params[to_keep, 4]
-    #     amp = fit_params[to_keep, 0]
-    #     # Use averages over fit results
-    #     if metric_value=="mean":
-    #         sz = np.mean(fit_params[to_keep, 5])
-    #         sxy = np.mean(fit_params[to_keep, 4])
-    #         amp = np.mean(fit_params[to_keep, 0])
-    #     elif metric_value=="median":
-    #         sz = np.median(fit_params[to_keep, 5])
-    #         sxy = np.median(fit_params[to_keep, 4])
-    #         amp = np.median(fit_params[to_keep, 0])
-    #     elif metric_value=="average":
-    #         # Generate average PSF
-    #         fit_roi_size_pix = np.round(np.array(fit_roi_size) / np.array([dz, dxy, dxy])).astype(int)
-    #         fit_roi_size_pix += (1 - np.mod(fit_roi_size_pix, 2))
-
-    #         psfs_real = np.zeros((1) + tuple(fit_roi_size_pix))
-    #         # otfs_real = np.zeros(psfs_real.shape, dtype=complex)
-    #         fit_params_average = np.zeros((1, model.nparams))
-    #         psf_coords = None
-
-    #         # only use a percent of bead results based on the sxy
-    #         percentile = 50
-    #         if percentile:
-    #             sigma_max = np.percentile(fit_params[:, 4][to_keep], percentile)
-    #             to_use = np.logical_and(to_keep, fit_params[:, 4] <= sigma_max)
-
-    #             # get centers
-    #             centers = np.stack((fit_params[:, 3][to_use],
-    #                                 fit_params[:, 2][to_use],
-    #                                 fit_params[:, 1][to_use]), axis=1)
-
-    #         # find average experimental psf/otf
-    #         psfs_real, psf_coords = psf.average_exp_psfs(r["data"],
-    #                                                      coords_3d,
-    #                                                      centers,
-    #                                                      fit_roi_size_pix,
-    #                                                      backgrounds=fit_params[:, 5][to_use],
-    #                                                      return_psf_coords=True)
-
-    #         # fit average experimental psf
-    #         def fn(p): return model.model(psf_coords, p)
-    #         init_params = model.estimate_parameters(psfs_real, psf_coords)
-
-    #         results = fit_model(psfs_real, fn, init_params, jac='3-point', x_scale='jac')
-    #         fit_params_average = results["fit_params"]     
-
-    #         sz = fit_params_average[5]
-    #         sxy = fit_params_average[4]
-    #         amp = fit_params_average[0]    
-        
-    #     # TODO: Refine weighted metric if needed
-    #     weight_amp = 1 # scales amplitude to a value between 0-65
-    #     # SJS: Normalize image and remove brightness
-    #     weight_xy = 2 
-    #     weight_z = 2
-    #     weighted_metric = weight_amp * amp + weight_xy / sxy + weight_z / sz + np.exp(-1*(sxy+sz-6)**2)
-
-    #     if return_image:
-    #         return weighted_metric, image
-    #     else:
-    #         return weighted_metric
-
-
 def metric_localize_gauss2d(image: ArrayLike) -> float:
     """_summary_
 
@@ -1360,6 +1202,162 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
         metric = 0
         
     return metric
+
+#-------------------------------------------------#
+# Helper function for generating grid
+#-------------------------------------------------#
+
+def map_ao_grid(stage_positions: np.ndarray,
+                xy_ao_range: float,
+                z_ao_range: float,
+                xy_interp_range: float,
+                z_interp_range: float,
+                ao_dict: dict,
+                save_dir_path: Path = None,
+                verbose: bool = False,
+    ) -> np.ndarray:
+    """
+    Maps and interpolates adaptive optics (AO) mirror coefficients over a structured 
+    3D grid of stage positions.
+
+    This function:
+    1. Generates a structured grid of stage positions in a snake-like pattern.
+    2. Runs AO optimization at each sampled position to collect mirror coefficients.
+    3. Interpolates AO mirror coefficients over a finer 3D grid using linear interpolation.
+
+    Parameters:
+    -----------
+    stage_positions : np.ndarray
+        An array of dictionaries containing stage positions with keys "x", "y", and "z".
+    xy_ao_range : float
+        The spacing (in microns) between adjacent x and y sample points for AO optimization.
+    z_ao_range : float
+        The spacing (in microns) between adjacent z sample points for AO optimization.
+    xy_interp_range : float
+        The spacing (in microns) for interpolation along the x and y axes.
+    z_interp_range : float
+        The spacing (in microns) for interpolation along the z-axis.
+    ao_dict : dict
+        A dictionary containing AO optimization parameters, including:
+        - "image_mirror_step_size_um"
+        - "image_mirror_range_um"
+        - "exposure_ms"
+        - "channel_states"
+        - "shannon_dct" (metric)
+        - "psf_radius_px"
+        - "num_iterations"
+    save_dir_path : Path, optional
+        Path to save AO optimization data. Default is None.
+    verbose : bool, optional
+        If True, prints additional debugging information. Default is False.
+
+    Returns:
+    --------
+    np.ndarray
+        A 2D array where each row corresponds to an interpolated stage position,
+        and each column corresponds to an AO mirror coefficient.
+    np.ndarray
+        A 2D array where each row corresponds to a stage position where the mode coefficient was interpolated
+    """
+    aoMirror_local = AOMirror.instance()
+    mmc = CMMCorePlus.instance()
+    
+    stage_positions_array = np.array([
+        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+    ])
+    
+    # Generate array of stage positions to sample and run AO
+    max_z_pos = np.max(stage_positions_array[:, 0])
+    min_z_pos = np.min(stage_positions_array[:, 0])
+    max_y_pos = np.max(stage_positions_array[:, 1])
+    min_y_pos = np.min(stage_positions_array[:, 1])
+    max_x_pos = np.max(stage_positions_array[:, 2])
+    min_x_pos = np.min(stage_positions_array[:, 2])
+    
+    # Calculate number of grid points
+    n_z_samples = int(np.ceil(np.abs(max_z_pos - min_z_pos) / z_ao_range)) + 1
+    n_y_samples = int(np.ceil(np.abs(max_y_pos - min_y_pos) / xy_ao_range)) + 1
+    n_x_samples = int(np.ceil(np.abs(max_x_pos - min_x_pos) / xy_ao_range)) + 1
+    
+    # Generate stage positions in a snake-like pattern
+    sample_stage_positions = []
+    for x_idx in range(n_x_samples):
+        y_range = range(n_y_samples) if x_idx % 2 == 0 else range(n_y_samples - 1, -1, -1)
+        for y_idx in y_range:
+            for z_idx in range(n_z_samples):
+                sample_stage_positions.append([
+                    float(np.round(min_x_pos + x_idx * xy_ao_range, 2)),
+                    float(np.round(min_y_pos + y_idx * xy_ao_range, 2)),
+                    float(np.round(min_z_pos + z_idx * z_ao_range, 2))
+                ])
+    
+    sample_stage_positions = np.asarray(sample_stage_positions)
+    
+    # Extract unique grid points
+    unique_x = np.unique(sample_stage_positions[:, 2])  # x positions
+    unique_y = np.unique(sample_stage_positions[:, 1])  # y positions
+    unique_z = np.unique(sample_stage_positions[:, 0])  # z positions
+
+    # Storage for mirror coefficients
+    mirror_coeffs_grid = np.zeros((len(sample_stage_positions), aoMirror_local.n_positions))
+
+    # Run AO optimization for each stage position
+    for i, (z_pos, y_pos, x_pos) in enumerate(sample_stage_positions):
+        mmc.setPosition(z_pos)
+        mmc.waitForDevice(mmc.getFocusDevice())
+        mmc.setXYPosition(x_pos, y_pos)
+        mmc.waitForDevice(mmc.getXYStageDevice())
+
+        run_ao_optimization(
+            image_mirror_step_size_um=ao_dict["image_mirror_step_size_um"],
+            image_mirror_range_um=ao_dict["image_mirror_range_um"],
+            exposure_ms=ao_dict["exposure_ms"],
+            channel_states=ao_dict["channel_states"],
+            metric_to_use=ao_dict["shannon_dct"],
+            psf_radius_px=ao_dict["psf_radius_px"],
+            num_iterations=ao_dict["num_iterations"],
+            num_mode_steps=3,
+            init_delta_range=0.200,
+            delta_range_alpha_per_iter=0.5,
+            save_dir_path=save_dir_path,
+            verbose=verbose
+        )
+
+        mirror_coeffs_grid[i] = AOMirror.current_coeffs()
+    
+    # Reshape mirror coefficients into a structured grid
+    mirror_coeffs_grid_reshaped = mirror_coeffs_grid.reshape(
+        (len(unique_z), len(unique_y), len(unique_x), -1)  # -1 keeps last dimension
+    )
+
+    # Create interpolators for each AO mode
+    coeff_interp_functions = [
+        RegularGridInterpolator(
+            (unique_z, unique_y, unique_x),  
+            mirror_coeffs_grid_reshaped[:, :, :, coef_idx],  
+            method="linear",
+            bounds_error=False,
+            fill_value=None
+        )
+        for coef_idx in range(mirror_coeffs_grid.shape[1])  
+    ]
+
+    # Generate interpolation grid
+    interp_stage_positions = []
+    for x in np.arange(min_x_pos, max_x_pos + xy_interp_range, xy_interp_range):
+        for y in np.arange(min_y_pos, max_y_pos + xy_interp_range, xy_interp_range):
+            for z in np.arange(min_z_pos, max_z_pos + z_interp_range, z_interp_range):
+                interp_stage_positions.append([z, y, x])
+    
+    interp_stage_positions = np.array(interp_stage_positions)
+
+    # Interpolate mirror coefficients
+    interp_mirror_coeffs = np.zeros([interp_stage_positions.shape[0], aoMirror_local.n_positions])
+    for ii, pos in enumerate(interp_stage_positions):
+        for coef_idx, interp_func in enumerate(coeff_interp_functions):
+            interp_mirror_coeffs[ii, coef_idx] = interp_func(pos)
+
+    return interp_mirror_coeffs, interp_stage_positions
 
 
 #-------------------------------------------------#
@@ -1406,7 +1404,6 @@ def save_optimization_results(images_per_mode: ArrayLike,
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
     root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True)
 
-
 def load_optimization_results(results_path: Path):
     """Load optimization results from a Zarr store.
 
@@ -1439,10 +1436,10 @@ def load_optimization_results(results_path: Path):
     }
     return ao_results
 
+#-------------------------------------------------#
+# Run to 'keeps mirror flat'
+#-------------------------------------------------#
 
-#-------------------------------------------------#
-# Run as script 'keeps mirror flat'
-#-------------------------------------------------#
 if __name__ == "__main__":
     """Keeps the mirror in it's flat position
     """
@@ -1450,9 +1447,8 @@ if __name__ == "__main__":
     wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
     haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
     wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\flat_actuator_positions.wcs")
-    # wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250122_tilted_gauss2d_laser_actuator_positions.wcs")
     wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250215_tilted_brightness_laser_actuator_positions.wcs")
-    # Load ao_mirror controller
+
     # ao_mirror puts the mirror in the flat_position state to start.
     ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
                          haso_config_file_path = haso_config_file_path,

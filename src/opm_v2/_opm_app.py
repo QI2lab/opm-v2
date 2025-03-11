@@ -122,7 +122,7 @@ def main() -> None:
     # --------------------------------------------------------------------------------
     # --------------------------------------------------------------------------------
 
-    # load hardware configuration file
+    # load microscope configuration file
     config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250304.json")
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
@@ -314,8 +314,6 @@ def main() -> None:
             laser_blanking=_laser_blanking,
             exposure_ms=_exposure_ms,
         )
-        # opmNIDAQ_update_state.generate_waveforms()
-        # opmNIDAQ_update_state.prepare_waveform_playback()
         
         #--------------------------------------------------------------------#
         # Restart acquisition if needed
@@ -457,8 +455,12 @@ def main() -> None:
         camera_crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
         
         # get image galvo mirror range and step size
-        image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-        image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
+        image_mirror_range_um = np.round(
+            float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0
+            )
+        image_mirror_step_um = np.round(
+            float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2
+            )
         
         # use OPMNIDAQ class calculation for number of scan steps to ensure consistency
         opmNIDAQ_custom.set_acquisition_params(
@@ -727,8 +729,8 @@ def main() -> None:
         
         if "Optimize-now" in AO_mode:
             # setup AO using values in the config widget, NOT the MDA widget
-            AO_active_channels = [False] * len(channel_names) 
-            AO_laser_powers = [0.] * len(channel_names)
+            AO_channel_states = [False] * len(channel_names) 
+            AO_channel_powers = [0.] * len(channel_names)
             AO_active_channel_id = mmc.getProperty("LED", "Label")
             AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
             AO_image_mirror_range_um = float(image_mirror_range_um)
@@ -740,8 +742,8 @@ def main() -> None:
             # Set the active channel in the daq channel list
             for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
                 if AO_active_channel_id==chan_str:
-                    AO_active_channels[chan_idx] = True
-                    AO_laser_powers[chan_idx] = float(
+                    AO_channel_states[chan_idx] = True
+                    AO_channel_powers[chan_idx] = float(
                         mmc.getProperty(
                             config["Lasers"]["name"],
                             str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)"
@@ -749,13 +751,13 @@ def main() -> None:
                     )
                     
             # check to make sure there exist a laser power > 0
-            if sum(AO_laser_powers)==0:
+            if sum(AO_channel_powers)==0:
                 print("All lasers set to 0!")
                 return
                         
             # Update the AO configuration with the GUI values
-            updated_config["AO-projection"]["active_channels"] = AO_active_channels
-            updated_config["AO-projection"]["laser_power"] = AO_laser_powers
+            updated_config["AO-projection"]["channel_states"] = AO_channel_states
+            updated_config["AO-projection"]["channel_powers"] = AO_channel_powers
             updated_config["AO-projection"]["exposure_ms"] = AO_exposure_ms
             updated_config["AO-projection"]["image_mirror_step_um"] = AO_image_mirror_step_um
             updated_config["AO-projection"]["image_mirror_range_um"] = AO_image_mirror_range_um
@@ -767,8 +769,8 @@ def main() -> None:
         # setup AO using values in config.json
         else:
             AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
-            AO_active_channels = list(map(bool,updated_config["AO-projection"]["active_channels"]))
-            AO_laser_powers = list(float(_) for _ in updated_config["AO-projection"]["laser_power"])
+            AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
+            AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
             AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
             AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
             AO_image_mirror_step_um = float(updated_config["AO-projection"]["image_mirror_step_um"])
@@ -786,8 +788,8 @@ def main() -> None:
                 data = {
                     "AO" : {
                         "opm_mode": str("projection"),
-                        "active_channels": AO_active_channels,
-                        "laser_powers" : AO_laser_powers,
+                        "channel_states": AO_channel_states,
+                        "channel_powers" : AO_channel_powers,
                         "mode": AO_metric,
                         "iterations": AO_iterations,
                         "image_mirror_step_um" : AO_image_mirror_step_um,
@@ -853,9 +855,9 @@ def main() -> None:
                             "mode" : daq_mode,
                             "image_mirror_step_um" : float(image_mirror_step_um),
                             "image_mirror_range_um" : float(image_mirror_range_um),
-                            "active_channels" : active_channels,
+                            "channel_states" : active_channels,
+                            "channel_powers" : laser_powers,
                             "interleaved" : interleaved_acq,
-                            "laser_powers" : laser_powers,
                             "blanking" : laser_blanking, 
                         },
                         "Camera" : {
@@ -1147,7 +1149,7 @@ def main() -> None:
             # Check OPM mode and set up NIDAQ accordingly
             opmNIDAQ_setup_preview.clear_tasks()
             opmNIDAQ_setup_preview.generate_waveforms()
-            opmNIDAQ_setup_preview.prepare_waveform_playback()
+            opmNIDAQ_setup_preview.program_daq_waveforms()
             opmNIDAQ_setup_preview.start_waveform_playback()
 
             

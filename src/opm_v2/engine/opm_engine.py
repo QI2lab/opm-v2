@@ -64,11 +64,9 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                # Stop DAQ playback and clear 
+                # Stop DAQ playback
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
-                # self.opmDAQ.clear_tasks()
-                # self.opmDAQ.reset()         
                 
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
@@ -89,8 +87,8 @@ class OPMEngine(MDAEngine):
                 )
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
-                
             elif action_name == "Stage-Move":
+                # Move stage to position
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 self._mmc.setXYPosition(
@@ -102,12 +100,14 @@ class OPMEngine(MDAEngine):
             elif action_name == "AO-projection":
                 
                 if data_dict["AO"]["apply_existing"]:
-                    print("load AO-projection\n")
+                    print("AO: Load existing mirror positions\n")
                     pass
                 else:
+                    # Stop and clear DAQ tasks to re-program
                     self.opmDAQ.stop_waveform_playback()
                     self.opmDAQ.clear_tasks()
                     
+                    # Setup camera properties
                     if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
                         current_roi = self._mmc.getROI()
                         self._mmc.clearROI()
@@ -125,12 +125,13 @@ class OPMEngine(MDAEngine):
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                     
-                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["active_channels"]):
+                    # Set laser powers
+                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["channel_states"]):
                         if chan_bool:
                             self._mmc.setProperty(
                                 self._config["Lasers"]["name"],
                                 str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                                float(data_dict["AO"]["laser_powers"][chan_idx])
+                                float(data_dict["AO"]["channel_powers"][chan_idx])
                             )
                         else:
                             self._mmc.setProperty(
@@ -140,9 +141,11 @@ class OPMEngine(MDAEngine):
                             )
             
             elif "DAQ" in action_name:
+                # Stop and clear waveform tasks
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
                 
+                # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
                     current_roi = self._mmc.getROI()
                     self._mmc.clearROI()
@@ -155,12 +158,13 @@ class OPMEngine(MDAEngine):
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
+                # Set laser powers
+                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["channel_states"]):
                     if chan_bool:
                         self._mmc.setProperty(
                             self._config["Lasers"]["name"],
                             str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            float(data_dict["DAQ"]["laser_powers"][chan_idx])
+                            float(data_dict["DAQ"]["channel_powers"][chan_idx])
                         )
                         exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),0)
                     else:
@@ -169,27 +173,31 @@ class OPMEngine(MDAEngine):
                             str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                             0.0
                         )
+                        
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
                     exposure_ms
                 )
+                
+                # Update daq waveform values and setup daq for playback
                 self.opmDAQ.set_acquisition_params(
                     scan_type = str(data_dict["DAQ"]["mode"]),
-                    channel_states = data_dict["DAQ"]["active_channels"],
+                    channel_states = data_dict["DAQ"]["channel_states"],
                     image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
                     image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                     laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                     exposure_ms = exposure_ms
                 )
                 self.opmDAQ.generate_waveforms()
-                self.opmDAQ.prepare_waveform_playback()
+                self.opmDAQ.program_daq_waveforms()
+                
+                # Wait for MM core
                 self._mmc.waitForSystem()
 
-                
             elif action_name == "Fluidics":
                 # Nothing to prep, the user should have already confirmed its ready to go.
-                print(action_name)
+                print("Fluidics will be run\n")
                 
         else:
             super().setup_event(event)
@@ -257,6 +265,7 @@ class OPMEngine(MDAEngine):
                 0.0
             )
             
+        # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
         
         self._mmc.clearCircularBuffer()

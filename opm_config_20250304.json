@@ -42,14 +42,14 @@
         "from_OB1_pin": 8
     },
     "AO-projection": {
-        "active_channels": [
+        "channel_states": [
             false,
             true,
             false,
             false,
             false
         ],
-        "laser_power": [
+        "channel_powers": [
             0.0,
             30.0,
             0.0,
