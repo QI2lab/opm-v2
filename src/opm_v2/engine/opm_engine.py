@@ -201,7 +201,7 @@ class OPMEngine(MDAEngine):
                 
         else:
             super().setup_event(event)
-                                        
+
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.
 
@@ -225,10 +225,9 @@ class OPMEngine(MDAEngine):
                     self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
                         metric_to_use=data_dict["AO"]["mode"],
-                        image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
-                        channel_states=data_dict["AO"]["active_channels"],
+                        channel_states=data_dict["AO"]["channel_states"],
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=True
@@ -244,12 +243,12 @@ class OPMEngine(MDAEngine):
         else:
             result = super().exec_event(event)
             return result
-        
+
     def teardown_event(self, event):
         if isinstance(event.action, CustomAction):
             self._mmc.clearCircularBuffer()
         super().teardown_event(event)
-        
+
     def teardown_sequence(self, sequence: MDASequence) -> None:
         
         # Shut down DAQ

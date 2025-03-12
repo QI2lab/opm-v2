@@ -61,7 +61,6 @@ mode_names = [
 #-------------------------------------------------#
 
 def run_ao_optimization(
-    image_mirror_step_size_um: float,
     image_mirror_range_um: float,
     exposure_ms: float,
     channel_states: List[bool],
@@ -70,7 +69,7 @@ def run_ao_optimization(
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.35,
-    delta_range_alpha_per_iter: Optional[float] = 0.5,
+    delta_range_alpha_per_iter: Optional[float] = 0.75,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
     roi_crop_size: Optional[int] = 101,
     save_dir_path: Optional[Path] = None,
@@ -92,7 +91,6 @@ def run_ao_optimization(
     opmNIDAQ_local.set_acquisition_params(
         scan_type="projection",
         channel_states=channel_states,
-        image_mirror_step_size_um=image_mirror_step_size_um,
         image_mirror_range_um=image_mirror_range_um,
         laser_blanking=True,
         exposure_ms=exposure_ms
@@ -103,7 +101,6 @@ def run_ao_optimization(
     # Re-enforce camera exposure
     mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
     mmc.waitForDevice("OrcaFusionBT")
-    print(exposure_ms)
     
     #---------------------------------------------#
     # Setup Zernike modal coeff arrays
@@ -158,8 +155,6 @@ def run_ao_optimization(
         images_per_mode.append(starting_image)
         coefficients_per_iteration.append(initial_zern_modes)
         images_per_iteration.append(starting_image)
-
-    imwrite(Path(r"g:/ao/ao_start.tiff"),starting_image)
 
     # initialize delta range
     delta_range=init_delta_range
@@ -303,7 +298,7 @@ def run_ao_optimization(
                     print("    Metric is NAN, setting to 0")
                     metric = float(np.nan_to_num(metric))
                 
-                if round(metric,4)>=round(optimal_metric,4):
+                if round(metric,3)>=round(optimal_metric,3):
                     coeff_to_keep = coeff_opt
                     optimal_metric = metric
                     if verbose:
@@ -328,7 +323,6 @@ def run_ao_optimization(
                 """acquire projection image"""
                 if not opmNIDAQ_local.running():
                     opmNIDAQ_local.start_waveform_playback()
-                mmc.snapImage()
                 image = mmc.snap()
                 
                 metrics_per_mode.append(optimal_metric)
@@ -371,7 +365,7 @@ def run_ao_optimization(
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
     
     # update mirror dict with current positions
-    aoMirror_local.wfc_positions["last_optimization"] = aoMirror_local.current_positions()
+    aoMirror_local.wfc_positions["last_optimization"] = aoMirror_local.current_positions
     
     opmNIDAQ_local.stop_waveform_playback()
     
@@ -399,7 +393,8 @@ def run_ao_optimization(
             save_dir_path=save_dir_path
         )        
         plot_metric_progress(
-            metrics_per_iteration,
+            metrics_per_mode,
+            num_iterations,
             modes_to_optimize,
             mode_names,
             save_dir_path
@@ -474,7 +469,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
 def plot_metric_progress(metrics_per_mode: ArrayLike,
-                         metrics_per_iteration: ArrayLike,
+                         num_iterations: ArrayLike,
                          modes_to_optimize: List[int],
                          zernike_mode_names: List[str],
                          save_dir_path: Optional[Path] = None,
@@ -501,7 +496,7 @@ def plot_metric_progress(metrics_per_mode: ArrayLike,
     
     metrics_per_mode = np.reshape(
         metrics_per_mode[1:], # ignore the starting metric 
-        (len(metrics_per_iteration), len(modes_to_optimize))
+        (num_iterations, len(modes_to_optimize))
         )
 
     # Create the plot
@@ -1309,11 +1304,10 @@ def map_ao_grid(stage_positions: np.ndarray,
         mmc.waitForDevice(mmc.getXYStageDevice())
 
         run_ao_optimization(
-            image_mirror_step_size_um=ao_dict["image_mirror_step_size_um"],
+            metric_to_use=ao_dict["shannon_dct"],
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
-            metric_to_use=ao_dict["shannon_dct"],
             psf_radius_px=ao_dict["psf_radius_px"],
             num_iterations=ao_dict["num_iterations"],
             num_mode_steps=3,
@@ -1415,7 +1409,6 @@ def load_optimization_results(results_path: Path):
     # Open the Zarr store
     store = zarr.DirectoryStore(str(results_path))
     results = zarr.open(store)
-    
     
     images_per_mode = results["images_per_mode"][:]
     metrics_per_mode = results["metrics_per_mode"][:]

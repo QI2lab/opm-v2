@@ -338,7 +338,7 @@ class OPMNIDAQ:
             self._image_mirror_range_um = value
         else:
             self._image_mirror_range_um = value
-
+        
         # setup image galvo mirror
         self._image_mirror_min_volt = -(self._image_mirror_range_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
         self._image_axis_range_volts = self._image_mirror_range_um * self._image_mirror_calibration

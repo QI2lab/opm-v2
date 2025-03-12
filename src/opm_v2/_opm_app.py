@@ -135,7 +135,8 @@ def main() -> None:
         flat_positions_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
         n_modes = 32,
         n_positions=1,
-        modes_to_ignore = []
+        modes_to_ignore = [],
+        output_path= config["AOMirror"]["output_path"]
     )
     
     opmAOmirror.set_mirror_positions_flat()
@@ -195,10 +196,16 @@ def main() -> None:
         roi_height_px = int(roi_height_um / mmc.getPixelSizeUm())
         return roi_height_px
     
-    def update_state():
+    def update_state(device_name=None, property_name=None):
         """
         Update microscope states and values upon changes to in the GUI
         """
+        print(device_name, property_name)
+        # Ignore updates from AutoShutter
+        if device_name == mmc.getShutterDevice() and property_name == "State":
+            print("preventing shutter update")
+            return
+            
         # Get the selected imaging mode
         opm_mode = mmc.getProperty("OPM-mode", "Label")
         
@@ -211,13 +218,13 @@ def main() -> None:
             _scan_type = "projection"
         elif "Mirror" in opm_mode:
             _scan_type = "mirror"
-            
         #--------------------------------------------------------------------#
         # Stop DAQ playback
         opmNIDAQ_update_state = OPMNIDAQ.instance()
         restart_sequence = False
         if mmc.isSequenceRunning():
             mmc.stopSequenceAcquisition()
+            print("stoping sequence`")
             restart_sequence = True
             
         if opmNIDAQ_update_state.running():
@@ -236,13 +243,22 @@ def main() -> None:
         _image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
         _image_mirror_step_um = np.round(float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2)
         
+            # reload hardware configuration file before setting up events
+        with open(config_path, "r") as config_file:
+            updated_config = json.load(config_file)
+            
+        _projection_calibration = updated_config["NIDAQ"]["projection_mirror_calibration"]
+        opmNIDAQ_update_state.projection_mirror_calibration = _projection_calibration
+        
         # Get the selected active channel and populate channel_states
         _active_channel_id = mmc.getProperty("LED", "Label")
         _channel_states = [False] * len(config["OPM"]["channel_ids"])
         for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
+            print({_active_channel_id})
             if _active_channel_id==ch_str:
+                print(f"ch_str:{ch_str}")
                 _channel_states[ch_i] = True
-        
+        print(_channel_states)
         # Get the current LaserBlanking State
         if mmc.getProperty("LaserBlanking", "Label")=="On":
             _laser_blanking = True
@@ -265,6 +281,7 @@ def main() -> None:
             # if not (current_sensor_mode=="PROGRESSIVE"):
             #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "PROGRESSIVE")
             #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            print("here in update projection")
             
             # Crop the chip down to determined size
             camara_crop_y = calculate_projection_crop(_image_mirror_range_um)
@@ -284,6 +301,7 @@ def main() -> None:
             # if not (current_sensor_mode=="AREA"):
             #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
             #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            print("here in update else")
                 
             # Crop the chip down to gui size
             if not (gui_camera_crop_y == mmc.getROI()[-1]): 
@@ -324,7 +342,8 @@ def main() -> None:
             mmc.startContinuousSequenceAcquisition()
             
     # Connect changes in gui fields to the update_state method.            
-    mmc.events.propertyChanged.connect(update_state)
+    # mmc.events.propertyChanged.connect(update_state)
+    mmc.events.propertiesChanged.connect(update_state)
     mmc.events.configSet.connect(update_state)
     
     # grab handle to the Stage widget
@@ -392,36 +411,38 @@ def main() -> None:
         # check fluidics mode
         if "None" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "None"
-            print("No fluidics")
         elif "Thin-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_16bit"
             FP_num_rounds = 16
-            print("Thin 16bit fluidics")
         elif "Thin-22bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thin_22bit"
             FP_num_rounds = 22
-            print("Thin 22bit fluidics")
         elif "Thick-16bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thick_16bit"
             FP_num_rounds = 16
-            print("Thick 16bit fluidics")
         elif "Thick-2bit" in mmc.getProperty("Fluidics-mode", "Label"):
             FP_mode = "thick_22bit"
-            FP_num_rounds = 22
-            print("Thick 22bit fluidics")        
+            FP_num_rounds = 22     
+        
+        #--------------------------------------------------------------------#
+        # Validate acquisition settings
+        #--------------------------------------------------------------------#
         
         # Check if running an Optimize-now acq.
         if ("Optimize-now" in AO_mode) or ("Optimize-now" in O2O3_mode):
             optimize_now = True
-            output = Path(str(updated_config["AO-projection"]["optimize_now_path"]))
         else: 
             optimize_now = False
-                
+        
         # only projection and mirror modes are available if not optimizing now
         if ("Projection" not in opm_mode) and ("Mirror" not in opm_mode) and not(optimize_now):
             print("OPM-mode must be 'Projection' or 'Mirror'")   
             return     
         
+        if not(optimize_now) and not(output):
+                print("Must set MDA save path!")
+                return
+            
         # If running a fluidics experiment, make sure the user has ESI running
         if not FP_mode=="None":
             # load dialog to interrupt user.
@@ -436,7 +457,14 @@ def main() -> None:
                 return
             else:
                 print("ESI Sequence accepted")
-
+                
+        print(
+            f"OPM mode:{opm_mode}\n",
+            f"AO mode:{AO_mode}\n",
+            f"AF mode:{O2O3_mode}\n",
+            f"FP mode:{FP_mode}\n",
+            )
+        
         # try to get camera conversion factor information
         try:
             offset = mmc.getProperty(
@@ -449,52 +477,162 @@ def main() -> None:
             )
         except Exception:
             offset = 0.
-            e_to_ADU = 1.
+            e_to_ADU = 1.      
+        
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        # Get the event structure parameters and or AO values
+        # - For imaging: timepoints, stage positions, channels
+        # - For optimization: run o2o3-af?, ao params from config
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        
+        # Create daq channel lists
+        channel_names = config["OPM"]["channel_ids"]
+        active_channels = [False] * len(channel_names) 
+        exposure_channels = [0.] * len(channel_names) 
+        laser_powers = [0.] * len(channel_names)
+        
+        now = datetime.now()
+        timestamp = f"{now.year:4d}{now.month:2d}{now.day:2d}_{now.hour:2d}{now.minute:2d}{now.second:2d}"
 
-        # get the camera crop value
-        camera_crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
+        if optimize_now:
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            # Setup AO values from mm config
+            # Nothing to do for O2O3 Autofocus
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            if "Optimize-now" in O2O3_mode:
+                print("Running O2O3 Autofocus Now\n")
+                
+            if "Optimize-now" in AO_mode:
+                print("Running AO optimization Now\n")
+                
+                # TODO Why if not running AF does images_per_mode in ao_optimzation have an imhomogenous shape?
+                
+                # get image galvo mirror range
+                image_mirror_range_um = np.round(
+                    float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0
+                    )
+                
+                # setup AO using values in the config widget, NOT the MDA widget
+                AO_channel_states = [False] * len(channel_names) 
+                AO_channel_powers = [0.] * len(channel_names)
+                AO_active_channel_id = mmc.getProperty("LED", "Label")
+                AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
+                AO_image_mirror_range_um = float(image_mirror_range_um)
+                AO_camera_crop_y = int(calculate_projection_crop(AO_image_mirror_range_um))
+                AO_iterations = int(updated_config["AO-projection"]["iterations"])
+                AO_metric = str(updated_config["AO-projection"]["mode"])
+                AO_save_path = Path(str(updated_config["AO-projection"]["optimize_now_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
+                
+                output = Path(str(updated_config["AO-projection"]["optimize_now_path"]))
+                
+                # Set the active channel in the daq channel list
+                for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
+                    if AO_active_channel_id==chan_str:
+                        AO_channel_states[chan_idx] = True
+                        AO_channel_powers[chan_idx] = float(
+                            mmc.getProperty(
+                                config["Lasers"]["name"],
+                                str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)"
+                            )
+                        )
+                        
+                # check to make sure there exist a laser power > 0
+                if sum(AO_channel_powers)==0:
+                    print("All AO lasers set to 0!")
+                    return
+                
+                # Make sure a reasonable expsoure is choosen
+                if AO_exposure_ms<50:
+                    print(f"Camera exposure should be increased! : {AO_exposure_ms}")
+                    return
+                
+                # Update the AO configuration with the GUI values
+                updated_config["AO-projection"]["channel_states"] = AO_channel_states
+                updated_config["AO-projection"]["channel_powers"] = AO_channel_powers
+                updated_config["AO-projection"]["exposure_ms"] = AO_exposure_ms
+                updated_config["AO-projection"]["image_mirror_range_um"] = AO_image_mirror_range_um
+                updated_config["AO-projection"]["camera_crop_y"] = AO_camera_crop_y
+                with open(config_path, "w") as file:
+                    json.dump(updated_config, file, indent=4)
+            else:
+                # Use config values for placeholder
+                AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
+                AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
+                AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
+                AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
+                AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
+                AO_save_path = None
+                AO_iterations = int(updated_config["AO-projection"]["iterations"])
+                AO_metric = str(updated_config["AO-projection"]["mode"])
         
-        # get image galvo mirror range and step size
-        image_mirror_range_um = np.round(
-            float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0
+        else:
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            # Setup acquisition timepoints, positions, and channels:
+            # - Grab values from configs
+            # - Grab values from MDA widget
+            # - AO settings from configuration file
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            
+            #----------------------------------------------------------------#
+            # Get configuration properities
+            #----------------------------------------------------------------#
+            # get the camera crop value
+            camera_crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
+            
+            # get image galvo mirror range and step size
+            image_mirror_range_um = np.round(
+                float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0
+                )
+            image_mirror_step_um = np.round(
+                float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2
+                )
+            
+            # use OPMNIDAQ class calculation for number of scan steps to ensure consistency
+            opmNIDAQ_custom.set_acquisition_params(
+                scan_type="mirror",
+                channel_states = [False,False,False,False,False],
+                image_mirror_step_size_um=image_mirror_step_um,
+                image_mirror_range_um=image_mirror_range_um,
+                laser_blanking=True,
+                exposure_ms=100.
             )
-        image_mirror_step_um = np.round(
-            float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2
-            )
-        
-        # use OPMNIDAQ class calculation for number of scan steps to ensure consistency
-        opmNIDAQ_custom.set_acquisition_params(
-            scan_type="mirror",
-            channel_states = [False,False,False,False,False],
-            image_mirror_step_size_um=image_mirror_step_um,
-            image_mirror_range_um=image_mirror_range_um,
-            laser_blanking=True,
-            exposure_ms=100.
-        )
-        n_scan_steps = opmNIDAQ_custom.n_scan_steps      
-        
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        # Compile mda positions from active tabs, extract the relevant portions for qi2lab-OPM
-        # -  if grid plan is none, try on the stage positions sequence.
-        # -  if the stage positions sequence is also none, use the current stage position.
-        # -  if running with fluidics, set the number of timepoints as the number of rounds.
-        # -  if no time plan is selected, assume single timepoint.
-        # -  if the ao or af is optimize now, no values from the mda are used.
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        if not(optimize_now):
-            # Get the current MDAsequence and convert to dictionary 
+            n_scan_steps = opmNIDAQ_custom.n_scan_steps
+            
+            #----------------------------------------------------------------#
+            # Compile mda positions from active tabs, extract the relevant portions for qi2lab-OPM
+            # -  if grid plan is none, try on the stage positions sequence.
+            # -  if the stage positions sequence is also none, use the current stage position.
+            # -  if running with fluidics, set the number of timepoints as the number of rounds.
+            # -  if no time plan is selected, assume single timepoint.
+            # -  if the ao or af is optimize now, no values from the mda are used.
+            #----------------------------------------------------------------#
+                        
             sequence = mda_widget.value()
             sequence_dict = json.loads(sequence.model_dump_json())
             mda_stage_positions = sequence_dict["stage_positions"]
             mda_grid_plan = sequence_dict["grid_plan"]
-            mda_channels = sequence_dict["channels"]        
+            mda_channels = sequence_dict["channels"]       
             mda_time_plan = sequence_dict["time_plan"]
             mda_z_plan = sequence_dict["z_plan"]
-                    
+            
+            # Validate mda channels is set to channels and not running optimize now.
+            if not(optimize_now) and not(mda_channels):
+                print("Must select channels to use in MDA widget")
+                return
+            elif not(optimize_now) and ("Channel" not in mda_channels[0]["group"]):
+                print("Must select channels to use in MDA widget")
+                return
+            
             #--------------------------------------------------------------------#
-            # Generate time points, not used in optimize now
+            # Generate time points
             #--------------------------------------------------------------------#
             
             # If running a fluidics experiment, the number of time points are the number of rounds.
@@ -513,7 +651,7 @@ def main() -> None:
                 time_interval = 0
                 
             #--------------------------------------------------------------------#
-            # Generate stage positions, not used in optimize now
+            # Generate stage positions
             #--------------------------------------------------------------------#
             
             stage_positions = []
@@ -629,23 +767,9 @@ def main() -> None:
             opmAOmirror_local.n_positions = n_stage_pos
             
             #--------------------------------------------------------------------#
-            # Generate channel selection, not used in optimize now
+            # Generate channel selection
             #--------------------------------------------------------------------#
-            
-            # Create daq channel lists
-            channel_names = config["OPM"]["channel_ids"]
-            active_channels = [False] * len(channel_names) 
-            exposure_channels = [0.] * len(channel_names) 
-            laser_powers = [0.] * len(channel_names) 
-            
-            # Validate mda channels is set to channels and not running optimize now.
-            if not(optimize_now) and not(mda_channels):
-                print("Must select channels to use in MDA widget")
-                return
-            elif not(optimize_now) and not("Channel" in mda_channels["group"]):
-                print("Must select channels to use in MDA widget")
-                return
-        
+                               
             if mda_channels is not None:
                 # Iterate through MDA checked channels and update active lasers list
                 for mda_ch in mda_channels:
@@ -687,15 +811,34 @@ def main() -> None:
                 laser_blanking = False
             else:
                 laser_blanking = True
-         
+
+            #----------------------------------------------------------------#
+            # Define AO settings from configuration file
+            #----------------------------------------------------------------#
+            AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
+            AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
+            AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
+            AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
+            AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
+            AO_iterations = int(updated_config["AO-projection"]["iterations"])
+            AO_metric = str(updated_config["AO-projection"]["mode"])
+            
+            print(
+                f"Running {opm_mode} imaging acquisitions:\n",
+                f"timepoints:{n_time_steps}, stage positions: {n_stage_pos}, channels: {active_channel_names}"
+                )
+        
+        #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
         # Create CustomAction events
         # - O2O3 autofocus
         # - AO mirror optimization
-        # - Fluidics program
-        # - DAQ hardware setup
-        # - Image events (to be sequenced)
+        # - Fluidics program (Not Optimize only)
+        # - DAQ hardware setup (Not Optimize only)
+        # - Image events (to be sequenced, Not Optimize only)
+        #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
             
@@ -724,63 +867,6 @@ def main() -> None:
         # Create CustomAction events for running AO optimization
         #--------------------------------------------------------------------#
         
-        now = datetime.now()
-        timestamp = f"{now.year:4d}{now.month:2d}{now.day:2d}_{now.hour:2d}{now.minute:2d}{now.second:2d}"
-        
-        if "Optimize-now" in AO_mode:
-            # setup AO using values in the config widget, NOT the MDA widget
-            AO_channel_states = [False] * len(channel_names) 
-            AO_channel_powers = [0.] * len(channel_names)
-            AO_active_channel_id = mmc.getProperty("LED", "Label")
-            AO_exposure_ms = np.round(float(mmc.getProperty("OrcaFusionBT", "Exposure")),0)
-            AO_image_mirror_range_um = float(image_mirror_range_um)
-            AO_image_mirror_step_um = float(image_mirror_step_um)
-            AO_camera_crop_y = int(calculate_projection_crop(image_mirror_range_um))
-            AO_save_path = Path(str(updated_config["AO-projection"]["optimize_now_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
-            
-            
-            # Set the active channel in the daq channel list
-            for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
-                if AO_active_channel_id==chan_str:
-                    AO_channel_states[chan_idx] = True
-                    AO_channel_powers[chan_idx] = float(
-                        mmc.getProperty(
-                            config["Lasers"]["name"],
-                            str(config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)"
-                        )
-                    )
-                    
-            # check to make sure there exist a laser power > 0
-            if sum(AO_channel_powers)==0:
-                print("All lasers set to 0!")
-                return
-                        
-            # Update the AO configuration with the GUI values
-            updated_config["AO-projection"]["channel_states"] = AO_channel_states
-            updated_config["AO-projection"]["channel_powers"] = AO_channel_powers
-            updated_config["AO-projection"]["exposure_ms"] = AO_exposure_ms
-            updated_config["AO-projection"]["image_mirror_step_um"] = AO_image_mirror_step_um
-            updated_config["AO-projection"]["image_mirror_range_um"] = AO_image_mirror_range_um
-            updated_config["AO-projection"]["camera_crop_y"] = AO_camera_crop_y
-
-            with open(config_path, "w") as file:
-                json.dump(updated_config, file, indent=4)
-        
-        # setup AO using values in config.json
-        else:
-            AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
-            AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
-            AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
-            AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
-            AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
-            AO_image_mirror_step_um = float(updated_config["AO-projection"]["image_mirror_step_um"])
-            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
-        
-        # These AO parameters are determined by the config file.
-        AO_iterations = int(updated_config["AO-projection"]["iterations"])
-        AO_metric = str(updated_config["AO-projection"]["mode"])
-        
-        # Create AO event
         AO_event = MDAEvent(
             exposure = AO_exposure_ms,
             action=CustomAction(
@@ -792,7 +878,6 @@ def main() -> None:
                         "channel_powers" : AO_channel_powers,
                         "mode": AO_metric,
                         "iterations": AO_iterations,
-                        "image_mirror_step_um" : AO_image_mirror_step_um,
                         "image_mirror_range_um" : AO_image_mirror_range_um,
                         "blanking": bool(True),
                         "apply_existing": bool(False),
@@ -842,6 +927,8 @@ def main() -> None:
                 daq_mode = "projection"
                 laser_blanking = True
                 event_name = "DAQ-projection"
+                camera_crop_y = calculate_projection_crop(image_mirror_range_um)
+                
             elif "Mirror" in opm_mode:
                 daq_mode = "mirror"
                 event_name = "DAQ-mirror"
@@ -872,21 +959,24 @@ def main() -> None:
                     }
                 )
             )
-            
         
+        #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
         # Create event structure
         #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
         
         opm_events: list[MDAEvent] = []
         
-        #--------------------------------------------------------------------#
-        # If optimize now, shortcut acquisition event structure and run_mda now.
-        #--------------------------------------------------------------------#
-        
         if optimize_now:
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            # If optimize now, shortcut acquisition event structure and run_mda now.
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            
             if O2O3_mode == "Optimize-now":
                 opm_events.append(O2O3_event)
             if AO_mode == "Optimize-now":
@@ -895,19 +985,19 @@ def main() -> None:
                 
             # Run optimize now events
             mda_widget._mmc.run_mda(opm_events, output=None)
-            
-            return
-        
-        #--------------------------------------------------------------------#
-        # Else populate a {t, p, c, z} event sequence
-        # - Run fliudics, if present
-        # - Run O2O3 AF before time points or positions
-        # - Run AO before each acq or positions
-        # - Program the daq
-        # - Acquire images
-        #--------------------------------------------------------------------#
         
         if not(optimize_now):
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            # Else populate a {t, p, c, z} event sequence
+            # - Run fliudics, if present
+            # - Run O2O3 AF before time points or positions
+            # - Run AO before each acq or positions
+            # - Program the daq
+            # - Acquire images
+            #----------------------------------------------------------------#
+            #----------------------------------------------------------------#
+            
             # Flags to help ensure sequence-able events are kept together 
             need_to_setup_DAQ = True
             need_to_setup_stage = True
@@ -1032,7 +1122,6 @@ def main() -> None:
                                         }
                                     }
                                 )
-                                print("in mda")
                                 opm_events.append(image_event)
                     else:
                         # Mirror scan each channel separately
@@ -1092,32 +1181,38 @@ def main() -> None:
                                     )
                                     opm_events.append(image_event)
 
-                # elif "Stage" in mmc.getProperty("OPM-mode", "Label"):
-                #     print("stage mode")
-                
-            if not(output):
-                print("Must set acquisition path")
-                return
-            
             # Check if path ends if .zarr. If so, use our OutputHandler
             if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-                # Create dictionary of maximum axes sizes.
-                indice_sizes = {
-                    't' : int(np.maximum(1,n_time_steps)),
-                    'p' : int(np.maximum(1,n_stage_pos)),
-                    'c' : int(np.maximum(1,n_active_channels)),
-                    'z' : int(np.maximum(1,n_scan_steps))
-                }
-                print(indice_sizes)
+
+                if "Mirror" in opm_mode:
+                    # Create dictionary of maximum axes sizes.
+                    indice_sizes = {
+                        't' : int(np.maximum(1,n_time_steps)),
+                        'p' : int(np.maximum(1,n_stage_pos)),
+                        'c' : int(np.maximum(1,n_active_channels)),
+                        'z' : int(np.maximum(1,n_scan_steps))
+                    }
+                elif "Projection" in opm_mode:
+                    # TODO: need to test structure for acquiring projection images
+                    # Create dictionary of maximum axes sizes.
+                    indice_sizes = {
+                        't' : int(np.maximum(1,n_time_steps)),
+                        'p' : int(np.maximum(1,n_stage_pos)),
+                        'c' : int(np.maximum(1,n_active_channels))
+                    }
+                    
                 # Setup modified tensorstore handler
                 handler = OPMMirrorHandler(
                     path=Path(output),
                     indice_sizes=indice_sizes,
                     delete_existing=True
                     )
-                print("using our handler")
-            # If not, use built-in handler based on suffix
+                    
+                print(f"Using Qi2lab handler,\n  indices: {indice_sizes}")
+                    
             else:
+                # If not, use built-in handler based on suffix
+                print("Using defualt handler")
                 handler = Path(output)
 
             # run MDA with our event structure and modified tensorstore handler 

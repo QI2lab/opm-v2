@@ -55,7 +55,8 @@ class AOMirror:
         coeff_file_path: Path = None,
         n_modes: int = 32,
         n_positions: int = 1,
-        modes_to_ignore: List[int] = []
+        modes_to_ignore: List[int] = [],
+        output_path: Path = None
         ):
         
         # Set the first instance of this class as the global singleton
@@ -71,6 +72,7 @@ class AOMirror:
         self._n_modes = n_modes
         self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
+        self._output_path = output_path
         
         #---------------------------------------------#
         # Start wfc 
