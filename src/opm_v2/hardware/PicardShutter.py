@@ -16,7 +16,7 @@ clr.AddReference('PiUsbNet')
 import PiUsbNet
 import gc
 
-_instance_shutter = False
+_instance_shutter = None
 
 # ----------------------------------------------------------------------------------------
 # PicardShutter Class Definition
@@ -39,6 +39,8 @@ class PicardShutter():
         global _instance_shutter
         if _instance_shutter is None:
             _instance_shutter = self
+            
+        
 
         # Define attributes
         self.shutter_id = shutter_id

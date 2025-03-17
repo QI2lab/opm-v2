@@ -31,6 +31,7 @@ classifiers = [
 # add your package dependencies here
 dependencies = ["pymmcore-plus", "pymmcore-widgets", "matplotlib",
                 "pydaqmx", "pyserial", "scipy", "numba",
+                "pycparser==2.21","pythonnet==3.0.3",
                 "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@main"]
 
 [tool.hatch.metadata]

@@ -4,6 +4,7 @@ from numpy.typing import NDArray
 from typing import List
 import wavekit_py as wkpy
 import time
+import json
 
 _instance_mirror = None
 
@@ -54,44 +55,48 @@ class AOMirror:
         coeff_file_path: Path = None,
         n_modes: int = 32,
         n_positions: int = 1,
-        modes_to_ignore: List[int] = []
-    ):
+        modes_to_ignore: List[int] = [],
+        output_path: Path = None
+        ):
         
         # Set the first instance of this class as the global singleton
         global _instance_mirror
         if _instance_mirror is None:
             _instance_mirror = self
 
-        self.haso_config_file_path = haso_config_file_path
-        self.wfc_config_file_path = wfc_config_file_path
-        self.interaction_matrix_file_path = interaction_matrix_file_path
-        self.coeff_file_path = coeff_file_path
-        self.flat_positions_file_path = flat_positions_file_path
-        self.n_modes = n_modes
-        self.modes_to_ignore = modes_to_ignore
+        self._haso_config_file_path = haso_config_file_path
+        self._wfc_config_file_path = wfc_config_file_path
+        self._interaction_matrix_file_path = interaction_matrix_file_path
+        self._coeff_file_path = coeff_file_path
+        self._flat_positions_file_path = flat_positions_file_path
+        self._n_modes = n_modes
+        self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
+        self._output_path = output_path
         
-        # create wkpy sub class objects
+        #---------------------------------------------#
+        # Start wfc 
+        #---------------------------------------------#
+        
         # Wavefront corrector and set objects
         self.wfc = wkpy.WavefrontCorrector(
-            config_file_path = str(self.wfc_config_file_path)
+            config_file_path = str(self._wfc_config_file_path)
         )
         self.wfc_set = wkpy.WavefrontCorrectorSet(wavefrontcorrector = self.wfc)
         self.wfc.connect(True)
-        
         
         # create corrdata manager object and compute command matrix
         self.corr_data_manager = wkpy.CorrDataManager(
             haso_config_file_path = str(haso_config_file_path),
             interaction_matrix_file_path = str(interaction_matrix_file_path)
         )
-        self.corr_data_manager.set_command_matrix_prefs(self.n_modes,True)
+        self.corr_data_manager.set_command_matrix_prefs(self._n_modes,True)
         self.corr_data_manager.compute_command_matrix()
            
         self.wfc.set_temporization(20)
 
         # create the configuration object
-        self.haso_config, self.haso_specs, _ = wkpy.HasoConfig.get_config(config_file_path=str(self.haso_config_file_path))
+        self.haso_config, self.haso_specs, _ = wkpy.HasoConfig.get_config(config_file_path=str(self._haso_config_file_path))
         
         # construct pupil dimensions from haso specs
         pupil_dimensions = wkpy.dimensions(self.haso_specs.nb_subapertures,self.haso_specs.ulens_step)
@@ -118,64 +123,110 @@ class AOMirror:
         self.modal_coeff = wkpy.ModalCoef(modal_type=wkpy.E_MODAL.ZERNIKE)
         self.modal_coeff.set_zernike_prefs(
             zernike_normalisation=wkpy.E_ZERNIKE_NORM.RMS, 
-            nb_zernike_coefs_total=self.n_modes, 
-            coefs_to_filter=self.modes_to_ignore,
+            nb_zernike_coefs_total=self._n_modes, 
+            coefs_to_filter=self._modes_to_ignore,
             projection_pupil=wkpy.ZernikePupil_t(
                 center,
                 radius
             )
         )
-
-        if self.flat_positions_file_path is not None:
-            # Configure mirror in the flat position
+        # update modal data with zero coeffs.
+        self.modal_coeff.set_data(
+            coef_array = np.zeros(n_modes),
+            index_array = np.arange(1, self._n_modes+1, 1),
+            pupil = self.pupil
+        ) 
+        
+        #---------------------------------------------#
+        # Set up wfc positions and position tracking
+        #---------------------------------------------#
+        
+        if self._flat_positions_file_path is not None:
             self.flat_positions = np.asarray(self.wfc.get_positions_from_file(str(flat_positions_file_path)))
         else:
             self.flat_positions = np.zeros(self.wfc.nb_actuators)
                     
-        self.current_coeffs = np.zeros(n_modes,dtype=np.float32)
-        self.current_positions = np.asarray(self.flat_positions)
-            
-        self.set_mirror_flat()
-        self.wfc_positions = {"flat":self.flat_positions,
-                              "opm_current_flat":self.flat_positions}
-
-        self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
-
-        self.mode_names = [
-            "Vert. Tilt",
-            "Horz. Tilt",
-            "Defocus",
-            "Vert. Asm.",
-            "Oblq. Asm.",
-            "Vert. Coma",
-            "Horz. Coma",
-            "3rd Spherical",
-            "Vert. Tre.",
-            "Horz. Tre.",
-            "Vert. 5th Asm.",
-            "Oblq. 5th Asm.",
-            "Vert. 5th Coma",
-            "Horz. 5th Coma",
-            "5th Spherical",
-            "Vert. Tetra.",
-            "Oblq. Tetra.",
-            "Vert. 7th Tre.",
-            "Horz. 7th Tre.",
-            "Vert. 7th Asm.",
-            "Oblq. 7th Asm.",
-            "Vert. 7th Coma",
-            "Horz. 7th Coma",
-            "7th Spherical",
-            "Vert. Penta.",
-            "Horz. Penta.",
-            "Vert. 9th Tetra.",
-            "Oblq. 9th Tetra.",
-            "Vert. 9th Tre.",
-            "Horz. 9th Tre.",
-            "Vert. 9th Asm.",
-            "Oblq. 9th Asm.",
-        ]
+        self._current_coeffs = np.zeros(n_modes,dtype=np.float32)
+        self._current_positions = np.asarray(self.flat_positions)
         
+        # here is a spot to keep mirror position arrays
+        self.wfc_positions = {
+            "system_flat":self.flat_positions,
+            "last_optimization": self.flat_positions,
+            "grid": np.empty([1, 1, self.wfc.nb_actuators])
+            }          
+        # here we store a 1d array of ao mirror positions that correspond to stage positions array.
+        self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
+          
+        self.set_mirror_positions_flat()
+        self.get_mirror_positions()
+
+        #---------------------------------------------#
+        # Define mode names matching the mirror modes
+        #---------------------------------------------#
+        
+        self.mode_names = [
+            "Vert. Tilt", # 0
+            "Horz. Tilt", # 1
+            "Defocus", # 2
+            "Vert. Asm.", # 3
+            "Oblq. Asm.", # 4
+            "Vert. Coma", # 5
+            "Horz. Coma", # 6
+            "3rd Spherical",  # 7
+            "Vert. Tre.", # 8
+            "Horz. Tre.", # 9
+            "Vert. 5th Asm.", # 10
+            "Oblq. 5th Asm.", # 11
+            "Vert. 5th Coma", # 12
+            "Horz. 5th Coma", # 13
+            "5th Spherical", # 14
+            "Vert. Tetra.", # 15
+            "Oblq. Tetra.", # 16
+            "Vert. 7th Tre.", # 17
+            "Horz. 7th Tre.", # 18
+            "Vert. 7th Asm.", # 19
+            "Oblq. 7th Asm.", # 20
+            "Vert. 7th Coma", # 21
+            "Horz. 7th Coma", # 22
+            "7th Spherical", # 23
+            "Vert. Penta.", # 24
+            "Horz. Penta.", # 25
+            "Vert. 9th Tetra.", # 26
+            "Oblq. 9th Tetra.", # 27
+            "Vert. 9th Tre.", # 28
+            "Horz. 9th Tre.", # 29
+            "Vert. 9th Asm.", # 30
+            "Oblq. 9th Asm.", # 31
+        ]
+
+    @property
+    def output_path(self) -> str|Path:
+        """Output path.
+        
+        Returns
+        -------
+        output_path: str
+            output path
+        """
+        
+        return getattr(self,"_output_path",None)
+
+    @output_path.setter
+    def output_path(self, value: str|Path):
+        """Set the output path.
+        
+        Parameters
+        ----------
+        value: str|Path
+            output_path 
+        """
+        
+        if not hasattr(self, "_output_path") or self._output_path is None:
+            self._output_path = value
+        else:
+            self._output_path = value
+
     @property
     def n_positions(self) -> int:
         """Number of experimental "positions".
@@ -187,7 +238,7 @@ class AOMirror:
         """
         
         return getattr(self,"_n_positions",None)
-    
+
     @n_positions.setter
     def n_positions(self, value: int):
         """Set the number of experimental "positions".
@@ -203,20 +254,61 @@ class AOMirror:
         else:
             self._n_positions = value
             
-        self.wfc_positions_array = np.zeros((self.n_positions,self.wfc.nb_actuators))
+        self.wfc_positions_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
 
-    
+    @property
+    def current_positions(self) -> np.ndarray:
+        """Get current mirror positions."""
+        return self._current_positions
+
+    @current_positions.setter
+    def current_positions(self, value: np.ndarray):
+        """Set and update current mirror positions."""
+        self._current_positions = value
+        self._deltas = self._current_positions - self.flat_positions
+
+    @property
+    def current_coeffs(self) -> np.ndarray:
+        """Get current modal coefficients."""
+        return self._current_coeffs
+
+    @current_coeffs.setter
+    def current_coeffs(self, value: np.ndarray):
+        """Set current modal coefficients."""
+        self._current_coeffs = value
+
+    @property
+    def deltas(self) -> np.ndarray:
+        """Get the difference between current and flat mirror positions."""
+        return self._deltas
+
     def __del__(self):
         """Disconnect from mirror on close"""
         self.wfc.disconnect()
+
+    def _validate_positions(self, positions: NDArray) -> bool:
+        """Ensure mirror positions are within safe voltage limits."""
+        if positions.shape[0] != self.wfc.nb_actuators:
+            print(f"Positions array must have shape = {self.wfc.nb_actuators}")
+            return False
+        if np.sum(np.where(np.abs(positions) >= 0.99,1,0)) > 1:
+            print('Individual actuator voltage too high.')
+            return False
+        if np.sum(np.abs(positions)) >= 25:
+            print('Total voltage too high.')
+            return False
+        else:
+            return True
         
-    def set_mirror_flat(self):
-        """Set mirror to positions in the "flat" file."""
+    def get_mirror_positions(self):
+        """Update stored mirror positions from wavefront corrector."""
+        self.current_positions = np.array(self.wfc.get_current_positions())
+        self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
 
-        self.wfc.move_to_absolute_positions(self.flat_positions)
+    def set_mirror_positions_flat(self):
+        """Set mirror to positions to system flat."""
+        self.wfc.move_to_absolute_positions(self.wfc_positions["system_flat"])
 
-    # Steven - we need a paired function to store positions at unique
-    # position index. You may want to re-think the API as you implement this.
     def set_mirror_positions_from_array(self,idx: int = 0):
         """Set mirror positions from stored array.
         
@@ -227,8 +319,8 @@ class AOMirror:
         idx: int, default = 0
             position index to use
         """
-    
         self.set_mirror_positions(self.wfc_positions_array[idx,:])
+        self.get_mirror_positions()
         
     def set_mirror_positions(self, positions: NDArray):
         """Set mirror positions.
@@ -238,30 +330,16 @@ class AOMirror:
         positions : NDArray
             Flatten array of actuators 
         """
-
-        if positions.shape[0] != self.wfc.nb_actuators:
-            raise ValueError(f"Positions array needs to have shape = {self.wfc.nb.actuators}")
-        
-        apply = True
-        overage_acutators = np.sum(np.where(np.abs(positions) >= 0.99,1,0))
-        if overage_acutators > 1:
-            print('individual actuator voltage too high.')
-            apply = False
-        
-        total_actuators = np.sum(np.abs(positions))
-        if total_actuators >= 25:
-            print('total voltage too high.')
-            apply = False
-        
-        if apply:
+        if self._validate_positions(positions):
             self.wfc.move_to_absolute_positions(positions)
-            
-        return apply        
+            time.sleep(0.01)
+            self.get_mirror_positions()
+            return True
+        else:
+            return False    
         
     def set_modal_coefficients(self,amps: NDArray):
         """Set modal coefficients.
-
-        Commonly in Zernike modes.
 
         Parameters
         ----------
@@ -269,51 +347,33 @@ class AOMirror:
             Flatten array of Zernike modes.
         """
 
-        assert amps.shape[0]==self.n_modes, "amps array must have the same shape as the number of Zernike modes."
+        assert amps.shape[0]==self._n_modes, "amps array must have the same shape as the number of Zernike modes."
+        
         # update modal data
         self.modal_coeff.set_data(
             coef_array = amps,
-            index_array = np.arange(1, self.n_modes+1, 1),
+            index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
         ) 
         
         # create a new haso_slope from the new modal coefficients
         haso_slopes = wkpy.HasoSlopes(
             modalcoef = self.modal_coeff, 
-            config_file_path=str(self.haso_config_file_path)
+            config_file_path=str(self._haso_config_file_path)
         )
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
         new_positions = np.asarray(self.flat_positions) + np.asarray(deltas)
-        
-        apply = True
-        overage_acutators = np.sum(np.where(np.abs(new_positions) >= 0.99,1,0))
-        if overage_acutators > 1:
-            print('individual actuator voltage too high.')
-            apply = False
-        
-        total_actuators = np.sum(np.abs(new_positions))
-        if total_actuators >= 25:
-            print('total voltage too high.')
-            apply = False
-        
-        if apply:
+                
+        if self._validate_positions(new_positions):
             self.wfc.move_to_absolute_positions(new_positions)
-            self.current_positions = new_positions.copy()
-            self.current_coeffs = amps
-        time.sleep(.01)
-        return apply
+            time.sleep(0.01)
+            self.get_mirror_positions()
+            return True
+        else:
+            return False  
         
-    # Steven - this is a slightly confusing function name. I would expect
-    # "update" to change the mirror settings, but this updates the internal class.
-    # should these move to class properties?
-    def update_mirror_positions(self):
-        """Update stored mirror positions from wavefront corrector."""
-        self.current_positions = np.array(self.wfc.get_current_positions())
-        self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
-        self.deltas = self.current_positions - self.flat_positions
-       
-    def save_mirror_state(self, wfc_save_path: Path):
+    def save_wfc_positions_file(self, wfc_save_path: Path):
         """Save current mirror state to disk.
 
         Parameters
@@ -323,8 +383,7 @@ class AOMirror:
         """
         self.wfc.save_current_positions_to_file(pmc_file_path=str(wfc_save_path))
     
-    
-    def save_mirror_positions(self, name: str):
+    def save_wfc_state(self, name: str):
         """Save current mirror positions to disk.
 
         Parameters
@@ -332,14 +391,14 @@ class AOMirror:
         name : str
             _description_
         """
-        self.update_mirror_positions()
+        self.get_mirror_positions()
         self.wfc_positions[name] = self.current_positions
         
-        actuator_save_path = self.interaction_matrix_file_path.parent / Path(f"{name}_actuator_positions.wcs") 
+        actuator_save_path = self._output_path / Path(f"{name}_actuator_positions.wcs") 
         self.wfc.save_current_positions_to_file(pmc_file_path=str(actuator_save_path))
         
         # save last updated
-        coeff_save_path = self.interaction_matrix_file_path.parent / Path(f"{name}_modalcoeffs.json")
+        coeff_save_path = self._output_path / Path(f"{name}_modalcoeffs.json")
         
         # copied from navigate
         coefs = self.current_coeffs
@@ -347,16 +406,33 @@ class AOMirror:
         for c in range(len(self.mode_names)):
             mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
 
-        import json
-
         with open(coeff_save_path, "w") as f:
             json.dump(mode_dict, f)
-        f.close()
-        
-        if name=="flat":
+            
+        if "system_flat" in name:
             self.flat_positions = self.current_positions
-            self.flat_coeffs = self.current_coeffs
-            self.flat_positions_file_path = actuator_save_path
+            self._flat_positions_file_path = actuator_save_path    
+        
+    def save_wfc_positions_array(self, fname : str = "exp_ao_positions"):
+        """Save wfc positions array to disk
+        
+        Parameters
+        ----------
+        fname : str
+        """
+        positions_file_path = self._output_path / Path(f"{fname}.json")
+        wfc_positions_list = self.wfc_positions_array.tolist()
+        with open(positions_file_path, "w") as f:
+            json.dump(wfc_positions_list, f)
+            
+    def load_wfc_positions_array(self, fname : str = "exp_ao_positions"):
+        positions_file_path = self._output_path / Path(f"{fname}.json")
+        with open(positions_file_path, "r") as f:
+            wfc_positions_list = json.load(f)
+
+        # Convert the loaded list back to a NumPy array
+        self.wfc_positions_array = np.asarray(wfc_positions_list)
+
 
 def DM_voltage_to_map(v):
     """Reshape mirror to a map.
@@ -387,7 +463,6 @@ def DM_voltage_to_map(v):
     M[2:6,7] = v[48:52]
 
     return M
-    
     
 def plotDM(
     cmd: NDArray, 
