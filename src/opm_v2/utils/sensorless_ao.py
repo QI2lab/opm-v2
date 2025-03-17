@@ -69,9 +69,8 @@ def run_ao_optimization(
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.35,
-    delta_range_alpha_per_iter: Optional[float] = 0.75,
+    delta_range_alpha_per_iter: Optional[float] = 0.60,
     modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
-    roi_crop_size: Optional[int] = 101,
     save_dir_path: Optional[Path] = None,
     verbose: Optional[bool] = True,
     ):
@@ -279,7 +278,7 @@ def run_ao_optimization(
             else:
                 """acquire projection image"""
                 if not opmNIDAQ_local.running():
-                    opmNIDAQ_local.start_waveform_playback()          
+                    opmNIDAQ_local.start_waveform_playback()
                 image = mmc.snap()
                     
                 """Calculate metric."""

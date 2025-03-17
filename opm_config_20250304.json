@@ -4,7 +4,8 @@
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
         "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc",
         "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250215_tilted_brightness_laser_actuator_positions2.wcs"
+        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250215_tilted_brightness_laser_actuator_positions2.wcs",
+        "output_path": "G:/"
     },
     "Camera": {
         "camera_id": "OrcaFusionBT",
@@ -20,9 +21,9 @@
         "scan_type": "2d",
         "laser_blanking": true,
         "image_mirror_calibration": 0.0433,
-        "projection_mirror_calibration": 0.0052,
-        "image_mirror_step_size_um": 0.4,
-        "image_mirror_neutral_um": 0.5,
+        "projection_mirror_calibration": 0.00566,
+        "image_mirror_step_size_um": 0.1,
+        "image_mirror_neutral_um": 0.7,
         "projection_mirror_neutral_um": 0.0,
         "verbose": false
     },
@@ -43,24 +44,23 @@
     },
     "AO-projection": {
         "channel_states": [
-            false,
             true,
+            false,
             false,
             false,
             false
         ],
         "channel_powers": [
+            20.0,
             0.0,
-            30.0,
             0.0,
             0.0,
             0.0
         ],
-        "exposure_ms": 500.0,
+        "exposure_ms": 350.0,
         "mode": "shannon_dct",
         "iterations": 2,
         "image_mirror_range_um": 100.0,
-        "image_mirror_step_um": 0.350,
         "camera_crop_y": 869,
         "optimize_now_path": "G:/optimize_now"
     },

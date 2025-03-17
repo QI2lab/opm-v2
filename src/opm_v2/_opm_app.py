@@ -200,10 +200,9 @@ def main() -> None:
         """
         Update microscope states and values upon changes to in the GUI
         """
-        print(device_name, property_name)
         # Ignore updates from AutoShutter
         if device_name == mmc.getShutterDevice() and property_name == "State":
-            print("preventing shutter update")
+            # print(f"preventing shutter update: {device_name}, {property_name}")
             return
             
         # Get the selected imaging mode
@@ -224,7 +223,7 @@ def main() -> None:
         restart_sequence = False
         if mmc.isSequenceRunning():
             mmc.stopSequenceAcquisition()
-            print("stoping sequence`")
+            # print("stoping sequence`")
             restart_sequence = True
             
         if opmNIDAQ_update_state.running():
@@ -254,11 +253,11 @@ def main() -> None:
         _active_channel_id = mmc.getProperty("LED", "Label")
         _channel_states = [False] * len(config["OPM"]["channel_ids"])
         for ch_i, ch_str in enumerate(config["OPM"]["channel_ids"]):
-            print({_active_channel_id})
+            # print({_active_channel_id})
             if _active_channel_id==ch_str:
-                print(f"ch_str:{ch_str}")
+                # print(f"ch_str:{ch_str}")
                 _channel_states[ch_i] = True
-        print(_channel_states)
+        # print(_channel_states)
         # Get the current LaserBlanking State
         if mmc.getProperty("LaserBlanking", "Label")=="On":
             _laser_blanking = True
@@ -281,7 +280,7 @@ def main() -> None:
             # if not (current_sensor_mode=="PROGRESSIVE"):
             #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "PROGRESSIVE")
             #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-            print("here in update projection")
+            # print("here in update projection")
             
             # Crop the chip down to determined size
             camara_crop_y = calculate_projection_crop(_image_mirror_range_um)
@@ -300,8 +299,8 @@ def main() -> None:
         else :
             # if not (current_sensor_mode=="AREA"):
             #     mmc.setProperty(config["Camera"]["camera_id"], "SENSOR MODE", "AREA")
-            #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-            print("here in update else")
+            # #     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            # print("here in update else")
                 
             # Crop the chip down to gui size
             if not (gui_camera_crop_y == mmc.getROI()[-1]): 
@@ -342,8 +341,7 @@ def main() -> None:
             mmc.startContinuousSequenceAcquisition()
             
     # Connect changes in gui fields to the update_state method.            
-    # mmc.events.propertyChanged.connect(update_state)
-    mmc.events.propertiesChanged.connect(update_state)
+    mmc.events.propertyChanged.connect(update_state)
     mmc.events.configSet.connect(update_state)
     
     # grab handle to the Stage widget
@@ -753,7 +751,6 @@ def main() -> None:
                     'y': float(mmc.getYPosition()),
                     'z': float(mmc.getZPosition())
                 }
-                print(current_stage_position)
                 stage_positions.append({
                     'x': float(mmc.getXPosition()),
                     'y': float(mmc.getYPosition()),
@@ -1050,6 +1047,7 @@ def main() -> None:
                     if (AO_mode == "Before-each-xyz") and (time_idx == 0):
                         need_to_setup_DAQ = True
                         current_AO_event = MDAEvent(**AO_event.model_dump())
+                        current_AO_event.action.data["AO"]["output_path"] = Path(output).parent / Path(f"pos_{pos_idx}_ao_optimize")
                         current_AO_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                         current_AO_event.action.data["AO"]["apply_existing"] = False
                         opm_events.append(current_AO_event)
