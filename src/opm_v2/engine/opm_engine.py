@@ -27,6 +27,7 @@ import json
 from pathlib import Path
 import numpy as np
 from time import sleep
+
 class OPMEngine(MDAEngine):
     def __init__(self, mmc, config_path: Path, use_hardware_sequencing: bool = True) -> None:
 
@@ -97,7 +98,7 @@ class OPMEngine(MDAEngine):
 
             elif action_name == "Stage-SetupScan":
                 # ensure commands are sent to the stage controller
-                self._mmc.set_property(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
+                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
 
 
                 # Setup PLC controller for TTL output to stage sync signal
@@ -111,8 +112,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
                 
                 self._mmc.setProperty(plcName, propCellConfig, addrStageSync)
@@ -120,8 +121,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
 
                 # Set tile axis speed
@@ -131,8 +132,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan axis speed
@@ -142,8 +143,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan axis to true 1D scan with no backlash
@@ -153,8 +154,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan range and return speed (10% of max speed) for scan axis
@@ -163,11 +164,11 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.set_property(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.get_property(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
                     sleep(.5)
 
-                self._mmc.set_property(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
+                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
             
             elif action_name == "AO-projection":
                 
@@ -253,14 +254,22 @@ class OPMEngine(MDAEngine):
                 )
                 
                 # Update daq waveform values and setup daq for playback
-                if str(data_dict["DAQ"]["mode"]) == "stage"
+                if str(data_dict["DAQ"]["mode"]) == "stage":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = str(data_dict["DAQ"]["mode"]),
                         channel_states = data_dict["DAQ"]["channel_states"],
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
                     )
-                else:
+                elif str(data_dict["DAQ"]["mode"]) == "projection":
+                    self.opmDAQ.set_acquisition_params(
+                        scan_type = str(data_dict["DAQ"]["mode"]),
+                        channel_states = data_dict["DAQ"]["channel_states"],
+                        image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
+                        laser_blanking = bool(data_dict["DAQ"]["blanking"]),
+                        exposure_ms = exposure_ms
+                    )
+                elif str(data_dict["DAQ"]["mode"]) == "mirror":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = str(data_dict["DAQ"]["mode"]),
                         channel_states = data_dict["DAQ"]["channel_states"],
@@ -276,8 +285,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForSystem()
 
             elif action_name == "Fluidics":
-                # Nothing to prep, the user should have already confirmed its ready to go.
-                print("Fluidics will be run\n")
+                print("Triggering ESI fluidics sequence\n")
                 
         else:
             super().setup_event(event)

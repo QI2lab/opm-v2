@@ -433,8 +433,8 @@ def main() -> None:
             optimize_now = False
         
         # only projection and mirror modes are available if not optimizing now
-        if ("Projection" not in opm_mode) and ("Mirror" not in opm_mode) and not(optimize_now):
-            print("OPM-mode must be 'Projection' or 'Mirror'")   
+        if ("Standard" in opm_mode) and not(optimize_now):
+            print("OPM-mode must be 'Projection' or 'Mirror' or 'Stage'")   
             return     
         
         if not(optimize_now) and not(output):
@@ -496,20 +496,39 @@ def main() -> None:
         now = datetime.now()
         timestamp = f"{now.year:4d}{now.month:2d}{now.day:2d}_{now.hour:2d}{now.minute:2d}{now.second:2d}"
 
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        # If optimize now, ignore MDA widget and run_mda now.
+        #--------------------------------------------------------------------#
+        #--------------------------------------------------------------------#
+        
         if optimize_now:
-            #----------------------------------------------------------------#
-            #----------------------------------------------------------------#
-            # Setup AO values from mm config
-            # Nothing to do for O2O3 Autofocus
-            #----------------------------------------------------------------#
-            #----------------------------------------------------------------#
-            if "Optimize-now" in O2O3_mode:
+            opm_events: list[MDAEvent] = []
+            
+            if "Optimize-now" in O2O3_mode:                
                 print("Running O2O3 Autofocus Now\n")
                 
-            if "Optimize-now" in AO_mode:
-                print("Running AO optimization Now\n")
+                o2o3_event = MDAEvent(
+                    action=CustomAction(
+                        name="O2O3-autofocus",
+                        data = {
+                            "Camera" : {                    
+                                "exposure_ms" : float(updated_config["O2O3-autofocus"]["exposure_ms"]),
+                                "camera_crop" : [
+                                    updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                                    updated_config["Camera"]["camera_center_y"] - int(config["O2O3-autofocus"]["camera_crop_y"]//2),
+                                    updated_config["Camera"]["camera_crop_x"],
+                                    updated_config["O2O3-autofocus"]["camera_crop_y"]
+                                ]
+                            }
+                        }
+                    )
+                )
+                opm_events.append(o2o3_event)
                 
-                # TODO Why if not running AF does images_per_mode in ao_optimzation have an imhomogenous shape?
+            if "Optimize-now" in AO_mode:
+                
+                print("Running AO optimization Now\n")
                 
                 # get image galvo mirror range
                 image_mirror_range_um = np.round(
@@ -556,29 +575,303 @@ def main() -> None:
                 updated_config["AO-projection"]["exposure_ms"] = AO_exposure_ms
                 updated_config["AO-projection"]["image_mirror_range_um"] = AO_image_mirror_range_um
                 updated_config["AO-projection"]["camera_crop_y"] = AO_camera_crop_y
+                
                 with open(config_path, "w") as file:
                     json.dump(updated_config, file, indent=4)
-            else:
-                # Use config values for placeholder
-                AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
-                AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
-                AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
-                AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
-                AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
-                AO_save_path = None
-                AO_iterations = int(updated_config["AO-projection"]["iterations"])
-                AO_metric = str(updated_config["AO-projection"]["mode"])
-        
+                
+                ao_optimize_event = MDAEvent(
+                    exposure = AO_exposure_ms,
+                    action=CustomAction(
+                        name="AO-projection",
+                        data = {
+                            "AO" : {
+                                "opm_mode": str("projection"),
+                                "channel_states": AO_channel_states,
+                                "channel_powers" : AO_channel_powers,
+                                "mode": AO_metric,
+                                "iterations": AO_iterations,
+                                "image_mirror_range_um" : AO_image_mirror_range_um,
+                                "blanking": bool(True),
+                                "apply_existing": bool(False),
+                                "pos_idx":int(0),
+                                "output_path":AO_save_path
+                            },
+                            "Camera" : {
+                                "exposure_ms": AO_exposure_ms,
+                                "camera_crop" : [
+                                    updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                                    updated_config["Camera"]["camera_center_y"] - int(AO_camera_crop_y//2),
+                                    updated_config["Camera"]["camera_crop_x"],
+                                    AO_camera_crop_y
+                                ]
+                            }
+                        }
+                    )
+                )
+                opm_events.append(ao_optimize_event)
+                opmAOmirror_local.output_path = AO_save_path
+                
+            # Run optimize now events
+            mda_widget._mmc.run_mda(opm_events, output=None)
+
         else:
             #----------------------------------------------------------------#
             #----------------------------------------------------------------#
             # Setup acquisition timepoints, positions, and channels:
-            # - Grab values from configs
             # - Grab values from MDA widget
             # - AO settings from configuration file
+            # - Stage positions are opm_mode dependent
             #----------------------------------------------------------------#
             #----------------------------------------------------------------#
             
+            sequence = mda_widget.value()
+            sequence_dict = json.loads(sequence.model_dump_json())
+            mda_stage_positions = sequence_dict["stage_positions"]
+            mda_grid_plan = sequence_dict["grid_plan"]
+            mda_channels = sequence_dict["channels"]        
+            mda_time_plan = sequence_dict["time_plan"]
+            mda_z_plan = sequence_dict["z_plan"]
+            
+            #----------------------------------------------------------------#
+            # Compile the active channel info and validate powers
+            #----------------------------------------------------------------#
+            if not(mda_channels):
+                print("Must select channels to use in MDA widget")
+                return
+            elif not("Channel" in mda_channels["group"]):
+                print("Must select channels to use in MDA widget")
+                return
+            
+            channel_names = config["OPM"]["channel_ids"]
+            channel_states = [False] * len(channel_names) 
+            channel_exposures_ms = [0.] * len(channel_names) 
+            channel_powers = [0.] * len(channel_names) 
+            
+            if mmc.getProperty("LaserBlanking", "Label")=="On":
+                laser_blanking = True
+            else:
+                laser_blanking = False
+                
+            # Validate mda channels is set to channels and not running optimize now.
+            if not(mda_channels):
+                print("Must select channels to use in MDA widget")
+                return
+            elif not("Channel" in mda_channels["group"]):
+                print("Must select channels to use in MDA widget")
+                return
+        
+            # Iterate through MDA checked channels and update active lasers list
+            for mda_ch in mda_channels:
+                # Get the matching channel idx active lasers list
+                ch_id = mda_ch["config"]
+                ch_idx = config["OPM"]["channel_ids"].index(ch_id)
+                
+                # update active channel and powers
+                channel_states[ch_idx] = True
+                channel_exposures_ms[ch_idx] = mda_ch["exposure"]
+                channel_powers[ch_idx] = float(
+                    mmc.getProperty(
+                        "Coherent-Scientific Remote",
+                        config["Lasers"]["laser_names"][ch_idx] + " - PowerSetpoint (%)"
+                        )
+                    )
+                
+            n_active_channels = sum(channel_states)
+            active_channel_names = [_name for _, _name in zip(channel_states, channel_names) if _]
+            
+            # Interleave only available if all channels have the same exposure.
+            active_channel_exps = [_exp for _, _exp in zip(channel_states, channel_exposures_ms) if _]
+            if len(set(active_channel_exps))==1:
+                interleaved_acq = True
+            else:
+                interleaved_acq = False
+                    
+            # Check to make sure there exist a laser power > 0
+            if sum(channel_powers)==0:
+                print("All lasers set to 0!")
+                return
+            
+            #--------------------------------------------------------------------#
+            # Generate time points
+            #--------------------------------------------------------------------#
+            
+            # If running a fluidics experiment, the number of time points are the number of rounds.
+            if FP_mode != "None": 
+                n_time_steps = FP_num_rounds
+                time_interval = 0
+                
+            # If the time plan is selected, generate a timelapse 
+            elif mda_time_plan is not None:
+                n_time_steps = mda_time_plan["loops"]
+                time_interval = mda_time_plan["interval"]
+            
+            # If no time plan is given, assume a single time point
+            else:
+                n_time_steps = 1
+                time_interval = 0
+                
+            #----------------------------------------------------------------#
+            # Get configuration properities
+            #----------------------------------------------------------------#
+            
+            # get the camera crop value
+            camera_crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
+            
+            # get image galvo mirror range and step size
+            image_mirror_range_um = np.round(
+                float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0
+                )
+            image_mirror_step_um = np.round(
+                float(mmc.getProperty("ImageGalvoMirrorStep", "Label").split("-")[0]),2
+                )
+            
+            # use OPMNIDAQ class calculation for number of scan steps to ensure consistency
+            opmNIDAQ_custom.set_acquisition_params(
+                scan_type="mirror",
+                channel_states = [False,False,False,False,False],
+                image_mirror_step_size_um=image_mirror_step_um,
+                image_mirror_range_um=image_mirror_range_um,
+                laser_blanking=True,
+                exposure_ms=100.
+            )
+            n_scan_steps = opmNIDAQ_custom.n_scan_steps
+            
+            #--------------------------------------------------------------------#
+            # Generate stage positions
+            #--------------------------------------------------------------------#
+            
+            stage_positions = []
+            
+            if ("Mirror" in opm_mode) or ("Projection" in opm_mode):
+                # If only the stage positions tab is selected, use the MDA positions tab
+                if (mda_stage_positions is not None) and (mda_grid_plan is None):
+                    for stage_pos in mda_stage_positions:
+                        stage_positions.append({
+                                    'x': float(stage_pos['x']),
+                                    'y': float(stage_pos['y']),
+                                    'z': float(stage_pos['z'])
+                                })
+                        
+                # If the grid tab is selected, generate positions from the grid plan
+                elif mda_grid_plan is not None:
+                    #----------------------------------------------------------------#
+                    # Get the z positions
+                    # - First check the z-plan
+                    # - Then use the singular stage position in the stage plan if it exist
+                    # - Lastly use the current stage position
+                    #----------------------------------------------------------------#
+                    
+                    # Check if multiple z plans are setup in MDA
+                    if mda_z_plan is not None:
+                        max_z_pos = float(mda_z_plan["top"])
+                        min_z_pos = float(mda_z_plan["bottom"])
+                        step_z = 0.6 * float(mmc.getProperty("ImageCameraCrop","Label") ) * np.sin((np.pi/180.)*float(config["OPM"]["angle_deg"])) * mmc.getPixelSizeUm()
+                        if min_z_pos > max_z_pos:
+                            step_z = -1 * step_z
+                        num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
+                        
+                    # if no z plan is selected, check if only 1 position exists in the stage position plan
+                    elif (mda_stage_positions is not None):
+                        if len([_p for _p in mda_stage_positions])==1:
+                            temp = []
+                            for stage_pos in mda_stage_positions:
+                                temp.append({
+                                    'x': float(stage_pos['x']),
+                                    'y': float(stage_pos['y']),
+                                    'z': float(stage_pos['z'])
+                                })
+                            min_z_pos = temp[0]["z"]
+                            step_z = 0
+                            num_z_pos = 1
+                    
+                    # If no other z positions are set, resort to the current z position 
+                    else:
+                        min_z_pos = mmc.getZPosition()
+                        step_z = 0
+                        num_z_pos = 1
+                    
+                    #----------------------------------------------------------------# 
+                    # Generate stage position list using the grid's generated positions
+                    #----------------------------------------------------------------#
+                    
+                    # iterate through sequence to grab stage positions from grid plan
+                    stage_positions_array = []
+                    for event in sequence:
+                        json_event = json.loads(event.model_dump_json())
+                        stage_positions_array.append([
+                            float(json_event['z_pos']),
+                            float(json_event['y_pos']),
+                            float(json_event['x_pos'])]
+                        )
+                    stage_positions_array = np.asarray(stage_positions_array, dtype=np.float32)
+
+                    # Define our own snake pattern, assumes a 20% overlap.
+                    max_y_pos = np.max(stage_positions_array[:,1])
+                    min_y_pos = np.min(stage_positions_array[:,1])
+                    max_x_pos = np.max(stage_positions_array[:,2])
+                    min_x_pos = np.min(stage_positions_array[:,2])
+                    num_x_pos = int(np.ceil(np.abs(max_x_pos - min_x_pos) / (0.6 * config["Camera"]["camera_crop_x"]*mmc.getPixelSizeUm())))
+                    num_y_pos = int(np.ceil(np.abs(max_y_pos - min_y_pos) / (0.6 * image_mirror_range_um)))
+                    step_x = (max_x_pos - min_x_pos) / num_x_pos
+                    step_y = (max_y_pos - min_y_pos) / num_y_pos
+                    
+                    # Generate stage positions in a snake like pattern
+                    for x_pos in range(num_x_pos):
+                        # Even rows (left to right)
+                        if x_pos % 2 == 0:                          
+                            y_range = range(num_y_pos)
+                        # Odd rows (right to left)
+                        else:  
+                            y_range = range(num_y_pos - 1, -1, -1)
+                        
+                        # populate x positions
+                        for y_pos in y_range:
+                            for z_pos in range(num_z_pos):
+                                stage_positions.append({
+                                    "x": float(np.round(min_x_pos + x_pos * step_x, 2)),
+                                    "y": float(np.round(min_y_pos + y_pos * step_y, 2)),
+                                    "z": float(np.round(min_z_pos + z_pos * step_z, 2))
+                                })
+                    
+                # if neither positions or grid plan are selected, use the current position
+                elif (mda_grid_plan is None) and (mda_stage_positions is None):
+                    current_stage_position = {
+                        'x': float(mmc.getXPosition()),
+                        'y': float(mmc.getYPosition()),
+                        'z': float(mmc.getZPosition())
+                    }
+                    stage_positions.append({
+                        'x': float(mmc.getXPosition()),
+                        'y': float(mmc.getYPosition()),
+                        'z': float(mmc.getZPosition())
+                    })
+                    # TODO
+                    # return
+                    
+                # update the wfc mirror positions array shape
+                n_stage_pos = len(stage_positions)
+                opmAOmirror_local.n_positions = n_stage_pos
+
+            elif "Stage" in opm_mode:
+                pass
+                # TODO
+                
+            #----------------------------------------------------------------#
+            # Define AO settings from configuration file
+            #----------------------------------------------------------------#
+            AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
+            AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
+            AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
+            AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
+            AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
+            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
+            AO_iterations = int(updated_config["AO-projection"]["iterations"])
+            AO_metric = str(updated_config["AO-projection"]["mode"])
+            
+            print(
+                f"Running {opm_mode} imaging acquisitions:\n",
+                f"timepoints:{n_time_steps}, stage positions: {n_stage_pos}, channels: {active_channel_names}"
+                )
             #----------------------------------------------------------------#
             # Get configuration properities
             #----------------------------------------------------------------#
@@ -604,297 +897,74 @@ def main() -> None:
             )
             n_scan_steps = opmNIDAQ_custom.n_scan_steps
             
-            #----------------------------------------------------------------#
-            # Compile mda positions from active tabs, extract the relevant portions for qi2lab-OPM
-            # -  if grid plan is none, try on the stage positions sequence.
-            # -  if the stage positions sequence is also none, use the current stage position.
-            # -  if running with fluidics, set the number of timepoints as the number of rounds.
-            # -  if no time plan is selected, assume single timepoint.
-            # -  if the ao or af is optimize now, no values from the mda are used.
-            #----------------------------------------------------------------#
-                        
-            sequence = mda_widget.value()
-            sequence_dict = json.loads(sequence.model_dump_json())
-            mda_stage_positions = sequence_dict["stage_positions"]
-            mda_grid_plan = sequence_dict["grid_plan"]
-            mda_channels = sequence_dict["channels"]       
-            mda_time_plan = sequence_dict["time_plan"]
-            mda_z_plan = sequence_dict["z_plan"]
-            
-            # Validate mda channels is set to channels and not running optimize now.
-            if not(optimize_now) and not(mda_channels):
-                print("Must select channels to use in MDA widget")
-                return
-            elif not(optimize_now) and ("Channel" not in mda_channels[0]["group"]):
-                print("Must select channels to use in MDA widget")
-                return
-            
             #--------------------------------------------------------------------#
-            # Generate time points
             #--------------------------------------------------------------------#
-            
-            # If running a fluidics experiment, the number of time points are the number of rounds.
-            if FP_mode != "None": 
-                n_time_steps = FP_num_rounds
-                time_interval = 0
-                
-            # If the time plan is selected, generate a timelapse 
-            elif mda_time_plan is not None:
-                n_time_steps = mda_time_plan["loops"]
-                time_interval = mda_time_plan["interval"]
-            
-            # If no time plan is given, assume a single time point
-            else:
-                n_time_steps = 1
-                time_interval = 0
+            #--------------------------------------------------------------------#
+            # Create CustomAction events
+            # - O2O3 autofocus
+            # - AO mirror optimization
+            # - Fluidics program (Not Optimize only)
+            # - DAQ hardware setup (Not Optimize only)
+            # - Image events (to be sequenced, Not Optimize only)
+            #--------------------------------------------------------------------#
+            #--------------------------------------------------------------------#
+            #--------------------------------------------------------------------#
                 
             #--------------------------------------------------------------------#
-            # Generate stage positions
+            # Create CustomAction autofocus O2O3 events
             #--------------------------------------------------------------------#
             
-            stage_positions = []
-            
-            # If only the stage positions tab is selected, use the MDA positions tab
-            if (mda_stage_positions is not None) and (mda_grid_plan is None):
-                for stage_pos in mda_stage_positions:
-                    stage_positions.append({
-                                'x': float(stage_pos['x']),
-                                'y': float(stage_pos['y']),
-                                'z': float(stage_pos['z'])
-                            })
-                    
-            # If the grid tab is selected, generate positions from the grid plan
-            elif mda_grid_plan is not None:
-                #----------------------------------------------------------------#
-                # Get the z positions
-                # - First check the z-plan
-                # - Then use the singular stage position in the stage plan if it exist
-                # - Lastly use the current stage position
-                #----------------------------------------------------------------#
-                
-                # Check if multiple z plans are setup in MDA
-                if mda_z_plan is not None:
-                    max_z_pos = float(mda_z_plan["top"])
-                    min_z_pos = float(mda_z_plan["bottom"])
-                    step_z = 0.6 * float(mmc.getProperty("ImageCameraCrop","Label") ) * np.sin((np.pi/180.)*float(config["OPM"]["angle_deg"])) * mmc.getPixelSizeUm()
-                    if min_z_pos > max_z_pos:
-                        step_z = -1 * step_z
-                    num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
-                    
-                # if no z plan is selected, check if only 1 position exists in the stage position plan
-                elif (mda_stage_positions is not None):
-                    if len([_p for _p in mda_stage_positions])==1:
-                        temp = []
-                        for stage_pos in mda_stage_positions:
-                            temp.append({
-                                'x': float(stage_pos['x']),
-                                'y': float(stage_pos['y']),
-                                'z': float(stage_pos['z'])
-                            })
-                        min_z_pos = temp[0]["z"]
-                        step_z = 0
-                        num_z_pos = 1
-                
-                # If no other z positions are set, resort to the current z position 
-                else:
-                    min_z_pos = mmc.getZPosition()
-                    step_z = 0
-                    num_z_pos = 1
-                
-                #----------------------------------------------------------------# 
-                # Generate stage position list using the grid's generated positions
-                #----------------------------------------------------------------#
-                
-                # iterate through sequence to grab stage positions from grid plan
-                stage_positions_array = []
-                for event in sequence:
-                    json_event = json.loads(event.model_dump_json())
-                    stage_positions_array.append([
-                        float(json_event['z_pos']),
-                        float(json_event['y_pos']),
-                        float(json_event['x_pos'])]
-                    )
-                stage_positions_array = np.asarray(stage_positions_array, dtype=np.float32)
-
-                # Define our own snake pattern, assumes a 20% overlap.
-                max_y_pos = np.max(stage_positions_array[:,1])
-                min_y_pos = np.min(stage_positions_array[:,1])
-                max_x_pos = np.max(stage_positions_array[:,2])
-                min_x_pos = np.min(stage_positions_array[:,2])
-                num_x_pos = int(np.ceil(np.abs(max_x_pos - min_x_pos) / (0.6 * config["Camera"]["camera_crop_x"]*mmc.getPixelSizeUm())))
-                num_y_pos = int(np.ceil(np.abs(max_y_pos - min_y_pos) / (0.6 * image_mirror_range_um)))
-                step_x = (max_x_pos - min_x_pos) / num_x_pos
-                step_y = (max_y_pos - min_y_pos) / num_y_pos
-                
-                # Generate stage positions in a snake like pattern
-                for x_pos in range(num_x_pos):
-                    # Even rows (left to right)
-                    if x_pos % 2 == 0:                          
-                        y_range = range(num_y_pos)
-                    # Odd rows (right to left)
-                    else:  
-                        y_range = range(num_y_pos - 1, -1, -1)
-                    
-                    # populate x positions
-                    for y_pos in y_range:
-                        for z_pos in range(num_z_pos):
-                            stage_positions.append({
-                                "x": float(np.round(min_x_pos + x_pos * step_x, 2)),
-                                "y": float(np.round(min_y_pos + y_pos * step_y, 2)),
-                                "z": float(np.round(min_z_pos + z_pos * step_z, 2))
-                            })
-                
-            # if neither positions or grid plan are selected, use the current position
-            elif (mda_grid_plan is None) and (mda_stage_positions is None):
-                current_stage_position = {
-                    'x': float(mmc.getXPosition()),
-                    'y': float(mmc.getYPosition()),
-                    'z': float(mmc.getZPosition())
-                }
-                stage_positions.append({
-                    'x': float(mmc.getXPosition()),
-                    'y': float(mmc.getYPosition()),
-                    'z': float(mmc.getZPosition())
-                })
-                # TODO
-                # return
-                
-            # update the wfc mirror positions array shape
-            n_stage_pos = len(stage_positions)
-            opmAOmirror_local.n_positions = n_stage_pos
-            
-            #--------------------------------------------------------------------#
-            # Generate channel selection
-            #--------------------------------------------------------------------#
-                               
-            if mda_channels is not None:
-                # Iterate through MDA checked channels and update active lasers list
-                for mda_ch in mda_channels:
-                    # Get the matching channel idx active lasers list
-                    ch_id = mda_ch["config"]
-                    ch_idx = config["OPM"]["channel_ids"].index(ch_id)
-                    
-                    # update active channel and powers
-                    active_channels[ch_idx] = True
-                    exposure_channels[ch_idx] = mda_ch["exposure"]
-                    laser_powers[ch_idx] = float(
-                        mmc.getProperty(
-                            "Coherent-Scientific Remote",
-                            config["Lasers"]["laser_names"][ch_idx] + " - PowerSetpoint (%)"
-                            )
-                        )
-
-                # if mda is selected, check to make sure there exist a laser power > 0
-                if sum(laser_powers)==0:
-                    print("All lasers set to 0!")
-                    return
-        
-            n_active_channels = sum(active_channels)
-            
-            # Create lists containing only the active channel names and exposures
-            active_channel_names = [_name for _, _name in zip(active_channels, channel_names) if _]
-            active_channel_exps = [_exp for _, _exp in zip(active_channels, exposure_channels) if _]
-        
-            # Interleave only available if all channels have the same exposure.
-            if len(set(active_channel_exps)) == 1:
-                interleaved_acq = True
-            else:
-                interleaved_acq = False
-        
-            # get laser blanking values
-            if "On" in mmc.getProperty("LaserBlanking","Label"):
-                laser_blanking = True
-            elif "Off" in mmc.getProperty("LaserBlanking","Label"):
-                laser_blanking = False
-            else:
-                laser_blanking = True
-
-            #----------------------------------------------------------------#
-            # Define AO settings from configuration file
-            #----------------------------------------------------------------#
-            AO_exposure_ms = round(float(updated_config["AO-projection"]["exposure_ms"]),0)
-            AO_channel_states = list(map(bool,updated_config["AO-projection"]["channel_states"]))
-            AO_channel_powers = list(float(_) for _ in updated_config["AO-projection"]["channel_powers"])
-            AO_camera_crop_y = int(calculate_projection_crop(updated_config["AO-projection"]["image_mirror_range_um"]))
-            AO_image_mirror_range_um = float(updated_config["AO-projection"]["image_mirror_range_um"])
-            AO_save_path = Path(output).parent / Path(f"{timestamp}_ao_optimize")
-            AO_iterations = int(updated_config["AO-projection"]["iterations"])
-            AO_metric = str(updated_config["AO-projection"]["mode"])
-            
-            print(
-                f"Running {opm_mode} imaging acquisitions:\n",
-                f"timepoints:{n_time_steps}, stage positions: {n_stage_pos}, channels: {active_channel_names}"
+            O2O3_event = MDAEvent(
+                action=CustomAction(
+                    name="O2O3-autofocus",
+                    data = {
+                        "Camera" : {                    
+                            "exposure_ms" : float(updated_config["O2O3-autofocus"]["exposure_ms"]),
+                            "camera_crop" : [
+                                updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                                updated_config["Camera"]["camera_center_y"] - int(config["O2O3-autofocus"]["camera_crop_y"]//2),
+                                updated_config["Camera"]["camera_crop_x"],
+                                updated_config["O2O3-autofocus"]["camera_crop_y"]
+                            ]
+                        }
+                    }
                 )
-        
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        # Create CustomAction events
-        # - O2O3 autofocus
-        # - AO mirror optimization
-        # - Fluidics program (Not Optimize only)
-        # - DAQ hardware setup (Not Optimize only)
-        # - Image events (to be sequenced, Not Optimize only)
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
+            )
             
-        #--------------------------------------------------------------------#
-        # Create CustomAction autofocus O2O3 events
-        #--------------------------------------------------------------------#
-        
-        O2O3_event = MDAEvent(
-            action=CustomAction(
-                name="O2O3-autofocus",
-                data = {
-                    "Camera" : {                    
-                        "exposure_ms" : float(updated_config["O2O3-autofocus"]["exposure_ms"]),
-                        "camera_crop" : [
-                            updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                            updated_config["Camera"]["camera_center_y"] - int(config["O2O3-autofocus"]["camera_crop_y"]//2),
-                            updated_config["Camera"]["camera_crop_x"],
-                            updated_config["O2O3-autofocus"]["camera_crop_y"]
-                        ]
+            #--------------------------------------------------------------------#
+            # Create CustomAction events for running AO optimization
+            #--------------------------------------------------------------------#
+            
+            AO_event = MDAEvent(
+                exposure = AO_exposure_ms,
+                action=CustomAction(
+                    name="AO-projection",
+                    data = {
+                        "AO" : {
+                            "opm_mode": str("projection"),
+                            "channel_states": AO_channel_states,
+                            "channel_powers" : AO_channel_powers,
+                            "mode": AO_metric,
+                            "iterations": AO_iterations,
+                            "image_mirror_range_um" : AO_image_mirror_range_um,
+                            "blanking": bool(True),
+                            "apply_existing": bool(False),
+                            "pos_idx":int(0),
+                            "output_path":AO_save_path
+                        },
+                        "Camera" : {
+                            "exposure_ms": AO_exposure_ms,
+                            "camera_crop" : [
+                                updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+                                updated_config["Camera"]["camera_center_y"] - int(AO_camera_crop_y//2),
+                                updated_config["Camera"]["camera_crop_x"],
+                                AO_camera_crop_y
+                            ]
+                        }
                     }
-                }
+                )
             )
-        )
-        
-        #--------------------------------------------------------------------#
-        # Create CustomAction events for running AO optimization
-        #--------------------------------------------------------------------#
-        
-        AO_event = MDAEvent(
-            exposure = AO_exposure_ms,
-            action=CustomAction(
-                name="AO-projection",
-                data = {
-                    "AO" : {
-                        "opm_mode": str("projection"),
-                        "channel_states": AO_channel_states,
-                        "channel_powers" : AO_channel_powers,
-                        "mode": AO_metric,
-                        "iterations": AO_iterations,
-                        "image_mirror_range_um" : AO_image_mirror_range_um,
-                        "blanking": bool(True),
-                        "apply_existing": bool(False),
-                        "pos_idx":int(0),
-                        "output_path":AO_save_path
-                    },
-                    "Camera" : {
-                        "exposure_ms": AO_exposure_ms,
-                        "camera_crop" : [
-                            updated_config["Camera"]["camera_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
-                            updated_config["Camera"]["camera_center_y"] - int(AO_camera_crop_y//2),
-                            updated_config["Camera"]["camera_crop_x"],
-                            AO_camera_crop_y
-                        ]
-                    }
-                }
-            )
-        )
-        
-        if not(optimize_now):
+            
             #--------------------------------------------------------------------#
             # Create CustomAction Fluidics program
             #--------------------------------------------------------------------#
@@ -956,34 +1026,7 @@ def main() -> None:
                     }
                 )
             )
-        
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        # Create event structure
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        #--------------------------------------------------------------------#
-        
-        opm_events: list[MDAEvent] = []
-        
-        if optimize_now:
-            #----------------------------------------------------------------#
-            #----------------------------------------------------------------#
-            # If optimize now, shortcut acquisition event structure and run_mda now.
-            #----------------------------------------------------------------#
-            #----------------------------------------------------------------#
             
-            if O2O3_mode == "Optimize-now":
-                opm_events.append(O2O3_event)
-            if AO_mode == "Optimize-now":
-                opm_events.append(AO_event)
-                opmAOmirror_local.output_path = AO_save_path
-                
-            # Run optimize now events
-            mda_widget._mmc.run_mda(opm_events, output=None)
-        
-        if not(optimize_now):
             #----------------------------------------------------------------#
             #----------------------------------------------------------------#
             # Else populate a {t, p, c, z} event sequence
@@ -995,6 +1038,8 @@ def main() -> None:
             #----------------------------------------------------------------#
             #----------------------------------------------------------------#
             
+            opm_events: list[MDAEvent] = []
+                
             # Flags to help ensure sequence-able events are kept together 
             need_to_setup_DAQ = True
             need_to_setup_stage = True
