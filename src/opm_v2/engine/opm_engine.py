@@ -7,7 +7,7 @@ Change Log:
 """
 
 from pymmcore_plus.mda import MDAEngine
-from useq import MDAEvent, MDASequence, CustomAction, SequencedEvent
+from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.AOMirror import AOMirror
@@ -96,7 +96,7 @@ class OPMEngine(MDAEngine):
                 )
                 self._mmc.waitForDevice(self._mmc.getXYStageDevice())
 
-            elif action_name == "Stage-SetupScan":
+            elif action_name == "ASI-setupscan":
                 # ensure commands are sent to the stage controller
                 self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
 
@@ -105,15 +105,15 @@ class OPMEngine(MDAEngine):
                 plcName = self._config["PLC"]["name"] # 'PLogic:E:36'
                 propPosition = self._config["PLC"]["position"] # 'PointerPosition'
                 propCellConfig = self._config["PLC"]["cellconfig"] # 'EditCellConfig'
-                addrOutputBNC1 = self._config["PLC"]["pin"] # 33 # BNC1 on the PLC front panel
-                addrStageSync = self._config["PLC"]["signalid"] # 46  # TTL5 on Tiger backplane = stage sync signal
+                addrOutputBNC1 = int(self._config["PLC"]["pin"]) # 33 # BNC1 on the PLC front panel
+                addrStageSync = int(self._config["PLC"]["signalid"]) # 46  # TTL5 on Tiger backplane = stage sync signal
                 self._mmc.setProperty(plcName, propPosition, addrOutputBNC1)
 
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
                 
                 self._mmc.setProperty(plcName, propCellConfig, addrStageSync)
@@ -121,8 +121,8 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
 
                 # Set tile axis speed
@@ -132,19 +132,19 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan axis speed
-                command = "SPEED X=" + str(data_dict["Stage"]["scan_speed"])
+                command = "SPEED X=" + str(data_dict["ASI"]["scan_axis_speed_mm_s"])
                 self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
 
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan axis to true 1D scan with no backlash
@@ -154,21 +154,29 @@ class OPMEngine(MDAEngine):
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
 
                 # Set scan range and return speed (10% of max speed) for scan axis
-                command = '1SCANR X='+str(data_dict["Stage"]["scan_axis_start_mm"])+' Y='+str(data_dict["Stage"]["scan_axis_end_mm"])+' R=10'
+                command = '1SCANR X='+str(np.round(data_dict["ASI"]["scan_axis_start_mm"],2))+' Y='+str(np.round(data_dict["ASI"]["scan_axis_end_mm"],2))+' R=10'
 
                 ready='B'
                 while(ready!='N'):
                     command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"],"SerialResponse")
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
 
                 self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
+                
+                self._mmc.setProperty(self._config["Camera"]["camera_id"],"Trigger","START")
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","INTERNAL")
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                self.execute_stage_scan = True
             
             elif action_name == "AO-projection":
                 
@@ -290,9 +298,10 @@ class OPMEngine(MDAEngine):
         else:
             super().setup_event(event)
 
-    def post_sequence_started(self, event: SequencedEvent):
+    def post_sequence_started(self, event):
         if self.execute_stage_scan:
             self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand","1SCAN")
+            self.execute_stage_scan = False
 
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.

@@ -82,5 +82,18 @@
             "637nm",
             "730nm"
         ]
+    },
+    "Stage" : {
+        "name": "TigerCommHub",
+        "stage_step_size_um": 0.4,
+        "excess_positions": 25,
+        "max_z_change_um" : 3
+    },
+    "PLC" : {
+        "name" : "PLogic:E:36",
+        "position" : "PointerPosition",
+        "cellconfig" : "EditCellConfig",
+        "pin" : 33,
+        "signalid" : 46
     }
 }
