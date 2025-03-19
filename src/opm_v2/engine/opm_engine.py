@@ -174,7 +174,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","INTERNAL")
+                self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","EXTERNAL")
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 self.execute_stage_scan = True
             
