@@ -191,6 +191,7 @@ def setup_stagescan(
                     
     # If the grid tab is selected, generate positions from the grid plan
     elif mda_grid_plan is not None:
+        
         #----------------------------------------------------------------# 
         # Generate stage position list using the grid's generated positions
         #----------------------------------------------------------------#
@@ -204,13 +205,20 @@ def setup_stagescan(
                 float(json_event['y_pos']),
                 float(json_event['x_pos'])]
             )
+        print(mda_grid_plan)
+        
         stage_positions_array = np.asarray(stage_positions_array, dtype=np.float32)
-
         # Define stage positions
-        min_y_pos = np.min(stage_positions_array[:,1])
-        max_y_pos = np.max(stage_positions_array[:,1])
-        min_x_pos = np.max(stage_positions_array[:,2])
-        max_x_pos = np.min(stage_positions_array[:,2])
+        
+        min_y_pos = mda_grid_plan["bottom"]
+        max_y_pos = mda_grid_plan["top"]
+        min_x_pos = mda_grid_plan["left"]
+        max_x_pos = mda_grid_plan["right"]
+
+        # min_y_pos = np.min(stage_positions_array[:,1])
+        # max_y_pos = np.max(stage_positions_array[:,1])
+        # min_x_pos = np.min(stage_positions_array[:,2])
+        # max_x_pos = np.max(stage_positions_array[:,2])
 
         range_x_um = np.round(np.abs(max_x_pos - min_x_pos),2)
 
@@ -588,9 +596,6 @@ def setup_stagescan(
                     current_ASI_setup_event.action.data["ASI"]["scan_axis_end_mm"] = float(scan_axis_end_pos_mm[scan_idx])
                     current_ASI_setup_event.action.data["ASI"]["scan_axis_speed_mm_s"] = float(scan_axis_speed)
                     opm_events.append(current_ASI_setup_event)
-                    print("stage event should be added")
-
-                    
                     # create camera events
                     for scan_axis_idx in range(scan_axis_positions+int(config["Stage"]["excess_positions"])):
                         for chan_idx in range(n_active_channels):

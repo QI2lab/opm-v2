@@ -86,7 +86,7 @@
     "Stage" : {
         "name": "TigerCommHub",
         "stage_step_size_um": 0.4,
-        "excess_positions": 25,
+        "excess_positions": 5,
         "max_z_change_um" : 3
     },
     "PLC" : {

@@ -202,11 +202,12 @@ def main() -> None:
         """
         Update microscope states and values upon changes to in the GUI
         """
+        
         # Ignore updates from AutoShutter
         if device_name == mmc.getShutterDevice() and property_name == "State":
             # print(f"preventing shutter update: {device_name}, {property_name}")
             return
-            
+           
         # Get the selected imaging mode
         opm_mode = mmc.getProperty("OPM-mode", "Label")
         
@@ -343,7 +344,7 @@ def main() -> None:
             mmc.startContinuousSequenceAcquisition()
             
     # Connect changes in gui fields to the update_state method.            
-    mmc.events.propertyChanged.connect(update_state)
+    # mmc.events.propertyChanged.connect(update_state)
     mmc.events.configSet.connect(update_state)
     
     # grab handle to the Stage widget
@@ -352,7 +353,9 @@ def main() -> None:
     # grab handle to the MDA widget and define custom execute_mda method
     # in our method, the MDAEvents are modified before running the sequence
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
-    
+    # mda_widget.channels.setChannelGroups({"Channel":["405nm", "488nm", "561nm", "637nm", "730nm"]})
+    # open an issue for this, when printing the mda channel sequence it has the group still set to AO_mode, but config is a channel.
+
     def custom_execute_mda(output: Path | str | object | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
         
@@ -676,7 +679,7 @@ def main() -> None:
                 if not(mda_channels):
                     print("Must select channels to use in MDA widget")
                     return
-                elif not("Channel" in mda_channels["group"]):
+                elif not("Channel" in mda_channels[0]["group"]):
                     print("Must select channels to use in MDA widget")
                     return
             
