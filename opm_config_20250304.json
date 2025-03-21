@@ -23,7 +23,7 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
         "image_mirror_step_size_um": 0.1,
-        "image_mirror_neutral_um": 0.7,
+        "image_mirror_neutral_um": 0.4,
         "projection_mirror_neutral_um": 0.0,
         "verbose": false
     },
@@ -44,22 +44,22 @@
     },
     "AO-projection": {
         "channel_states": [
-            true,
             false,
+            true,
             false,
             false,
             false
         ],
         "channel_powers": [
-            20.0,
             0.0,
+            5.0,
             0.0,
             0.0,
             0.0
         ],
-        "exposure_ms": 350.0,
+        "exposure_ms": 450.0,
         "mode": "shannon_dct",
-        "iterations": 2,
+        "iterations": 3,
         "image_mirror_range_um": 100.0,
         "camera_crop_y": 869,
         "optimize_now_path": "G:/optimize_now"
@@ -83,17 +83,17 @@
             "730nm"
         ]
     },
-    "Stage" : {
+    "Stage": {
         "name": "TigerCommHub",
         "stage_step_size_um": 0.4,
         "excess_positions": 5,
-        "max_z_change_um" : 3
+        "max_z_change_um": 3
     },
-    "PLC" : {
-        "name" : "PLogic:E:36",
-        "position" : "PointerPosition",
-        "cellconfig" : "EditCellConfig",
-        "pin" : 33,
-        "signalid" : 46
+    "PLC": {
+        "name": "PLogic:E:36",
+        "position": "PointerPosition",
+        "cellconfig": "EditCellConfig",
+        "pin": 33,
+        "signalid": 46
     }
 }

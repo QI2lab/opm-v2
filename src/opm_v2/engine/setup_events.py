@@ -614,6 +614,7 @@ def setup_stagescan(
                                     "DAQ" : {
                                         "mode" : "stage",
                                         "scan_axis_step_um" : float(scan_axis_step_um),
+                                        "scan_axis_range_um" : float(np.abs(scan_axis_end_mm-scan_axis_start_mm) * 1000),
                                         "active_channels" : active_channels,
                                         "exposure_channels_ms": exposure_channels,
                                         "interleaved" : True,

@@ -472,7 +472,7 @@ def main() -> None:
                 sequence = mda_widget.value(),
                 output = output,
                 FP_mode = FP_mode,
-                FP_num_rounds = FP_num_rounds
+                FP_num_rounds = 11
                 )
             
             # tell AO mirror class where to save mirror information
