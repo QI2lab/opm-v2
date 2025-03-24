@@ -1,0 +1,209 @@
+{
+    "OPM": {
+        "mm_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/OPM_20250304.cfg",
+        "imaging_modes": [
+            "projection",
+            "mirror",
+            "stage"
+        ],
+        "live_modes": [
+            "standard",
+            "projection"
+        ],
+        "current_mode": "standard",
+        "angle_deg": 30.0,
+        "camera_Zstage_orientation": "negative",
+        "camera_XYstage_orientation": "positive",
+        "camera_mirror_orientation": "positive",
+        "channel_ids": [
+            "405nm",
+            "488nm",
+            "561nm",
+            "637nm",
+            "730nm"
+        ],
+        "ao_metrics": [
+            "DCT",
+            "localize_gauss_2d"
+        ],
+        "ao_modes": [
+            "each xyz position",
+            "generate grid",
+            "at start",
+            "none",
+            "optimize now"
+        ],
+        "autofocus_frequencies": [
+            "timepoints",
+            "xyz positions",
+            "at start",
+            "none",
+            "optimize now"
+        ],
+        "tile_overlap_perc": 20
+    },
+    "AOMirror": {
+        "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
+        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc",
+        "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat",
+        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250215_tilted_brightness_laser_actuator_positions2.wcs"
+    },
+    "Camera": {
+        "camera_id": "OrcaFusionBT",
+        "exposure_ms": 50.0,
+        "roi_center_x": 1142,
+        "roi_center_y": 1151,
+        "roi_crop_x": 1900,
+        "roi_crop_y": 512,
+        "line_readout_ms": 0.4
+    },
+    "NIDAQ": {
+        "name": "Dev1",
+        "scan_type": "2d",
+        "laser_blanking": true,
+        "image_mirror_calibration": 0.0433,
+        "projection_mirror_calibration": 0.00566,
+        "image_mirror_step_size_um": 0.4,
+        "image_mirror_neutral_v": 0.5,
+        "projection_mirror_neutral_v": 0.0,
+        "verbose": false
+    },
+    "Lasers": {
+        "name": "Coherent-Scientific Remote",
+        "laser_names": [
+            "Laser 405-100C",
+            "Laser 488-150C",
+            "Laser OBIS LS 561-150",
+            "Laser 637-140C",
+            "Laser 730-30C"
+        ]
+    },
+    "OB1": {
+        "port": "COM9",
+        "to_OB1_pin": 7,
+        "from_OB1_pin": 8
+    },
+    "O2O3-autofocus": {
+        "shutter_id": 712,
+        "O3_stage_name": "MCL NanoDrive Z Stage",
+        "exposure_ms": 10.0,
+        "roi_crop_y": 128
+    },
+    "Stage": {
+        "name": "TigerCommHub",
+        "stage_step_size_um": 0.4,
+        "excess_positions": 5,
+        "max_z_change_um": 3
+    },
+    "PLC": {
+        "name": "PLogic:E:36",
+        "position": "PointerPosition",
+        "cellconfig": "EditCellConfig",
+        "pin": 33,
+        "signalid": 46
+    },
+    "acq_config": {
+        "opm_mode": "projection",
+        "fluidics": "none",
+        "camera_roi": {
+            "center_x": 1142.0,
+            "center_y": 1151.0,
+            "crop_x": 1900.0,
+            "crop_y": 512.0
+        },
+        "O2O3-autofocus": {
+            "O3_stage_name": "MCL NanoDrive Z Stage",
+            "exposure_ms": 12.0,
+            "roi_crop_y": 128,
+            "o2o3_mode": "timepoints"
+        },
+        "AO": {
+            "metric": "DCT",
+            "mode_delta": 0.35,
+            "mode_alpha": 0.6,
+            "num_iterations": 3,
+            "image_mirror_range_um": 50.0,
+            "active_channel_id": "405nm",
+            "active_channel_power": 34.0,
+            "exposure_ms": 529.0,
+            "ao_mode": "each xyz position",
+            "save_dir_path": "G:/optimize_now"
+        },
+        "mirror_scan": {
+            "image_mirror_range_um": 100.0,
+            "image_mirror_step_size_um": 0.4,
+            "laser_blanking": false,
+            "channel_states": [
+                false,
+                false,
+                false,
+                false,
+                false
+            ],
+            "channel_powers": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "channel_exposures_ms": [
+                50.0,
+                50.0,
+                50.0,
+                50.0,
+                50.0
+            ]
+        },
+        "stage_scan": {
+            "stage_scan_range_um": 200.0,
+            "laser_blanking": false,
+            "channel_states": [
+                false,
+                false,
+                false,
+                false,
+                false
+            ],
+            "channel_powers": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "channel_exposures_ms": [
+                50.0,
+                50.0,
+                50.0,
+                50.0,
+                50.0
+            ]
+        },
+        "projection_scan": {
+            "image_mirror_range_um": 200.0,
+            "laser_blanking": false,
+            "channel_states": [
+                false,
+                false,
+                false,
+                false,
+                false
+            ],
+            "channel_powers": [
+                0.0,
+                0.0,
+                0.0,
+                0.0,
+                0.0
+            ],
+            "channel_exposures_ms": [
+                50.0,
+                50.0,
+                50.0,
+                50.0,
+                50.0
+            ]
+        }
+    }
+}

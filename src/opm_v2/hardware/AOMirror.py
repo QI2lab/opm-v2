@@ -152,7 +152,7 @@ class AOMirror:
         # here is a spot to keep mirror position arrays
         self.wfc_positions = {
             "system_flat":self.flat_positions,
-            "last_optimization": self.flat_positions,
+            "last_optimized": self.flat_positions,
             "grid": np.empty([1, 1, self.wfc.nb_actuators])
             }          
         # here we store a 1d array of ao mirror positions that correspond to stage positions array.

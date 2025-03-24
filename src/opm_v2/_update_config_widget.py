@@ -47,6 +47,15 @@ class OPMSettings(QWidget):
         #--------------------------------------------------------------------#
         
         #--------------------------------------------------------------------#
+        self.cmbx_ao_metric =  QComboBox()
+        self.cmbx_ao_metric.addItems(self.config["OPM"]["ao_metrics"])
+        self.cmbx_ao_metric.setFixedWidth(80)
+        self.cmbx_ao_metric.currentIndexChanged.connect(self.update_config)
+        
+        self.layout_ao_metric = QHBoxLayout()
+        self.layout_ao_metric.addWidget(QLabel("Metric key:"))
+        self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
+        
         self.cmbx_ao_active_channel =  QComboBox()
         self.cmbx_ao_active_channel.addItems(self.config["OPM"]["channel_ids"])
         self.cmbx_ao_active_channel.setFixedWidth(80)
@@ -117,7 +126,7 @@ class OPMSettings(QWidget):
         self.spbx_ao_mirror_range.setFixedWidth(80)
         self.spbx_ao_mirror_range.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spbx_ao_mirror_range.setValue(self.config["acq_config"]["AO"]["image_mirror_range_um"])
-        self.sldr_ao_exposure.valueChanged.connect(self.update_ao_mirror_range_slider)
+        self.spbx_ao_mirror_range.valueChanged.connect(self.update_ao_mirror_range_slider)
         self.spbx_ao_mirror_range.valueChanged.connect(self.update_config)
         
         self.layout_ao_mirror_range = QHBoxLayout()
@@ -128,13 +137,23 @@ class OPMSettings(QWidget):
         
         #--------------------------------------------------------------------#
         self.cmbx_ao_mode =  QComboBox()
-        self.cmbx_ao_mode.addItems(["DCT", "Localize2D"])
-        self.cmbx_ao_mode.setFixedWidth(80)
+        self.cmbx_ao_mode.addItems(self.config["OPM"]["ao_modes"])
+        self.cmbx_ao_mode.setFixedWidth(125)
         self.cmbx_ao_mode.currentIndexChanged.connect(self.update_config)
         
         self.layout_ao_mode = QHBoxLayout()
-        self.layout_ao_mode.addWidget(QLabel("Metric:"))
+        self.layout_ao_mode.addWidget(QLabel("AO mode:"))
         self.layout_ao_mode.addWidget(self.cmbx_ao_mode)
+                
+        #--------------------------------------------------------------------#
+        self.cmbx_ao_metric =  QComboBox()
+        self.cmbx_ao_metric.addItems(self.config["OPM"]["ao_metrics"])
+        self.cmbx_ao_metric.setFixedWidth(80)
+        self.cmbx_ao_metric.currentIndexChanged.connect(self.update_config)
+        
+        self.layout_ao_metric = QHBoxLayout()
+        self.layout_ao_metric.addWidget(QLabel("Metric:"))
+        self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
         
         #--------------------------------------------------------------------#
         self.spbx_num_iterations =  QSpinBox()
@@ -178,6 +197,8 @@ class OPMSettings(QWidget):
         
         #--------------------------------------------------------------------#
         # setup sub layouts in ao settings
+        self.layout_ao_settings.addLayout(self.layout_ao_mode)
+        self.layout_ao_settings.addLayout(self.layout_ao_metric)
         self.layout_ao_settings.addLayout(self.layout_ao_active_channel)
         self.layout_ao_settings.addLayout(self.layout_active_channel_power)
         self.layout_ao_settings.addLayout(self.layout_ao_exposure)     
@@ -189,14 +210,15 @@ class OPMSettings(QWidget):
 
         self.widgets.update(
             {"AO":{
-                    "metric":self.cmbx_ao_mode,
+                    "metric":self.cmbx_ao_metric,
                     "mode_delta": self.spbx_mode_delta,
                     "mode_alpha": self.spbx_mode_alpha,
                     "num_iterations": self.spbx_num_iterations,
                     "image_mirror_range_um": self.spbx_ao_mirror_range,
                     "active_channel_id": self.cmbx_ao_active_channel,
                     "active_channel_power": self.spbx_active_channel_power,
-                    "exposure_ms": self.spbx_ao_exposure
+                    "exposure_ms": self.spbx_ao_exposure,
+                    "ao_mode": self.cmbx_ao_mode
                     }  
                 }
         )
@@ -209,20 +231,49 @@ class OPMSettings(QWidget):
         # - projection settings
         #--------------------------------------------------------------------#
         #--------------------------------------------------------------------#
-        
+
         self.group_imaging_settings = QGroupBox("OPM imaging settings")
         self.layout_imaging_settings = QVBoxLayout()
         
         #--------------------------------------------------------------------#
         # Configure channel properties
-        self.label_opm_mode = QLabel("OPM mode:")
         self.cmbx_opm_mode =  QComboBox()
         self.cmbx_opm_mode.addItems(self.config["OPM"]["imaging_modes"])
         self.cmbx_opm_mode.setFixedWidth(100)
         self.cmbx_opm_mode.currentIndexChanged.connect(self.update_config)
         self.layout_opm_mode = QHBoxLayout()
-        self.layout_opm_mode.addWidget(self.label_opm_mode)
-        self.layout_opm_mode.addWidget(self.cmbx_opm_mode)
+        self.layout_opm_mode.addWidget(QLabel("OPM mode:"))
+        self.layout_opm_mode.addWidget(self.cmbx_opm_mode)        
+        
+        #--------------------------------------------------------------------#
+        # Configure channel properties
+        self.cmbx_o2o3_mode =  QComboBox()
+        self.cmbx_o2o3_mode.addItems(self.config["OPM"]["autofocus_frequencies"])
+        self.cmbx_o2o3_mode.setFixedWidth(125)
+        self.cmbx_o2o3_mode.currentIndexChanged.connect(self.update_config)
+        self.layout_o2o3_mode = QHBoxLayout()
+        self.layout_o2o3_mode.addWidget(QLabel("O2O3 Autofocus:"))
+        self.layout_o2o3_mode.addWidget(self.cmbx_o2o3_mode)
+                
+        #--------------------------------------------------------------------#
+        # Configure channel properties
+        self.cmbx_fluidics_mode =  QComboBox()
+        self.cmbx_fluidics_mode.addItems(["none", "1", "2", "8", "16", "22"])
+        self.cmbx_fluidics_mode.setFixedWidth(125)
+        self.cmbx_fluidics_mode.currentIndexChanged.connect(self.update_config)
+        self.layout_fluidics_mode = QHBoxLayout()
+        self.layout_fluidics_mode.addWidget(QLabel("Fluidics rounds:"))
+        self.layout_fluidics_mode.addWidget(self.cmbx_fluidics_mode)
+        
+        #--------------------------------------------------------------------#
+        # Configure channel properties
+        self.cmbx_laser_blanking =  QComboBox()
+        self.cmbx_laser_blanking.addItems(["on", "off"])
+        self.cmbx_laser_blanking.setFixedWidth(125)
+        self.cmbx_laser_blanking.currentIndexChanged.connect(self.update_config)
+        self.layout_laser_blanking = QHBoxLayout()
+        self.layout_laser_blanking.addWidget(QLabel("Laser blanking:"))
+        self.layout_laser_blanking.addWidget(self.cmbx_laser_blanking)
         
         #--------------------------------------------------------------------#
         self.sldr_405_power = QSlider(Qt.Orientation.Horizontal)
@@ -481,7 +532,7 @@ class OPMSettings(QWidget):
         self.spbx_stage_image_range.valueChanged.connect(self.update_config)
         
         self.layout_stage_image_range = QHBoxLayout()
-        self.layout_stage_image_range.addWidget(QLabel("Stage scan image range:"))
+        self.layout_stage_image_range.addWidget(QLabel("Stage scan range:"))
         self.layout_stage_image_range.addWidget(self.sldr_stage_image_range)
         self.layout_stage_image_range.addWidget(self.spbx_stage_image_range)
         self.layout_stage_image_range.addWidget(QLabel("\u00B5m"))
@@ -512,8 +563,8 @@ class OPMSettings(QWidget):
         
         #--------------------------------------------------------------------#
         self.spbx_roi_crop_x =  QDoubleSpinBox()  
-        self.spbx_roi_crop_x.setDecimals(1)
-        self.spbx_roi_crop_x.setRange(0, 250)
+        self.spbx_roi_crop_x.setDecimals(0)
+        self.spbx_roi_crop_x.setRange(0, 2000)
         self.spbx_roi_crop_x.setSingleStep(1)
         self.spbx_roi_crop_x.setFixedWidth(80)
         self.spbx_roi_crop_x.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -521,24 +572,55 @@ class OPMSettings(QWidget):
         self.spbx_roi_crop_x.valueChanged.connect(self.update_config)
         
         self.spbx_roi_crop_y =  QDoubleSpinBox()  
-        self.spbx_roi_crop_y.setDecimals(1)
-        self.spbx_roi_crop_y.setRange(0, 250)
+        self.spbx_roi_crop_y.setDecimals(0)
+        self.spbx_roi_crop_y.setRange(0, 2000)
         self.spbx_roi_crop_y.setSingleStep(1)
         self.spbx_roi_crop_y.setFixedWidth(80)
         self.spbx_roi_crop_y.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spbx_roi_crop_y.setValue(self.config["acq_config"]["camera_roi"]["crop_y"])
         self.spbx_roi_crop_y.valueChanged.connect(self.update_config)
+ 
         
-        self.layout_roi = QHBoxLayout()
-        self.layout_roi.addWidget(QLabel("ROI crop x:"))
-        self.layout_roi.addWidget(self.spbx_roi_center_x)
-        self.layout_roi.addWidget(QLabel("ROI crop y:"))
-        self.layout_roi.addWidget(self.spbx_roi_center_x)
+        self.spbx_roi_center_x =  QDoubleSpinBox()  
+        self.spbx_roi_center_x.setDecimals(0)
+        self.spbx_roi_center_x.setRange(0, 2000)
+        self.spbx_roi_center_x.setSingleStep(1)
+        self.spbx_roi_center_x.setFixedWidth(80)
+        self.spbx_roi_center_x.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spbx_roi_center_x.setValue(self.config["acq_config"]["camera_roi"]["center_x"])
+        self.spbx_roi_center_x.valueChanged.connect(self.update_config)
         
+        self.spbx_roi_center_y =  QDoubleSpinBox()  
+        self.spbx_roi_center_y.setDecimals(0)
+        self.spbx_roi_center_y.setRange(0, 2000)
+        self.spbx_roi_center_y.setSingleStep(1)
+        self.spbx_roi_center_y.setFixedWidth(80)
+        self.spbx_roi_center_y.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spbx_roi_center_y.setValue(self.config["acq_config"]["camera_roi"]["center_y"])
+        self.spbx_roi_center_y.valueChanged.connect(self.update_config)
+
+        self.layout_roi_x = QHBoxLayout()
+        self.layout_roi_x.addWidget(QLabel("ROI center x:"))
+        self.layout_roi_x.addWidget(self.spbx_roi_center_x)
+        self.layout_roi_x.addWidget(QLabel("ROI crop x:"))
+        self.layout_roi_x.addWidget(self.spbx_roi_crop_x)
+        self.layout_roi_y = QHBoxLayout()
+        self.layout_roi_y.addWidget(QLabel("ROI center y:"))
+        self.layout_roi_y.addWidget(self.spbx_roi_center_y)
+        self.layout_roi_y.addWidget(QLabel("ROI crop y:"))
+        self.layout_roi_y.addWidget(self.spbx_roi_crop_y)
+        self.layout_camera_roi = QVBoxLayout()
+        self.layout_camera_roi.addLayout(self.layout_roi_x)
+        self.layout_camera_roi.addLayout(self.layout_roi_y)
+        self.group_camera_roi = QGroupBox("Camera ROI")
+        self.group_camera_roi.setLayout(self.layout_camera_roi)
         
         #--------------------------------------------------------------------#
         # setup sub layouts in opm settings
         self.layout_imaging_settings.addLayout(self.layout_opm_mode)
+        self.layout_imaging_settings.addLayout(self.layout_o2o3_mode)
+        self.layout_imaging_settings.addLayout(self.layout_fluidics_mode)
+        self.layout_imaging_settings.addLayout(self.layout_laser_blanking)
         self.layout_imaging_settings.addLayout(self.layout_405)
         self.layout_imaging_settings.addLayout(self.layout_488)
         self.layout_imaging_settings.addLayout(self.layout_561)
@@ -548,9 +630,13 @@ class OPMSettings(QWidget):
         self.layout_imaging_settings.addLayout(self.layout_mirror_image_step)
         self.layout_imaging_settings.addLayout(self.layout_stage_image_range)
         self.layout_imaging_settings.addLayout(self.layout_proj_image_range)
+        self.layout_imaging_settings.addWidget(self.group_camera_roi)
         self.group_imaging_settings.setLayout(self.layout_imaging_settings)
         
         self.widgets.update({
+            "O2O3-autofocus": {
+              "o2o3_mode": self.cmbx_o2o3_mode  
+            },
             "mirror_scan": {
                 "image_mirror_range_um": self.spbx_mirror_image_range,
                 "image_mirror_step_size_um": self.spbx_mirror_image_step
@@ -560,12 +646,12 @@ class OPMSettings(QWidget):
             },
             "stage_scan": {
                 "stage_scan_range_um": self.spbx_stage_image_range
-            }
+            },
             "camera_roi": {
                 "center_x": self.spbx_roi_center_x,
-                "center_x": self.spbx_roi_center_x,
-                "center_x": self.spbx_roi_crop_x,
-                "center_x": self.spbx_roi_crop_y,
+                "center_y": self.spbx_roi_center_y,
+                "crop_x": self.spbx_roi_crop_x,
+                "crop_y": self.spbx_roi_crop_y,
             }
         })
         
@@ -692,7 +778,7 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_states"][0] = checked
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][0] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][0] = exposure_ms
-            print(self.config["acq_config"][_mode+"_scan"])    
+            
         self.update_config()
                
     def update_488_state(self):
@@ -758,7 +844,16 @@ class OPMSettings(QWidget):
                     self.config["acq_config"][key_id][key] = widget.value()
                 elif isinstance(widget, QComboBox):
                         self.config["acq_config"][key_id][key] = widget.currentText()
-                        
+        
+        self.config["acq_config"]["opm_mode"] = self.cmbx_opm_mode.currentText()
+        self.config["acq_config"]["fluidics"] = self.cmbx_fluidics_mode.currentText()
+        if self.cmbx_fluidics_mode.currentText()=="on":
+            laser_blanking = True
+        else:
+            laser_blanking = False
+        for _mode in self.config["OPM"]["imaging_modes"]:
+            self.config["acq_config"][_mode+"_scan"]["laser_blanking"] = laser_blanking
+
         with open(self.config_path, "w") as file:
                 json.dump(self.config, file, indent=4)
         
@@ -768,7 +863,7 @@ class OPMSettings(QWidget):
 if __name__ ==  "__main__":
     app = QApplication(sys.argv)
     # Put your path here.
-    config_path = Path("/home/steven/Documents/qi2lab/github/opm_v2/opm_config_20250307.json")
+    config_path = Path("/home/steven/Documents/qi2lab/github/opm_v2/opm_config_20250312.json")
     window = OPMSettings(config_path)
     window.show()
     
