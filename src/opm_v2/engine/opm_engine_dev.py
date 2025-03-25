@@ -9,8 +9,8 @@ Change Log:
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
-from opm_v2.hardware.OPMNIDAQ_dev import OPMNIDAQ
-from opm_v2.hardware.AOMirror_dev import AOMirror
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.utils.elveflow_control import run_fluidic_program
 from pymmcore_plus.metadata import (
     FrameMetaV1,
@@ -358,12 +358,11 @@ class OPMEngine(MDAEngine):
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
                     self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
-                    self.AOMirror.output_path = data_dict["AO"]["output_path"]
+                    # self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
-                        image_mirror_step_size_um=float(data_dict["AO"]["image_mirror_step_um"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
-                        channel_states=data_dict["AO"]["active_channels"],
+                        channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
@@ -371,8 +370,10 @@ class OPMEngine(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=True
                     )
-                    self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                    
+                    if data_dict["AO"]["pos_idx"]:
+                        self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
+                        self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
+
             elif "DAQ" in action_name:
                 self.opmDAQ.start_waveform_playback()
                 
@@ -417,7 +418,6 @@ class OPMEngine(MDAEngine):
             
         # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
-        
         self._mmc.clearCircularBuffer()
 
         super().teardown_sequence(sequence)

@@ -134,7 +134,7 @@ def run_ao_optimization(
     opmNIDAQ_local.start_waveform_playback()
     starting_image = mmc.snap()
     
-    if "shannon" in metric_to_use:
+    if "DCT" in metric_to_use:
         starting_metric = metric_shannon_dct(
             image=starting_image,
             psf_radius_px=psf_radius_px,
@@ -173,8 +173,8 @@ def run_ao_optimization(
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f"AO iteration: {k+1} / {num_iterations}",
-                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}\n"
+                    f"\nAO iteration: {k+1} / {num_iterations}",
+                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}"
                     )
                 
             # Grab the current starting mode coeff for this iteration
@@ -205,7 +205,7 @@ def run_ao_optimization(
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
 
                     """Calculate metric."""
-                    if "shannon" in metric_to_use:
+                    if "DCT" in metric_to_use:
                         metric = metric_shannon_dct(
                             image=image,
                             psf_radius_px=psf_radius_px,
@@ -282,7 +282,7 @@ def run_ao_optimization(
                 image = mmc.snap()
                     
                 """Calculate metric."""
-                if "shannon" in metric_to_use:
+                if "DCT" in metric_to_use:
                     metric = metric_shannon_dct(
                         image=image,
                         psf_radius_px=psf_radius_px,
@@ -345,9 +345,9 @@ def run_ao_optimization(
             images_per_iteration.append(image)
             
             # check if we are in tissue!
-            if not(any(_m >= 1.0 for _m in metrics_per_mode)):
-                print("No metrics over 1.0 detected! We must not be tissue??, skipping next AO iteration.")
-                return
+            # if not(any(_m >= 1.0 for _m in metrics_per_mode)):
+            #     print("No metrics over 1.0 detected! We must not be tissue??, skipping next AO iteration.")
+            #     return
         """Loop back to top and do the next iteration"""
         
     #---------------------------------------------#

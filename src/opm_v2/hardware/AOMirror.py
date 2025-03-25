@@ -157,7 +157,8 @@ class AOMirror:
             }          
         # here we store a 1d array of ao mirror positions that correspond to stage positions array.
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
-          
+        self.wfc_coeffs_array = np.zeros((n_positions,31))
+        
         self.set_mirror_positions_flat()
         self.get_mirror_positions()
 
@@ -255,6 +256,7 @@ class AOMirror:
             self._n_positions = value
             
         self.wfc_positions_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
+        self.wfc_coeffs_array = np.zeros((self._n_positions,len(self.mode_names)))
 
     @property
     def current_positions(self) -> np.ndarray:
@@ -420,19 +422,29 @@ class AOMirror:
         ----------
         fname : str
         """
-        positions_file_path = self._output_path / Path(f"{fname}.json")
+        positions_file_path = self._output_path / Path(f"{fname}_pos.json")
         wfc_positions_list = self.wfc_positions_array.tolist()
         with open(positions_file_path, "w") as f:
             json.dump(wfc_positions_list, f)
             
+        positions_file_path = self._output_path / Path(f"{fname}_coeff.json")
+        wfc_coeffs_list = self.wfc_coeffs_array.tolist()
+        with open(positions_file_path, "w") as f:
+            json.dump(wfc_coeffs_list, f)
+            
     def load_wfc_positions_array(self, fname : str = "exp_ao_positions"):
-        positions_file_path = self._output_path / Path(f"{fname}.json")
+        positions_file_path = self._output_path / Path(f"{fname}_pos.json")
         with open(positions_file_path, "r") as f:
             wfc_positions_list = json.load(f)
 
         # Convert the loaded list back to a NumPy array
         self.wfc_positions_array = np.asarray(wfc_positions_list)
-
+        
+        positions_file_path = self._output_path / Path(f"{fname}_coeffs.json")
+        with open(positions_file_path, "r") as f:
+            wfc_coeffs_list = json.load(f)
+            
+        self.wfc_coeffs_array = np.asarray(wfc_coeffs_list)
 
 def DM_voltage_to_map(v):
     """Reshape mirror to a map.

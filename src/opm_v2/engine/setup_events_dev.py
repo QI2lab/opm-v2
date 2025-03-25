@@ -41,13 +41,13 @@ def setup_optimizenow(
     
     if "now" in o2o3_mode:
         o2o3_event = MDAEvent(**O2O3_af_event.model_dump())
-        o2o3_event.action.data["camera"]["exposure_ms"] = float(config["O2O3-autofocus"]["exposure_ms"])
-        o2o3_event.action.data["camera"]["camera_crop"] = [
-            config["Camera"]["roi_center_x"] - int(config["Camera"]["camera_crop_x"]//2),
+        o2o3_event.action.data["Camera"]["exposure_ms"] = float(config["O2O3-autofocus"]["exposure_ms"])
+        o2o3_event.action.data["Camera"]["camera_crop"] = [
+            config["Camera"]["roi_center_x"] - int(config["Camera"]["roi_crop_x"]//2),
             config["Camera"]["roi_center_y"] - int(config["O2O3-autofocus"]["roi_crop_y"]//2),
             config["Camera"]["roi_crop_x"],
             config["O2O3-autofocus"]["roi_crop_y"]
-            ]
+        ]
         opm_events.append(o2o3_event)
         
     if "now" in ao_mode:
@@ -59,7 +59,7 @@ def setup_optimizenow(
         AO_channel_powers = [0.] * len(config["OPM"]["channel_ids"])
         AO_active_channel_id = config["acq_config"]["AO"]["active_channel_id"]
         AO_camera_crop_y = int(config["acq_config"]["AO"]["image_mirror_range_um"]/mmc.getPixelSizeUm())
-        AO_save_path = Path(str(config["AO-projection"]["optimize_now_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
+        AO_save_path = Path(str(config["acq_config"]["AO"]["save_dir_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
         
         # Set the active channel in the daq channel list
         for chan_idx, chan_str in enumerate(config["OPM"]["channel_ids"]):
@@ -77,6 +77,7 @@ def setup_optimizenow(
             "AO" : {
                 "channel_states": AO_channel_states,
                 "channel_powers" : AO_channel_powers,
+                "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
                 "modal_delta": float(config["acq_config"]["AO"]["mode_delta"]),
                 "modal_alpha":float(config["acq_config"]["AO"]["mode_alpha"]),                        
                 "iterations": int(config["acq_config"]["AO"]["num_iterations"]),
@@ -84,15 +85,16 @@ def setup_optimizenow(
                 "image_mirror_range_um" : config["acq_config"]["AO"]["image_mirror_range_um"],
                 "blanking": bool(True),
                 "apply_existing": bool(False),
+                "pos_idx": None,
                 "output_path":AO_save_path
             },
             "Camera" : {
                 "exposure_ms": config["acq_config"]["AO"]["exposure_ms"],
                 "camera_crop" : [
-                    config["acq_config"]["camera_roi"]["center_x"] - int(config["acq_config"]["camera_roi"]["crop_x"]//2),
-                    config["acq_config"]["camera_roi"]["center_y"] - int(AO_camera_crop_y//2),
-                    config["Camera"]["camera_crop_x"],
-                    AO_camera_crop_y
+                    int(config["acq_config"]["camera_roi"]["center_x"] - int(config["acq_config"]["camera_roi"]["crop_x"]//2)),
+                    int(config["acq_config"]["camera_roi"]["center_y"] - int(AO_camera_crop_y//2)),
+                    int(config["acq_config"]["camera_roi"]["crop_x"]),
+                    int(AO_camera_crop_y)
                 ]
             }
             
@@ -165,6 +167,7 @@ def setup_projection(
         channel_states = config["acq_config"]["mirror_scan"]["channel_states"]
         channel_powers = config["acq_config"]["mirror_scan"]["channel_powers"]
         channel_exposures_ms = config["acq_config"]["mirror_scan"]["channel_exposures_ms"]
+        channel_names = config["OPM"]["channel_ids"]
         
     else:
         mda_channels = sequence_dict["channels"]        
@@ -172,7 +175,7 @@ def setup_projection(
         if not(mda_channels):
             print("Must select channels to use in MDA widget")
             return None, None
-        elif not("Channel" in mda_channels["group"]):
+        elif "Channel" not in mda_channels["group"]:
             print("Must select channels to use in MDA widget")
             return None, None
         
@@ -252,7 +255,7 @@ def setup_projection(
     # Create the AO event data
     #----------------------------------------------------------------#
     
-    if not("none" in ao_mode):
+    if "none" not in ao_mode:
         # Create a new directory in output.root for saving AO results
         ao_output_dir = output / Path("ao_results")
         ao_output_dir.mkdir(exist_ok=True)
@@ -293,8 +296,8 @@ def setup_projection(
             "Camera" : {
                 "exposure_ms": config["acq_config"]["AO"]["exposure_ms"],
                 "camera_crop" : [
-                    int(camera_center_x - camera_crop_x//2),
-                    int(camera_center_y - AO_camera_crop_y//2),
+                    int(camera_center_x - int(camera_crop_x//2)),
+                    int(camera_center_y - int(AO_camera_crop_y//2)),
                     int(camera_crop_x),
                     int(AO_camera_crop_y)
                 ]
@@ -308,7 +311,7 @@ def setup_projection(
     # Create the o2o3 AF event data
     #----------------------------------------------------------------#
     
-    if not("none" in o2o3_mode):
+    if "none" not in o2o3_mode:
         o2o3_action_data = {
             "Camera" : {                    
                 "exposure_ms" : config["O2O3-autofocus"]["exposure_ms"],
@@ -328,7 +331,7 @@ def setup_projection(
     # Create the fluidics event data
     #----------------------------------------------------------------#
     
-    if not("none" in fluidics_mode):
+    if "none" in fluidics_mode:
         fp_action_data = {
             "Fluidics": {
                 "total_rounds": int(fluidics_mode),
@@ -344,7 +347,7 @@ def setup_projection(
     #----------------------------------------------------------------#
 
     # Get time points
-    if not("none" in fluidics_mode):
+    if "none" not in fluidics_mode:
         n_time_steps = int(fluidics_mode)
         time_interval = 0
 
@@ -697,6 +700,7 @@ def setup_mirrorscan(
         channel_states = config["acq_config"]["mirror_scan"]["channel_states"]
         channel_powers = config["acq_config"]["mirror_scan"]["channel_powers"]
         channel_exposures_ms = config["acq_config"]["mirror_scan"]["channel_exposures_ms"]
+        channel_names = config["OPM"]["channel_ids"]
         
     else:
         mda_channels = sequence_dict["channels"]        
@@ -704,7 +708,7 @@ def setup_mirrorscan(
         if not(mda_channels):
             print("Must select channels to use in MDA widget")
             return None, None
-        elif not("Channel" in mda_channels["group"]):
+        elif "Channel" not in mda_channels["group"]:
             print("Must select channels to use in MDA widget")
             return None, None
         
@@ -794,7 +798,7 @@ def setup_mirrorscan(
     # Create the AO event data
     #----------------------------------------------------------------#
     
-    if not("none" in ao_mode):
+    if "none" not in ao_mode:
         # Create a new directory in output.root for saving AO results
         ao_output_dir = output / Path("ao_results")
         ao_output_dir.mkdir(exist_ok=True)
@@ -850,7 +854,7 @@ def setup_mirrorscan(
     # Create the o2o3 AF event data
     #----------------------------------------------------------------#
     
-    if not("none" in o2o3_mode):
+    if "none" not in o2o3_mode:
         o2o3_action_data = {
             "Camera" : {                    
                 "exposure_ms" : config["O2O3-autofocus"]["exposure_ms"],
@@ -1238,13 +1242,14 @@ def setup_stagescan(
         channel_states = config["acq_config"][opm_mode+"_scan"]["channel_states"]
         channel_powers = config["acq_config"][opm_mode+"_scan"]["channel_powers"]
         channel_exposures_ms = config["acq_config"][opm_mode+"_scan"]["channel_exposures_ms"]
+        channel_names = config["OPM"]["channel_ids"]
         
     else:
         
         if not(mda_channels):
             print("Must select channels to use in MDA widget")
             return None, None
-        elif not("Channel" in mda_channels["group"]):
+        elif "Channel" not in mda_channels[0]["group"]:
             print("Must select channels to use in MDA widget")
             return None, None
         
@@ -1319,9 +1324,9 @@ def setup_stagescan(
     # Create the AO event data
     #----------------------------------------------------------------#
     
-    if not("none" in ao_mode):
+    if "none" not in ao_mode:
         # Create a new directory in output.root for saving AO results
-        ao_output_dir = output / Path("ao_results")
+        ao_output_dir = output.parent / Path(f"{output.stem}_ao_results")
         ao_output_dir.mkdir(exist_ok=True)
         
         AO_channel_states = [False] * len(channel_names) 
@@ -1346,6 +1351,7 @@ def setup_stagescan(
             "AO" : {
                 "channel_states": AO_channel_states,
                 "channel_powers" : AO_channel_powers,
+                "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
                 "modal_delta": float(config["acq_config"]["AO"]["mode_delta"]),
                 "modal_alpha":float(config["acq_config"]["AO"]["mode_alpha"]),                        
                 "iterations": int(config["acq_config"]["AO"]["num_iterations"]),
@@ -1375,7 +1381,7 @@ def setup_stagescan(
     # Create the o2o3 AF event data
     #----------------------------------------------------------------#
     
-    if not("none" in o2o3_mode):
+    if "none" not in o2o3_mode:
         o2o3_action_data = {
             "Camera" : {                    
                 "exposure_ms" : config["O2O3-autofocus"]["exposure_ms"],
@@ -1394,7 +1400,7 @@ def setup_stagescan(
     #----------------------------------------------------------------#
     # Create the fluidics event data
     #----------------------------------------------------------------#
-    if not("none" in fluidics_mode):
+    if "none" not in fluidics_mode:
         fp_action_data = {
             "Fluidics": {
                 "total_rounds": int(fluidics_mode),
@@ -1410,7 +1416,7 @@ def setup_stagescan(
     #----------------------------------------------------------------#
 
     # Generate time points
-    if not("none" in fluidics_mode):
+    if "none" not in fluidics_mode:
         n_time_steps = int(fluidics_mode)
         time_interval = 0
         
@@ -1427,14 +1433,25 @@ def setup_stagescan(
         max_z_pos = float(mda_z_plan["top"])
         min_z_pos = float(mda_z_plan["bottom"])
         step_z = (
-            tile_overlap_scale,
+            tile_overlap_scale
             * camera_crop_y 
-            * opm_angle_scale,
+            * opm_angle_scale 
             * pixel_size_um
         )
         if min_z_pos > max_z_pos:
             step_z = -1 * step_z
         num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
+        print(f"Z step: {step_z}, number of zs: {num_z_pos}")
+        
+        # step_z = (    
+        #     tile_overlap_scale
+        #     * camera_crop_y 
+        #     * opm_angle_scale
+        #     * pixel_size_um
+        # )
+        # if min_z_pos > max_z_pos:
+        #     step_z = -1 * step_z
+        # num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
         delta_z_um = np.round(np.abs(max_z_pos - min_z_pos),2)
 
     # If no other z positions are set, resort to the current z position 
@@ -1445,6 +1462,8 @@ def setup_stagescan(
         num_z_pos = 1
         delta_z_um = 0
     
+    if DEBUG:
+        print
     # Generate xy stage positions
     stage_positions = []
                         
@@ -1462,6 +1481,9 @@ def setup_stagescan(
             coverslip_slope_um = 0
         else:
             coverslip_slope_um = np.round((delta_z_um / range_x_um),6)
+        
+        # TODO:
+        coverslip_slope_um = 0
         
         if DEBUG: 
             print(f'Coverslip low: {min_z_pos}')
@@ -1515,7 +1537,8 @@ def setup_stagescan(
             print(f'Scan axis speed (mm/s): {scan_axis_speed}')
 
         # calculate starting height axis locations
-        z_positions = np.round(np.linspace(min_z_pos,max_z_pos,len(scan_axis_start_pos_mm)),2)
+        # z_positions = np.round(np.linspace(min_z_pos,max_z_pos,len(scan_axis_start_pos_mm)),2)
+        z_positions = np.round(np.arange(min_z_pos, max_z_pos+step_z, step_z) , 2)
         if len(z_positions) > 1:
             step_z_um = float(z_positions[1]-z_positions[0])
         else:
@@ -1528,8 +1551,18 @@ def setup_stagescan(
         # calculate tile axis locations
         tile_axis_overlap = 0.15 #unit: percentage
         tile_axis_ROI_um = np.round(float(camera_crop_x)*pixel_size_um,2)  #unit: um
-        step_tile_axis_um = np.round((tile_axis_ROI_um) * (1-tile_axis_overlap),2) #unit: um
-        tile_axis_positions = np.round(np.arange(min_y_pos,max_y_pos+step_tile_axis_um,step_tile_axis_um),2)
+        step_tile_axis_um = np.round((tile_axis_ROI_um) * (1-2*tile_axis_overlap),2) #unit: umnp-
+
+        if min_y_pos==max_y_pos:
+            tile_axis_positions = np.round(np.array([min_y_pos]), 2)
+        else:
+            tile_axis_ROI_um = np.round(float(camera_crop_x)*pixel_size_um,2)  #unit: um
+            # tile_axis_positions = []
+            # num_tile_positions = int(np.ceil((max_y_pos-min_y_pos)/step_tile_axis_um))
+            # for tile_idx in range(num_tile_positions):
+            #     tile_axis_positions.append(min_y_pos + step_tile_axis_um * tile_idx)
+            # tile_axis_positions = np.asarray(tile_axis_positions)
+            tile_axis_positions = np.round(np.arange(min_y_pos,max_y_pos+step_tile_axis_um,step_tile_axis_um),2)
         
         if DEBUG: 
             print(f'Tile axis step: {step_tile_axis_um}')
@@ -1549,14 +1582,14 @@ def setup_stagescan(
                         {
                             "x": float(np.round((min_x_pos + scan_idx * scan_tile_length_um) / 1000., 2)),
                             "y": float(np.round((min_y_pos + tile_idx * step_tile_axis_um) / 1000., 2)),
-                            "z": float(np.round((min_z_pos + z_idx * step_z_um) / 1000., 2))
+                            "z": float(np.round((min_z_pos + z_idx * step_z) / 1000., 2))
                         }
                     )
                     stage_positions.append(
                         {
                             "x": float(np.round(min_x_pos + scan_idx * scan_tile_length_um, 2)),
                             "y": float(np.round(min_y_pos + tile_idx * step_tile_axis_um, 2)),
-                            "z": float(np.round(min_z_pos + z_idx * step_z_um, 2))
+                            "z": float(np.round(min_z_pos + z_idx * step_z, 2))
                         }
                     )
     elif mda_stage_positions is not None:
@@ -1575,6 +1608,10 @@ def setup_stagescan(
 
     opm_events: list[MDAEvent] = []
 
+    if "none" not in ao_mode:
+        AOmirror_setup.n_positions = n_stage_pos
+        # AOmirror_setup.output_path = output
+        
     # Flags to help ensure sequence-able events are kept together 
     need_to_setup_DAQ = True
     need_to_setup_stage = True
@@ -1598,7 +1635,7 @@ def setup_stagescan(
             
     for time_idx in range(n_time_steps):
         
-        if not("none" in fluidics_mode) and not(time_idx==0):
+        if "none" not in fluidics_mode and time_idx!=0:
             current_FP_event = MDAEvent(**fp_event.model_dump())
             current_FP_event.action.data["Fluidics"]["round"] = int(time_idx)
             opm_events.append(current_FP_event)
@@ -1652,72 +1689,72 @@ def setup_stagescan(
                     
                     # Finally, handle acquiring images. 
                     # These events are passed through to the normal MDAEngine and *should* be sequenced. 
-                    if interleaved_acq:
-                        if need_to_setup_DAQ:
-                            need_to_setup_DAQ = True
-                            opm_events.append(daq_event)
-                        
-                        # Setup ASI controller for stage scanning and Camera for external START trigger
-                        current_ASI_setup_event = MDAEvent(**ASI_setup_event.model_dump())
-                        current_ASI_setup_event.action.data["ASI"]["scan_axis_start_mm"] = float(scan_axis_start_pos_mm[scan_idx])
-                        current_ASI_setup_event.action.data["ASI"]["scan_axis_end_mm"] = float(scan_axis_end_pos_mm[scan_idx])
-                        current_ASI_setup_event.action.data["ASI"]["scan_axis_speed_mm_s"] = float(scan_axis_speed)
-                        opm_events.append(current_ASI_setup_event)
-                        
-                        # create camera events
-                        for scan_axis_idx in range(scan_axis_positions+int(config["Stage"]["excess_positions"])):
-                            for chan_idx in range(n_active_channels):
-                                if scan_axis_idx < int(config["Stage"]["excess_positions"]):
-                                    is_excess_image = True
-                                else:
-                                    is_excess_image = False
-                                image_event = MDAEvent(
-                                    index=mappingproxy(
-                                        {
-                                            "t": time_idx, 
-                                            "p": pos_idx, 
-                                            "c": chan_idx, 
-                                            "z": scan_axis_idx
-                                        }
-                                    ),
-                                    metadata = {
-                                        "DAQ" : {
-                                            "mode" : "stage",
-                                            "scan_axis_step_um" : float(scan_axis_step_um),
-                                            "active_channels" : channel_states,
-                                            "exposure_channels_ms": channel_exposures_ms,
-                                            "interleaved" : True,
-                                            "laser_powers" : channel_powers,
-                                            "blanking" : laser_blanking,
-                                            "current_channel" : active_channel_names[chan_idx]
-                                        },
-                                        "Camera" : {
-                                            "exposure_ms" : float(channel_exposures_ms[chan_idx]),
-                                            "camera_center_x" : camera_center_x - int(camera_crop_x//2),
-                                            "camera_center_y" : camera_center_y - int(camera_crop_y//2),
-                                            "camera_crop_x" : int(camera_crop_x),
-                                            "camera_crop_y" : int(camera_crop_y),
-                                            "offset" : float(offset),
-                                            "e_to_ADU": float(e_to_ADU)
-                                        },
-                                        "OPM" : {
-                                            "angle_deg" : float(config["OPM"]["angle_deg"]),
-                                            "camera_Zstage_orientation" : str(config["OPM"]["camera_Zstage_orientation"]),
-                                            "camera_XYstage_orientation" : str(config["OPM"]["camera_XYstage_orientation"]),
-                                            "camera_mirror_orientation" : str(config["OPM"]["camera_mirror_orientation"]),
-                                            "excess_scan_positions" : int(config["Stage"]["excess_positions"])
-                                        },
-                                        "Stage" : {
-                                            "x_pos" : stage_positions[scan_idx]["x"] + (scan_axis_idx * scan_axis_step_um),
-                                            "y_pos" : stage_positions[tile_idx]["y"],
-                                            "z_pos" : stage_positions[z_idx]["z"],
-                                            "excess_image": is_excess_image
-                                        }
+                    # if interleaved_acq:
+                    if need_to_setup_DAQ:
+                        need_to_setup_DAQ = True
+                        opm_events.append(daq_event)
+                    
+                    # Setup ASI controller for stage scanning and Camera for external START trigger
+                    current_ASI_setup_event = MDAEvent(**ASI_setup_event.model_dump())
+                    current_ASI_setup_event.action.data["ASI"]["scan_axis_start_mm"] = float(scan_axis_start_pos_mm[scan_idx])
+                    current_ASI_setup_event.action.data["ASI"]["scan_axis_end_mm"] = float(scan_axis_end_pos_mm[scan_idx])
+                    current_ASI_setup_event.action.data["ASI"]["scan_axis_speed_mm_s"] = float(scan_axis_speed)
+                    opm_events.append(current_ASI_setup_event)
+                    
+                    # create camera events
+                    for scan_axis_idx in range(scan_axis_positions+int(config["Stage"]["excess_positions"])):
+                        for chan_idx in range(n_active_channels):
+                            if scan_axis_idx < int(config["Stage"]["excess_positions"]):
+                                is_excess_image = True
+                            else:
+                                is_excess_image = False
+                            image_event = MDAEvent(
+                                index=mappingproxy(
+                                    {
+                                        "t": time_idx, 
+                                        "p": pos_idx, 
+                                        "c": chan_idx, 
+                                        "z": scan_axis_idx
                                     }
-                                )
-                                opm_events.append(image_event)
-                        pos_idx = pos_idx + 1
-                        
+                                ),
+                                metadata = {
+                                    "DAQ" : {
+                                        "mode" : "stage",
+                                        "scan_axis_step_um" : float(scan_axis_step_um),
+                                        "active_channels" : channel_states,
+                                        "exposure_channels_ms": channel_exposures_ms,
+                                        "interleaved" : True,
+                                        "laser_powers" : channel_powers,
+                                        "blanking" : laser_blanking,
+                                        "current_channel" : active_channel_names[chan_idx]
+                                    },
+                                    "Camera" : {
+                                        "exposure_ms" : float(channel_exposures_ms[chan_idx]),
+                                        "camera_center_x" : camera_center_x - int(camera_crop_x//2),
+                                        "camera_center_y" : camera_center_y - int(camera_crop_y//2),
+                                        "camera_crop_x" : int(camera_crop_x),
+                                        "camera_crop_y" : int(camera_crop_y),
+                                        "offset" : float(offset),
+                                        "e_to_ADU": float(e_to_ADU)
+                                    },
+                                    "OPM" : {
+                                        "angle_deg" : float(config["OPM"]["angle_deg"]),
+                                        "camera_Zstage_orientation" : str(config["OPM"]["camera_Zstage_orientation"]),
+                                        "camera_XYstage_orientation" : str(config["OPM"]["camera_XYstage_orientation"]),
+                                        "camera_mirror_orientation" : str(config["OPM"]["camera_mirror_orientation"]),
+                                        "excess_scan_positions" : int(config["Stage"]["excess_positions"])
+                                    },
+                                    "Stage" : {
+                                        "x_pos" : stage_positions[scan_idx]["x"] + (scan_axis_idx * scan_axis_step_um),
+                                        "y_pos" : stage_positions[tile_idx]["y"],
+                                        "z_pos" : stage_positions[z_idx]["z"],
+                                        "excess_image": is_excess_image
+                                    }
+                                }
+                            )
+                            opm_events.append(image_event)
+                    pos_idx = pos_idx + 1
+                    
     # Check if path ends if .zarr. If so, use our OutputHandler
     if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
 
@@ -1739,5 +1776,5 @@ def setup_stagescan(
     else:
         print("Using defualt handler")
         handler = Path(output)
-        
+            
     return opm_events, handler

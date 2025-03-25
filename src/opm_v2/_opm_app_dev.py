@@ -237,16 +237,21 @@ def main() -> None:
             signal source propery name, by default None
         """
         
-        if DEBUGGING:
-            print("update_live_state:")
-            print(f"    device name: {device_name}, property name: {property_name}")
-        
+        # if "ImageGalvoMirrorRange" in device_name:
+        # elif "Laser" in device_name:
+            
+        #     is not
         update_config()
             
         # Ignore updates from AutoShutter
         if device_name == mmc.getShutterDevice() and property_name == "State":
             return
-            
+        
+        if DEBUGGING:
+            print("update_live_state:")
+            print(f"    device name: {device_name}, property name: {property_name}")
+        
+        
         # Only 2d and projection modes are available in live mode
         opm_mode = mmc.getProperty("OPM-live-mode", "Label")
         if "Standard" in opm_mode:
@@ -275,7 +280,7 @@ def main() -> None:
         # Grab gui values 
         _exposure_ms = round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 0)
         _image_mirror_range_um = np.round(float(mmc.getProperty("ImageGalvoMirrorRange", "Position")),0)
-        _active_channel_id = mmc.getProperty("LED", "Label")
+        _active_channel_id = mmc.getProperty("Laser", "Label")
         
         # Compile channel states for daq 
         _channel_states = [False] * len(config["OPM"]["channel_ids"])
@@ -287,20 +292,25 @@ def main() -> None:
         # Enforce camera ROI
         if _scan_type=="projection":
             crop_y = calculate_projection_crop(_image_mirror_range_um)
-        else :
+            change_crop = True
+        elif "Camera-CropY" in device_name:
             crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
+            change_crop = True
+        else: 
+            change_crop = False
         
-        if not (crop_y == mmc.getROI()[-1]): 
-            current_roi = mmc.getROI()
-            mmc.clearROI()
-            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-            mmc.setROI(
-                config["Camera"]["roi_center_x"] - int(config["Camera"]["roi_crop_x"]//2),
-                config["Camera"]["roi_center_y"] - int(crop_y//2),
-                config["Camera"]["roi_crop_x"],
-                crop_y
-            )
-            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+        if change_crop:
+            if not (crop_y == mmc.getROI()[-1]): 
+                current_roi = mmc.getROI()
+                mmc.clearROI()
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+                mmc.setROI(
+                    config["Camera"]["roi_center_x"] - int(config["Camera"]["roi_crop_x"]//2),
+                    config["Camera"]["roi_center_y"] - int(crop_y//2),
+                    config["Camera"]["roi_crop_x"],
+                    crop_y
+                )
+                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
                 
         #--------------------------------------------------------------------#
         # Enforce the camera exposure
@@ -323,22 +333,22 @@ def main() -> None:
         
         #--------------------------------------------------------------------#
         # Update mirror positions
-        ao_mirror_state = mmc.getProperty("AO-mode", "Label")
-        AOMirror_update_state = AOMirror.instance()
-        if "system" in ao_mirror_state:
-            mirror_key = "system_flat"
-        elif "optimized" in ao_mirror_state:
-            mirror_key = "last_optimized"
-    
-        AOMirror_update_state.set_mirror_positions(
-            AOMirror_update_state.wfc_positions[mirror_key]
-        )
-        
+        if "AO_mode" in device_name:
+            ao_mirror_state = mmc.getProperty("AO-mode", "Label")
+            AOMirror_update_state = AOMirror.instance()
+            if "ystem" in ao_mirror_state:
+                mirror_key = "system_flat"
+            elif "optimized" in ao_mirror_state:
+                mirror_key = "last_optimized"
+            AOMirror_update_state.set_mirror_positions(
+                AOMirror_update_state.wfc_positions[mirror_key]
+            )
+            
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
             
     # Connect changes in gui fields to the update_live_state method.            
-    mmc.events.propertyChanged.connect(update_live_state)
+    # mmc.events.propertyChanged.connect(update_live_state)
     mmc.events.configSet.connect(update_live_state)
         
     def setup_preview_mode_callback():
@@ -395,7 +405,6 @@ def main() -> None:
         
         if ("now" in ao_mode) or ("now" in o2o3_mode):
             optimize_now = True
-            output = Path(str(config["AO-projection"]["optimize_now_path"]))
         else: 
             optimize_now = False        
                     
@@ -403,7 +412,7 @@ def main() -> None:
             print("Must set acquisition path to excecute acquisition")
             return
         
-        if not("none" in fluidics_mode):
+        if "none" not in fluidics_mode:
             # load dialog to have user verify ESI is running.
             # TODO: ad an entry for the number of rounds.
             from PyQt6.QtWidgets import QMessageBox
@@ -426,7 +435,7 @@ def main() -> None:
         if optimize_now:
             opm_events, handler = setup_optimizenow(
                 mmc = mmc,
-                config = config["acq_config"]
+                config = config
                 )
         elif ("stage" in opm_mode):
             opm_events, handler = setup_stagescan(

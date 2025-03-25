@@ -1,6 +1,6 @@
 {
     "OPM": {
-        "mm_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/OPM_20250304.cfg",
+        "mm_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/OPM_20250312.cfg",
         "imaging_modes": [
             "projection",
             "mirror",
@@ -103,52 +103,52 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "projection",
+        "opm_mode": "stage",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1142.0,
             "center_y": 1151.0,
-            "crop_x": 1900.0,
-            "crop_y": 512.0
+            "crop_x": 1800.0,
+            "crop_y": 128.0
         },
         "O2O3-autofocus": {
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 128,
-            "o2o3_mode": "timepoints"
+            "o2o3_mode": "xyz positions"
         },
         "AO": {
             "metric": "DCT",
-            "mode_delta": 0.35,
-            "mode_alpha": 0.6,
+            "mode_delta": 0.5,
+            "mode_alpha": 0.7,
             "num_iterations": 3,
             "image_mirror_range_um": 50.0,
             "active_channel_id": "405nm",
-            "active_channel_power": 34.0,
-            "exposure_ms": 529.0,
+            "active_channel_power": 20.0,
+            "exposure_ms": 300.0,
             "ao_mode": "each xyz position",
             "save_dir_path": "G:/optimize_now"
         },
         "mirror_scan": {
-            "image_mirror_range_um": 100.0,
+            "image_mirror_range_um": 50.0,
             "image_mirror_step_size_um": 0.4,
             "laser_blanking": false,
             "channel_states": [
-                false,
+                true,
                 false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
-                0.0,
+                20.0,
                 0.0,
                 0.0,
                 0.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                50.0,
+                30.0,
                 50.0,
                 50.0,
                 50.0,
@@ -156,24 +156,24 @@
             ]
         },
         "stage_scan": {
-            "stage_scan_range_um": 200.0,
+            "stage_scan_range_um": 50.0,
             "laser_blanking": false,
             "channel_states": [
-                false,
+                true,
                 false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
-                0.0,
+                20.0,
                 0.0,
                 0.0,
                 0.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                50.0,
+                30.0,
                 50.0,
                 50.0,
                 50.0,
@@ -184,21 +184,21 @@
             "image_mirror_range_um": 200.0,
             "laser_blanking": false,
             "channel_states": [
-                false,
+                true,
                 false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
-                0.0,
+                20.0,
                 0.0,
                 0.0,
                 0.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                50.0,
+                30.0,
                 50.0,
                 50.0,
                 50.0,
