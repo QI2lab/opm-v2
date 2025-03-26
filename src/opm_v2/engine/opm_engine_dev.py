@@ -87,7 +87,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
                 
                 # Stage speed
-                command = "SPEED Y=.1 X=0.1"
+                command = "SPEED Y=0.1 X=0.1"
                 self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
 
                 # make sure ASI controller is ready for next command
@@ -112,15 +112,11 @@ class OPMEngine(MDAEngine):
                     np.round(float(data_dict["Stage"]["x_pos"]),2),
                     np.round(float(data_dict["Stage"]["y_pos"]),2)
                 )
-                print("stage moved")
-                
-                dev =self._mmc.getXYStageDevice()
                 current_x, current_y = self._mmc.getXYPosition()
-                
                 while not(np.round(current_x/10,0) == np.round(float(data_dict["Stage"]["x_pos"])/10,0)) or not(np.round(current_y/10,0) == np.round(float(data_dict["Stage"]["y_pos"])/10,0)):
                     sleep(.5)
                     current_x, current_y = self._mmc.getXYPosition()
-                    print(current_x,current_y)
+                print("stage moved")
                     
             elif action_name == "ASI-setupscan":
                 # ensure commands are sent to the stage controller
@@ -197,10 +193,25 @@ class OPMEngine(MDAEngine):
                 # put camera into external START trigger mode
                 self._mmc.setProperty(self._config["Camera"]["camera_id"],"Trigger","START")
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                while not(self._mmc.getProperty(self._config["Camera"]["camera_id"],"Trigger") == "START"):
+                    sleep(0.1)
+                    self._mmc.setProperty(self._config["Camera"]["camera_id"],"Trigger","START")    
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                
                 self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                while not(self._mmc.getProperty(self._config["Camera"]["camera_id"],"TriggerPolarity") == "POSITIVE"):
+                    sleep(0.1)
+                    self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    
+                
                 self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","EXTERNAL")
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                while not(self._mmc.getProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE") == "EXTERNAL"):
+                    sleep(.1)
+                    self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","EXTERNAL")
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
 
                 # ready for a stage scan
                 self.execute_stage_scan = True
@@ -290,6 +301,7 @@ class OPMEngine(MDAEngine):
                     "Exposure", 
                     exposure_ms
                 )
+                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
                 # Update daq waveform values and setup daq for playback
                 if str(data_dict["DAQ"]["mode"]) == "stage":
@@ -415,7 +427,7 @@ class OPMEngine(MDAEngine):
                 laser + " - PowerSetpoint (%)",
                 0.0
             )
-            
+        
         # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()

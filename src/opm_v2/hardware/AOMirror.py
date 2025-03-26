@@ -422,15 +422,18 @@ class AOMirror:
         ----------
         fname : str
         """
-        positions_file_path = self._output_path / Path(f"{fname}_pos.json")
-        wfc_positions_list = self.wfc_positions_array.tolist()
-        with open(positions_file_path, "w") as f:
-            json.dump(wfc_positions_list, f)
-            
-        positions_file_path = self._output_path / Path(f"{fname}_coeff.json")
-        wfc_coeffs_list = self.wfc_coeffs_array.tolist()
-        with open(positions_file_path, "w") as f:
-            json.dump(wfc_coeffs_list, f)
+        if self._output_path:
+            positions_file_path = self._output_path / Path(f"{fname}_pos.json")
+            wfc_positions_list = self.wfc_positions_array.tolist()
+            with open(positions_file_path, "w") as f:
+                json.dump(wfc_positions_list, f)
+                
+            positions_file_path = self._output_path / Path(f"{fname}_coeff.json")
+            wfc_coeffs_list = self.wfc_coeffs_array.tolist()
+            with open(positions_file_path, "w") as f:
+                json.dump(wfc_coeffs_list, f)
+        else:
+            pass
             
     def load_wfc_positions_array(self, fname : str = "exp_ao_positions"):
         positions_file_path = self._output_path / Path(f"{fname}_pos.json")

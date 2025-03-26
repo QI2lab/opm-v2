@@ -151,8 +151,8 @@ def main() -> None:
         laser_blanking = bool(config["NIDAQ"]["laser_blanking"]),
         image_mirror_calibration = float(str(config["NIDAQ"]["image_mirror_calibration"])),
         projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
-        image_mirror_neutral_um = float(str(config["NIDAQ"]["image_mirror_neutral_um"])),
-        projection_mirror_neutral_um = float(str(config["NIDAQ"]["projection_mirror_neutral_um"])),
+        image_mirror_neutral_v = float(str(config["NIDAQ"]["image_mirror_neutral_um"])),
+        projection_mirror_neutral_v = float(str(config["NIDAQ"]["projection_mirror_neutral_um"])),
         image_mirror_step_size_um = float(str(config["NIDAQ"]["image_mirror_step_size_um"])),
         verbose = bool(config["NIDAQ"]["verbose"])
     )

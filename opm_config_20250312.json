@@ -27,7 +27,7 @@
             "localize_gauss_2d"
         ],
         "ao_modes": [
-            "each xyz position",
+            "xyz positions",
             "generate grid",
             "at start",
             "none",
@@ -64,7 +64,7 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
         "image_mirror_step_size_um": 0.4,
-        "image_mirror_neutral_v": 0.5,
+        "image_mirror_neutral_v": 0.0,
         "projection_mirror_neutral_v": 0.0,
         "verbose": false
     },
@@ -92,8 +92,8 @@
     "Stage": {
         "name": "TigerCommHub",
         "stage_step_size_um": 0.4,
-        "excess_positions": 5,
-        "max_z_change_um": 3
+        "excess_positions": 25,
+        "max_z_change_um": 2.0
     },
     "PLC": {
         "name": "PLogic:E:36",
@@ -104,12 +104,12 @@
     },
     "acq_config": {
         "opm_mode": "stage",
-        "fluidics": "none",
+        "fluidics": "22",
         "camera_roi": {
             "center_x": 1142.0,
             "center_y": 1151.0,
-            "crop_x": 1800.0,
-            "crop_y": 128.0
+            "crop_x": 1900.0,
+            "crop_y": 386.0
         },
         "O2O3-autofocus": {
             "O3_stage_name": "MCL NanoDrive Z Stage",
@@ -119,14 +119,14 @@
         },
         "AO": {
             "metric": "DCT",
-            "mode_delta": 0.5,
+            "mode_delta": 0.35,
             "mode_alpha": 0.7,
-            "num_iterations": 3,
-            "image_mirror_range_um": 50.0,
-            "active_channel_id": "405nm",
-            "active_channel_power": 20.0,
-            "exposure_ms": 300.0,
-            "ao_mode": "each xyz position",
+            "num_iterations": 2,
+            "image_mirror_range_um": 150.0,
+            "active_channel_id": "488nm",
+            "active_channel_power": 5.0,
+            "exposure_ms": 350.0,
+            "ao_mode": "none",
             "save_dir_path": "G:/optimize_now"
         },
         "mirror_scan": {
@@ -134,74 +134,74 @@
             "image_mirror_step_size_um": 0.4,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 true,
-                false,
-                false,
-                false,
+                true,
+                true,
                 false
             ],
             "channel_powers": [
-                20.0,
                 0.0,
-                0.0,
-                0.0,
+                4.0,
+                100.0,
+                100.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                30.0,
                 50.0,
-                50.0,
-                50.0,
+                100.0,
+                100.0,
+                100.0,
                 50.0
             ]
         },
         "stage_scan": {
-            "stage_scan_range_um": 50.0,
+            "stage_scan_range_um": 40.0,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 true,
-                false,
-                false,
-                false,
+                true,
+                true,
                 false
             ],
             "channel_powers": [
-                20.0,
                 0.0,
-                0.0,
-                0.0,
+                4.0,
+                100.0,
+                100.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                30.0,
                 50.0,
-                50.0,
-                50.0,
+                100.0,
+                100.0,
+                100.0,
                 50.0
             ]
         },
         "projection_scan": {
-            "image_mirror_range_um": 200.0,
+            "image_mirror_range_um": 197.0,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 true,
-                false,
-                false,
-                false,
+                true,
+                true,
                 false
             ],
             "channel_powers": [
-                20.0,
                 0.0,
-                0.0,
-                0.0,
+                4.0,
+                100.0,
+                100.0,
                 0.0
             ],
             "channel_exposures_ms": [
-                30.0,
                 50.0,
-                50.0,
-                50.0,
+                100.0,
+                100.0,
+                100.0,
                 50.0
             ]
         }

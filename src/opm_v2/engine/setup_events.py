@@ -244,7 +244,7 @@ def setup_stagescan(
         # maximum allowed height change
         # for now, hardcode to 10% of coverslip height
         max_z_change_um = float(config["Stage"]["max_z_change_um"])
-
+        coverslip_slope_um = 0
         # calculate allowed scan length and number of scan tiles for allowed coverslip height change
         if coverslip_slope_um == 0:
             scan_tile_length_um = range_x_um

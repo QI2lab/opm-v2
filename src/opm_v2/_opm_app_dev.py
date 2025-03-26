@@ -463,12 +463,13 @@ def main() -> None:
             opmAOmirror_local = AOMirror.instance()
             opmAOmirror_local.output_path = output.parents[0]
 
-        if opm_events==None:
+        if opm_events is None:
             print("MDA acquisition not started!")
             return
         #--------------------------------------------------------------------#
         # Run Qi2lab custom MDA acquisition
         #--------------------------------------------------------------------#
+        #print(handler)
         mda_widget._mmc.run_mda(opm_events, output=handler)
             
     # modify the method on the instance

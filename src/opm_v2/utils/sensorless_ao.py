@@ -297,7 +297,7 @@ def run_ao_optimization(
                     print("    Metric is NAN, setting to 0")
                     metric = float(np.nan_to_num(metric))
                 
-                if round(metric,3)>=round(optimal_metric,3):
+                if round(metric,4)>=round(optimal_metric,4):
                     coeff_to_keep = coeff_opt
                     optimal_metric = metric
                     if verbose:
