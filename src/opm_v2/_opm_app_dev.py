@@ -427,7 +427,6 @@ def main() -> None:
             else:
                 print("ESI Sequence accepted")
         
-        
         #--------------------------------------------------------------------#
         # Get event structure for requested acquisition type
         #--------------------------------------------------------------------#
@@ -469,7 +468,6 @@ def main() -> None:
         #--------------------------------------------------------------------#
         # Run Qi2lab custom MDA acquisition
         #--------------------------------------------------------------------#
-        #print(handler)
         mda_widget._mmc.run_mda(opm_events, output=handler)
             
     # modify the method on the instance

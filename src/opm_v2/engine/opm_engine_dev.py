@@ -17,7 +17,7 @@ from pymmcore_plus.metadata import (
     SummaryMetaV1
 )
 from numpy.typing import NDArray
-from opm_v2.utils.sensorless_ao import run_ao_optimization
+from opm_v2.utils.sensorless_ao import run_ao_optimization, map_ao_grid
 from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
 from pathlib import Path
@@ -260,7 +260,47 @@ class OPMEngine(MDAEngine):
                             )
             
             elif action_name == "AO-grid":
-                pass
+                
+                if data_dict["AO"]["apply_ao_map"]:
+                    print("AO: Load existing mirror positions\n")
+                                            
+                else:
+                    # Stop and clear DAQ tasks to re-program
+                    self.opmDAQ.stop_waveform_playback()
+                    self.opmDAQ.clear_tasks()
+                    
+                    # Setup camera properties
+                    if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
+                        current_roi = self._mmc.getROI()
+                        self._mmc.clearROI()
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        self._mmc.setROI(
+                            data_dict["Camera"]["camera_crop"][0],
+                            data_dict["Camera"]["camera_crop"][1],
+                            data_dict["Camera"]["camera_crop"][2],
+                            data_dict["Camera"]["camera_crop"][3],
+                        )
+                    self._mmc.setProperty(
+                        str(self._config["Camera"]["camera_id"]), 
+                        "Exposure", 
+                        np.round(float(data_dict["Camera"]["exposure_ms"]),0)
+                    )
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    
+                    # Set laser powers
+                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["channel_states"]):
+                        if chan_bool:
+                            self._mmc.setProperty(
+                                self._config["Lasers"]["name"],
+                                str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                                float(data_dict["AO"]["channel_powers"][chan_idx])
+                            )
+                        else:
+                            self._mmc.setProperty(
+                                self._config["Lasers"]["name"],
+                                str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                                0.0
+                            )
             
             elif action_name == "DAQ":
                 # Stop and clear waveform tasks
@@ -364,7 +404,19 @@ class OPMEngine(MDAEngine):
 
             if action_name == "O2O3-autofocus":
                 manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
-                
+        
+            elif action_name == "AO-grid":               
+                if data_dict["AO"]["apply_existing"]:
+                    wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    self.AOMirror.set_mirror_positions(wfc_positions_to_use)
+                else:
+                    map_ao_grid(
+                        stage_positions = data_dict["AO"]["stage_positions"],
+                        ao_dict = data_dict["AO"]["ao_dict"]
+                        save_dir_path = data_dict["AO"]["output_path"]
+                        verbose = True,
+                    )
+                    
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]

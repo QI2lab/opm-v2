@@ -538,6 +538,23 @@ class OPMSettings(QWidget):
         self.layout_stage_image_range.addWidget(QLabel("\u00B5m"))
 
         #--------------------------------------------------------------------#
+        self.spbx_stage_slope =  QDoubleSpinBox()  
+        self.spbx_stage_slope.setDecimals(3)
+        self.spbx_stage_slope.setRange(0, 0.10)
+        self.spbx_stage_slope.setSingleStep(0.001)
+        self.spbx_stage_slope.setFixedWidth(80)
+        self.spbx_stage_slope.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.spbx_stage_slope.setValue(self.config["acq_config"]["stage_scan"]["coverslip_slope"])
+        self.spbx_mirror_image_range.valueChanged.connect(self.update_stage_image_range_slider)
+        self.spbx_stage_slope.valueChanged.connect(self.update_config)
+        
+        self.layout_stage_slope = QHBoxLayout()
+        self.layout_stage_slope.addWidget(QLabel("Coverslip slope (rise/run):"))
+        self.layout_stage_slope.addStretch()
+        self.layout_stage_slope.addWidget(self.spbx_stage_slope)
+        # self.layout_stage_slope.addWidget(QLabel("\u00B5m"))
+        
+        #--------------------------------------------------------------------#
         self.sldr_proj_image_range = QSlider(Qt.Orientation.Horizontal)
         self.sldr_proj_image_range.setMinimum(0)   
         self.sldr_proj_image_range.setMaximum(250)
@@ -629,6 +646,7 @@ class OPMSettings(QWidget):
         self.layout_imaging_settings.addLayout(self.layout_mirror_image_range)
         self.layout_imaging_settings.addLayout(self.layout_mirror_image_step)
         self.layout_imaging_settings.addLayout(self.layout_stage_image_range)
+        self.layout_imaging_settings.addLayout(self.layout_stage_slope)
         self.layout_imaging_settings.addLayout(self.layout_proj_image_range)
         self.layout_imaging_settings.addWidget(self.group_camera_roi)
         self.group_imaging_settings.setLayout(self.layout_imaging_settings)
@@ -645,7 +663,8 @@ class OPMSettings(QWidget):
                 "image_mirror_range_um": self.spbx_proj_image_range
             },
             "stage_scan": {
-                "stage_scan_range_um": self.spbx_stage_image_range
+                "stage_scan_range_um": self.spbx_stage_image_range,
+                "coverslip_slope": self.spbx_stage_slope
             },
             "camera_roi": {
                 "center_x": self.spbx_roi_center_x,
@@ -833,27 +852,31 @@ class OPMSettings(QWidget):
         """
         Update configuration file and local dict.
         """
-        
+        with open(self.config_path, "r") as config_file:
+            config = json.load(config_file)
+            
         for key_id in self.widgets.keys():
             for key in self.widgets[key_id]:
                 widget = self.widgets[key_id][key]
                     
-                if isinstance(widget, QSpinBox):  # If it's a QSpinBox
-                    self.config["acq_config"][key_id][key] = widget.value()
-                elif isinstance(widget, QDoubleSpinBox):  # If it's a QDoubleSpinBox
-                    self.config["acq_config"][key_id][key] = widget.value()
-                elif isinstance(widget, QComboBox):
-                        self.config["acq_config"][key_id][key] = widget.currentText()
+                if isinstance(widget, QSpinBox): 
+                    config["acq_config"][key_id][key] = widget.value()
+                elif isinstance(widget, QDoubleSpinBox): 
+                    config["acq_config"][key_id][key] = widget.value()
+                elif isinstance(widget, QComboBox): 
+                        config["acq_config"][key_id][key] = widget.currentText()
         
-        self.config["acq_config"]["opm_mode"] = self.cmbx_opm_mode.currentText()
-        self.config["acq_config"]["fluidics"] = self.cmbx_fluidics_mode.currentText()
+        config["acq_config"]["opm_mode"] = self.cmbx_opm_mode.currentText()
+        config["acq_config"]["fluidics"] = self.cmbx_fluidics_mode.currentText()
         if self.cmbx_fluidics_mode.currentText()=="on":
             laser_blanking = True
         else:
             laser_blanking = False
-        for _mode in self.config["OPM"]["imaging_modes"]:
-            self.config["acq_config"][_mode+"_scan"]["laser_blanking"] = laser_blanking
+        for _mode in config["OPM"]["imaging_modes"]:
+            config["acq_config"][_mode+"_scan"]["laser_blanking"] = laser_blanking
 
+        self.config = config
+        
         with open(self.config_path, "w") as file:
                 json.dump(self.config, file, indent=4)
         

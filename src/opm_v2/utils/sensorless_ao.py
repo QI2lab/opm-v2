@@ -226,6 +226,7 @@ def run_ao_optimization(
                 if save_dir_path:
                     mode_images.append(image)
                     # TODO: update iter_modes
+                    
             """After looping through all mirror perturbations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
@@ -1202,10 +1203,6 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
 #-------------------------------------------------#
 
 def map_ao_grid(stage_positions: np.ndarray,
-                xy_ao_range: float,
-                z_ao_range: float,
-                xy_interp_range: float,
-                z_interp_range: float,
                 ao_dict: dict,
                 save_dir_path: Path = None,
                 verbose: bool = False,
@@ -1256,102 +1253,83 @@ def map_ao_grid(stage_positions: np.ndarray,
     aoMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
     
-    stage_positions_array = np.array([
-        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
-    ])
+    stage_positions_array = np.array(
+        [
+            (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+        ]
+    )
     
-    # Generate array of stage positions to sample and run AO
-    max_z_pos = np.max(stage_positions_array[:, 0])
-    min_z_pos = np.min(stage_positions_array[:, 0])
-    max_y_pos = np.max(stage_positions_array[:, 1])
-    min_y_pos = np.min(stage_positions_array[:, 1])
-    max_x_pos = np.max(stage_positions_array[:, 2])
-    min_x_pos = np.min(stage_positions_array[:, 2])
+    # Extract unique x values
+    scan_axis_positions = np.unique(stage_positions_array[:, 2])
+    ao_scan_axis_positions = scan_axis_positions - np.diff(scan_axis_positions)[0]/2
+    tile_axis_positions = np.unique(stage_positions_array[:, 1])
+    ao_tile_axis_position = np.mean(tile_axis_positions)
     
-    # Calculate number of grid points
-    n_z_samples = int(np.ceil(np.abs(max_z_pos - min_z_pos) / z_ao_range)) + 1
-    n_y_samples = int(np.ceil(np.abs(max_y_pos - min_y_pos) / xy_ao_range)) + 1
-    n_x_samples = int(np.ceil(np.abs(max_x_pos - min_x_pos) / xy_ao_range)) + 1
+    ao_stage_positions = []
+    for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):    
+        z_tile_positions = np.unique(
+            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
+        )
+        for z_pos in z_tile_positions:
+            ao_stage_positions.append(
+                {
+                    "z": z_pos,
+                    "y": ao_tile_axis_position,
+                    "x": scan_tile_pos
+                }
+            )
+           
+    # Save AO optimization results here
+    num_ao_pos = len(ao_stage_positions)
+    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.wfc_coeffs_array.shape[1]))
+    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.wfc_positions_array.shape[1]))
     
-    # Generate stage positions in a snake-like pattern
-    sample_stage_positions = []
-    for x_idx in range(n_x_samples):
-        y_range = range(n_y_samples) if x_idx % 2 == 0 else range(n_y_samples - 1, -1, -1)
-        for y_idx in y_range:
-            for z_idx in range(n_z_samples):
-                sample_stage_positions.append([
-                    float(np.round(min_x_pos + x_idx * xy_ao_range, 2)),
-                    float(np.round(min_y_pos + y_idx * xy_ao_range, 2)),
-                    float(np.round(min_z_pos + z_idx * z_ao_range, 2))
-                ])
-    
-    sample_stage_positions = np.asarray(sample_stage_positions)
-    
-    # Extract unique grid points
-    unique_x = np.unique(sample_stage_positions[:, 2])  # x positions
-    unique_y = np.unique(sample_stage_positions[:, 1])  # y positions
-    unique_z = np.unique(sample_stage_positions[:, 0])  # z positions
-
-    # Storage for mirror coefficients
-    mirror_coeffs_grid = np.zeros((len(sample_stage_positions), aoMirror_local.n_positions))
-
     # Run AO optimization for each stage position
-    for i, (z_pos, y_pos, x_pos) in enumerate(sample_stage_positions):
-        mmc.setPosition(z_pos)
+    for pos_idx in range(num_ao_pos):
+        mmc.setPosition(ao_stage_positions[pos_idx]["z"])
         mmc.waitForDevice(mmc.getFocusDevice())
-        mmc.setXYPosition(x_pos, y_pos)
+        mmc.setXYPosition(ao_stage_positions[pos_idx]["x"], ao_stage_positions[pos_idx]["y"])
         mmc.waitForDevice(mmc.getXYStageDevice())
 
         run_ao_optimization(
-            metric_to_use=ao_dict["shannon_dct"],
+            metric_to_use=ao_dict["metric"],
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
-            psf_radius_px=ao_dict["psf_radius_px"],
-            num_iterations=ao_dict["num_iterations"],
-            num_mode_steps=3,
-            init_delta_range=0.200,
-            delta_range_alpha_per_iter=0.5,
+            num_iterations=ao_dict["iterations"],
+            init_delta_range=ao_dict["mode_delta"],
+            delta_range_alpha_per_iter=ao_dict["mode_alpha"],
             save_dir_path=save_dir_path,
             verbose=verbose
         )
 
-        mirror_coeffs_grid[i] = AOMirror.current_coeffs()
+        ao_grid_wfc_coeffs[pos_idx] = aoMirror_local.current_coeffs()
+        ao_grid_wfc_positions[pos_idx] = aoMirror_local.current_positions()
     
-    # Reshape mirror coefficients into a structured grid
-    mirror_coeffs_grid_reshaped = mirror_coeffs_grid.reshape(
-        (len(unique_z), len(unique_y), len(unique_x), -1)  # -1 keeps last dimension
-    )
-
-    # Create interpolators for each AO mode
-    coeff_interp_functions = [
-        RegularGridInterpolator(
-            (unique_z, unique_y, unique_x),  
-            mirror_coeffs_grid_reshaped[:, :, :, coef_idx],  
-            method="linear",
-            bounds_error=False,
-            fill_value=None
+    # Map ao_grid_wfc_coeffs to experiment stage positions.
+    position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
+    position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
+    
+    for pos_idx in range(len(stage_positions)):
+        z = stage_positions[pos_idx]["z"]
+        y = stage_positions[pos_idx]["y"]
+        x = stage_positions[pos_idx]["x"]
+        
+        # get the scan axis
+        scan_axis_idx = np.where(scan_axis_positions==x)[0][0]
+        z_tile_positions = np.unique(
+            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_axis_idx]][:, 0]
         )
-        for coef_idx in range(mirror_coeffs_grid.shape[1])  
-    ]
+        
+        z_axis_idx = np.argmin(np.abs(z_tile_positions-z))
+        ao_grid_idx = 2*scan_axis_idx + z_axis_idx
+        position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
+        position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
 
-    # Generate interpolation grid
-    interp_stage_positions = []
-    for x in np.arange(min_x_pos, max_x_pos + xy_interp_range, xy_interp_range):
-        for y in np.arange(min_y_pos, max_y_pos + xy_interp_range, xy_interp_range):
-            for z in np.arange(min_z_pos, max_z_pos + z_interp_range, z_interp_range):
-                interp_stage_positions.append([z, y, x])
+    aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
+    aoMirror_local.wfc_positions_array = position_wfc_positions
     
-    interp_stage_positions = np.array(interp_stage_positions)
-
-    # Interpolate mirror coefficients
-    interp_mirror_coeffs = np.zeros([interp_stage_positions.shape[0], aoMirror_local.n_positions])
-    for ii, pos in enumerate(interp_stage_positions):
-        for coef_idx, interp_func in enumerate(coeff_interp_functions):
-            interp_mirror_coeffs[ii, coef_idx] = interp_func(pos)
-
-    return interp_mirror_coeffs, interp_stage_positions
-
+    return True
 
 #-------------------------------------------------#
 # Helper functions for saving optmization results

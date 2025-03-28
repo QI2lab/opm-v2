@@ -40,7 +40,7 @@
             "none",
             "optimize now"
         ],
-        "tile_overlap_perc": 20
+        "tile_overlap_perc": 15
     },
     "AOMirror": {
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
@@ -93,7 +93,7 @@
         "name": "TigerCommHub",
         "stage_step_size_um": 0.4,
         "excess_positions": 25,
-        "max_z_change_um": 2.0
+        "max_z_change_um": 3.0
     },
     "PLC": {
         "name": "PLogic:E:36",
@@ -104,7 +104,7 @@
     },
     "acq_config": {
         "opm_mode": "stage",
-        "fluidics": "22",
+        "fluidics": "2",
         "camera_roi": {
             "center_x": 1142.0,
             "center_y": 1151.0,
@@ -115,7 +115,7 @@
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 128,
-            "o2o3_mode": "xyz positions"
+            "o2o3_mode": "timepoints"
         },
         "AO": {
             "metric": "DCT",
@@ -123,10 +123,10 @@
             "mode_alpha": 0.7,
             "num_iterations": 2,
             "image_mirror_range_um": 150.0,
-            "active_channel_id": "488nm",
+            "active_channel_id": "405nm",
             "active_channel_power": 5.0,
             "exposure_ms": 350.0,
-            "ao_mode": "none",
+            "ao_mode": "xyz positions",
             "save_dir_path": "G:/optimize_now"
         },
         "mirror_scan": {
@@ -156,7 +156,10 @@
             ]
         },
         "stage_scan": {
-            "stage_scan_range_um": 40.0,
+            "coverslip_slope": 0.012,
+            "stage_scan_range_um": 115.0,
+            "scan_axis_overlap": 0.2,
+            "tile_axis_overlap": 0.15,
             "laser_blanking": false,
             "channel_states": [
                 false,
