@@ -7,8 +7,6 @@ TO DO:
 
 2024/12 DPS initial work
 """
-from opm_v2.hardware.AOMirror import AOMirror
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from pymmcore_plus import CMMCorePlus
 import numpy as np
 from numpy.typing import ArrayLike
@@ -16,45 +14,48 @@ from typing import Optional, Tuple, Sequence, List
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
-from scipy.interpolate import RegularGridInterpolator
 from pathlib import Path
 from tifffile import imwrite
 import zarr
+from time import sleep
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+
 
 mode_names = [
-            "Vert. Tilt",
-            "Horz. Tilt",
-            "Defocus",
-            "Vert. Asm.",
-            "Oblq. Asm.",
-            "Vert. Coma",
-            "Horz. Coma",
-            "3rd Spherical",
-            "Vert. Tre.",
-            "Horz. Tre.",
-            "Vert. 5th Asm.",
-            "Oblq. 5th Asm.",
-            "Vert. 5th Coma",
-            "Horz. 5th Coma",
-            "5th Spherical",
-            "Vert. Tetra.",
-            "Oblq. Tetra.",
-            "Vert. 7th Tre.",
-            "Horz. 7th Tre.",
-            "Vert. 7th Asm.",
-            "Oblq. 7th Asm.",
-            "Vert. 7th Coma",
-            "Horz. 7th Coma",
-            "7th Spherical",
-            "Vert. Penta.",
-            "Horz. Penta.",
-            "Vert. 9th Tetra.",
-            "Oblq. 9th Tetra.",
-            "Vert. 9th Tre.",
-            "Horz. 9th Tre.",
-            "Vert. 9th Asm.",
-            "Oblq. 9th Asm.",
-        ]
+    "Vert. Tilt",
+    "Horz. Tilt",
+    "Defocus",
+    "Vert. Asm.",
+    "Oblq. Asm.",
+    "Vert. Coma",
+    "Horz. Coma",
+    "3rd Spherical",
+    "Vert. Tre.",
+    "Horz. Tre.",
+    "Vert. 5th Asm.",
+    "Oblq. 5th Asm.",
+    "Vert. 5th Coma",
+    "Horz. 5th Coma",
+    "5th Spherical",
+    "Vert. Tetra.",
+    "Oblq. Tetra.",
+    "Vert. 7th Tre.",
+    "Horz. 7th Tre.",
+    "Vert. 7th Asm.",
+    "Oblq. 7th Asm.",
+    "Vert. 7th Coma",
+    "Horz. 7th Coma",
+    "7th Spherical",
+    "Vert. Penta.",
+    "Horz. Penta.",
+    "Vert. 9th Tetra.",
+    "Oblq. 9th Tetra.",
+    "Vert. 9th Tre.",
+    "Horz. 9th Tre.",
+    "Vert. 9th Asm.",
+    "Oblq. 9th Asm.",
+]
 
 #-------------------------------------------------#
 # AO optimization
@@ -344,11 +345,7 @@ def run_ao_optimization(
             metrics_per_iteration.append(iter_metrics)
             coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
             images_per_iteration.append(image)
-            
-            # check if we are in tissue!
-            # if not(any(_m >= 1.0 for _m in metrics_per_mode)):
-            #     print("No metrics over 1.0 detected! We must not be tissue??, skipping next AO iteration.")
-            #     return
+
         """Loop back to top and do the next iteration"""
         
     #---------------------------------------------#
@@ -404,10 +401,12 @@ def run_ao_optimization(
 # Plotting functions
 #-------------------------------------------------#
 
-def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
-                        zernike_mode_names: ArrayLike,
-                        save_dir_path: Optional[Path] = None,
-                        show_fig: Optional[bool] = False):
+def plot_zernike_coeffs(
+    optimal_coefficients: ArrayLike,
+    zernike_mode_names: ArrayLike,
+    save_dir_path: Optional[Path] = None,
+    show_fig: Optional[bool] = False
+):
     """_summary_
 
     Parameters
@@ -440,7 +439,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
                 color=colors[j % len(colors)],
                 s=125, 
                 marker=marker_style
-                )  
+            )  
         ax.axhline(y=i, linestyle="--", linewidth=1, color='k')
         
     # Plot a vertical line at 0 for reference
@@ -457,7 +456,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     ax.legend(
         [f'Iteration: {i+1}' for i in range(optimal_coefficients.shape[0])], 
         loc='upper right'
-        )
+    )
 
     # Remove grid lines
     ax.grid(False)
@@ -468,12 +467,14 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
-def plot_metric_progress(metrics_per_mode: ArrayLike,
-                         num_iterations: ArrayLike,
-                         modes_to_optimize: List[int],
-                         zernike_mode_names: List[str],
-                         save_dir_path: Optional[Path] = None,
-                         show_fig: Optional[bool] = False):
+def plot_metric_progress(
+    metrics_per_mode: ArrayLike,
+    num_iterations: ArrayLike,
+    modes_to_optimize: List[int],
+    zernike_mode_names: List[str],
+    save_dir_path: Optional[Path] = None,
+    show_fig: Optional[bool] = False
+):
     """_summary_
 
     Parameters
@@ -497,7 +498,7 @@ def plot_metric_progress(metrics_per_mode: ArrayLike,
     metrics_per_mode = np.reshape(
         metrics_per_mode[1:], # ignore the starting metric 
         (num_iterations, len(modes_to_optimize))
-        )
+    )
 
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -508,7 +509,14 @@ def plot_metric_progress(metrics_per_mode: ArrayLike,
 
     # Loop over iterations and plot each series
     for ii, series in enumerate(metrics_per_mode):
-        ax.plot(series, color=colors[ii], label=f"iteration {ii}", marker=markers[ii], linestyle="--", linewidth=1)
+        ax.plot(
+            series,
+            color=colors[ii],
+            label=f"iteration {ii}", 
+            marker=markers[ii],
+            linestyle="--", 
+            linewidth=1
+        )
 
     # Set the x-axis to correspond to the modes_to_optimize
     mode_labels = [zernike_mode_names[i] for i in modes_to_optimize]
@@ -534,7 +542,7 @@ def plot_2d_localization_fit_summary(
     coords_2d,
     save_dir_path: Path = None,
     showfig: bool = False
-    ):
+):
     """_summary_
 
     Parameters
@@ -573,40 +581,52 @@ def plot_2d_localization_fit_summary(
     width_ratios=[1,0.7,0.1,0.1,0.1]
     height_ratios=[1,0.1,0.5,0.5,0.5,0.5,0.5]
     figh_sum = plt.figure(figsize=(10,8))
-    grid_sum = figh_sum.add_gridspec(nrows=len(height_ratios),
-                                     ncols=len(width_ratios),
-                                     width_ratios=width_ratios,
-                                     height_ratios=height_ratios,
-                                     hspace=0.2,
-                                     wspace=0.3
-                                     )
+    grid_sum = figh_sum.add_gridspec(
+        nrows=len(height_ratios),
+        ncols=len(width_ratios),
+        width_ratios=width_ratios,
+        height_ratios=height_ratios,
+        hspace=0.2,
+        wspace=0.3
+    )
 
     ax_proj_sxy = figh_sum.add_subplot(grid_sum[0,:2])
     ax_cmap_i_sxy = figh_sum.add_subplot(grid_sum[0,2])
     ax_cmap_sxy = figh_sum.add_subplot(grid_sum[0,4])
-    figh_sum = plot_bead_locations(img,
-                                    centers,
-                                    weights=[fit_results["fit_params"][to_keep, 4]],
-                                    color_lists=["autumn"],
-                                    color_limits=[[0.05,0.5]],
-                                    cbar_labels=[r"$\sigma_{xy}$"],
-                                    title="Max intensity projection with Sxy",
-                                    coords=coords_2d,
-                                    gamma=0.5,
-                                    axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
-                                    )
-    ax_proj_sxy.set_title(f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}")
+    figh_sum = plot_bead_locations(
+        img,
+        centers,
+        weights=[fit_results["fit_params"][to_keep, 4]],
+        color_lists=["autumn"],
+        color_limits=[[0.05,0.5]],
+        cbar_labels=[r"$\sigma_{xy}$"],
+        title="Max intensity projection with Sxy",
+        coords=coords_2d,
+        gamma=0.5,
+        axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
+    )
+    ax_proj_sxy.set_title(
+        f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}"
+    )
 
     # Create axes for plotting x, y specific results
     ax_sxy_cx = figh_sum.add_subplot(grid_sum[3,0])
-    ax_sxy_cy = figh_sum.add_subplot(grid_sum[3,1:],
-                                     sharey=ax_sxy_cx)
+    ax_sxy_cy = figh_sum.add_subplot(
+        grid_sum[3,1:],
+        sharey=ax_sxy_cx
+    )
     ax_amp_cx = figh_sum.add_subplot(grid_sum[4,0],sharex=ax_sxy_cx)
-    ax_amp_cy = figh_sum.add_subplot(grid_sum[4,1:],
-                                     sharey=ax_amp_cx,sharex=ax_sxy_cy)
+    ax_amp_cy = figh_sum.add_subplot(
+        grid_sum[4,1:],
+        sharey=ax_amp_cx,
+        sharex=ax_sxy_cy
+    )
     ax_bg_cx = figh_sum.add_subplot(grid_sum[5,0],sharex=ax_sxy_cx)
-    ax_bg_cy = figh_sum.add_subplot(grid_sum[5,1:],
-                                    sharey=ax_bg_cx,sharex=ax_sxy_cy)
+    ax_bg_cy = figh_sum.add_subplot(
+        grid_sum[5,1:],
+        sharey=ax_bg_cx,
+        sharex=ax_sxy_cy
+    )
     ax_sxy_cx.set_ylabel(r"$\sigma_{xy}$ ($\mu m$)")
     ax_amp_cx.set_ylabel("amplitude")
     ax_bg_cx.set_ylabel("background")
@@ -648,7 +668,10 @@ def plot_2d_localization_fit_summary(
     else:
         plt.close(figh_sum)
     if save_dir_path:
-        figh_sum.savefig(save_dir_path / Path("ao_localization_results.png"), dpi=150)
+        figh_sum.savefig(
+            save_dir_path / Path("ao_localization_results.png"),
+            dpi=150
+        )
     
     figh_sum = None
     del figh_sum
@@ -682,7 +705,11 @@ def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
         center = (image.shape[1]//2, image.shape[0]//2)
     return center
 
-def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int]) -> ArrayLike:
+def get_cropped_image(
+    image: ArrayLike,
+    crop_size: int,
+    center: Tuple[int, int]
+) -> ArrayLike:
     """
     Extract a square region from an image centered at a given point.
 
@@ -714,8 +741,15 @@ def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int])
 # Functions for fitting and calculations
 #-------------------------------------------------#
 
-def gauss2d(coords_xy: ArrayLike, amplitude: float, center_x: float, center_y: float,
-            sigma_x: float, sigma_y: float, offset: float) -> ArrayLike:
+def gauss2d(
+    coords_xy: ArrayLike,
+    amplitude: float,
+    center_x: float,
+    center_y: float,
+    sigma_x: float,
+    sigma_y: float,
+    offset: float
+) -> ArrayLike:
     """
     Generates a 2D Gaussian function for curve fitting.
 
@@ -898,11 +932,12 @@ def localize_2d_img(
         "threshold":3000,
         "amp_bounds":(1000, 30000),
         "sxy_bounds":(0.100, 1.0)
-        },
+    },
     save_dir_path: Path = None,
     label: str = "", 
     showfig: bool = False,
-    verbose: bool = False):
+    verbose: bool = False
+):
     """_summary_
 
     Parameters
@@ -991,12 +1026,13 @@ def localize_2d_img(
 # Functions to calculate image metrics
 #-------------------------------------------------#
 
-def metric_brightness(image: ArrayLike,
-                      crop_size: Optional[int] = None,
-                      threshold: Optional[float] = 100,
-                      image_center: Optional[int] = None,
-                      return_image: Optional[bool] = False
-                      ) -> float:
+def metric_brightness(
+    image: ArrayLike,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = 100,
+    image_center: Optional[int] = None,
+    return_image: Optional[bool] = False
+) -> float:
     """
     Compute weighted metric for 2D Gaussian.
 
@@ -1043,7 +1079,7 @@ def metric_shannon_dct(
     threshold: Optional[float] = None,
     image_center: Optional[int] = None,
     return_image: Optional[bool] = False
-    ) -> float:
+) -> float:
     """Compute the Shannon entropy metric using DCT.
 
     Parameters
@@ -1091,12 +1127,13 @@ def metric_shannon_dct(
     else:
         return shannon_dct
 
-def metric_gauss2d(image: ArrayLike,
-                   crop_size: Optional[int] = None,
-                   threshold: Optional[float] = 100,
-                   image_center: Optional[int] = None,
-                   return_image: Optional[bool]= False
-                   ) -> float:
+def metric_gauss2d(
+    image: ArrayLike,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = 100,
+    image_center: Optional[int] = None,
+    return_image: Optional[bool]= False
+) -> float:
     """Compute weighted metric for 2D gaussian.
 
     Parameters
@@ -1202,53 +1239,35 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
 # Helper function for generating grid
 #-------------------------------------------------#
 
-def map_ao_grid(stage_positions: np.ndarray,
-                ao_dict: dict,
-                save_dir_path: Path = None,
-                verbose: bool = False,
-    ) -> np.ndarray:
-    """
-    Maps and interpolates adaptive optics (AO) mirror coefficients over a structured 
-    3D grid of stage positions.
+def run_ao_grid_mapping(
+    stage_positions: np.ndarray,
+    ao_dict: dict,
+    save_dir_path: Path = None,
+    verbose: bool = False,
+) -> np.ndarray:
+    """_summary_
 
-    This function:
-    1. Generates a structured grid of stage positions in a snake-like pattern.
-    2. Runs AO optimization at each sampled position to collect mirror coefficients.
-    3. Interpolates AO mirror coefficients over a finer 3D grid using linear interpolation.
-
-    Parameters:
-    -----------
+    Parameters
+    ----------
     stage_positions : np.ndarray
-        An array of dictionaries containing stage positions with keys "x", "y", and "z".
-    xy_ao_range : float
-        The spacing (in microns) between adjacent x and y sample points for AO optimization.
-    z_ao_range : float
-        The spacing (in microns) between adjacent z sample points for AO optimization.
-    xy_interp_range : float
-        The spacing (in microns) for interpolation along the x and y axes.
-    z_interp_range : float
-        The spacing (in microns) for interpolation along the z-axis.
+        Experimental stage positions. Optimized for stage scan acquisitions
     ao_dict : dict
         A dictionary containing AO optimization parameters, including:
-        - "image_mirror_step_size_um"
         - "image_mirror_range_um"
         - "exposure_ms"
         - "channel_states"
-        - "shannon_dct" (metric)
-        - "psf_radius_px"
-        - "num_iterations"
+        - "metric"
+        - "modal_alpha"
+        - "iterations"
     save_dir_path : Path, optional
         Path to save AO optimization data. Default is None.
     verbose : bool, optional
         If True, prints additional debugging information. Default is False.
 
-    Returns:
-    --------
+    Returns
+    -------
     np.ndarray
-        A 2D array where each row corresponds to an interpolated stage position,
-        and each column corresponds to an AO mirror coefficient.
-    np.ndarray
-        A 2D array where each row corresponds to a stage position where the mode coefficient was interpolated
+        _description_
     """
     aoMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
@@ -1285,26 +1304,43 @@ def map_ao_grid(stage_positions: np.ndarray,
     ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.wfc_positions_array.shape[1]))
     
     # Run AO optimization for each stage position
+    print("\nGenerating AO map:")
+    print(f"Number of positions: {num_ao_pos}")
+    
     for pos_idx in range(num_ao_pos):
-        mmc.setPosition(ao_stage_positions[pos_idx]["z"])
+        # make sure ASI controller is ready for next command
+        
+        # Move stage to position
+        print("about to move z")
+        mmc.setPosition(np.round(ao_stage_positions[pos_idx]["z"],2))
         mmc.waitForDevice(mmc.getFocusDevice())
-        mmc.setXYPosition(ao_stage_positions[pos_idx]["x"], ao_stage_positions[pos_idx]["y"])
-        mmc.waitForDevice(mmc.getXYStageDevice())
-
+        
+        mmc.setXYPosition(
+            np.round(float(ao_stage_positions[pos_idx]["x"]),2),
+            np.round(float(ao_stage_positions[pos_idx]["y"]),2)
+        )
+        current_x, current_y = mmc.getXYPosition()
+        while not(np.round(current_x/10,0) == np.round(float(ao_stage_positions[pos_idx]["x"])/10,0)) or not(np.round(current_y/10,0) == np.round(float(ao_stage_positions[pos_idx]["y"])/10,0)):
+            sleep(.5)
+            current_x, current_y = mmc.getXYPosition()
+        print("stage moved")
+        
+        current_save_dir = save_dir_path / Path(f"grid_pos_{int(pos_idx)}")
+        current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
             metric_to_use=ao_dict["metric"],
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
             num_iterations=ao_dict["iterations"],
-            init_delta_range=ao_dict["mode_delta"],
-            delta_range_alpha_per_iter=ao_dict["mode_alpha"],
-            save_dir_path=save_dir_path,
+            init_delta_range=ao_dict["modal_delta"],
+            delta_range_alpha_per_iter=ao_dict["modal_alpha"],
+            save_dir_path=current_save_dir,
             verbose=verbose
         )
 
-        ao_grid_wfc_coeffs[pos_idx] = aoMirror_local.current_coeffs()
-        ao_grid_wfc_positions[pos_idx] = aoMirror_local.current_positions()
+        ao_grid_wfc_coeffs[pos_idx] = aoMirror_local.current_coeffs.copy()
+        ao_grid_wfc_positions[pos_idx] = aoMirror_local.current_positions.copy()
     
     # Map ao_grid_wfc_coeffs to experiment stage positions.
     position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)

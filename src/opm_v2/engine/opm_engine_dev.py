@@ -17,7 +17,7 @@ from pymmcore_plus.metadata import (
     SummaryMetaV1
 )
 from numpy.typing import NDArray
-from opm_v2.utils.sensorless_ao import run_ao_optimization, map_ao_grid
+from opm_v2.utils.sensorless_ao import run_ao_optimization, run_ao_grid_mapping
 from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
 from pathlib import Path
@@ -288,12 +288,12 @@ class OPMEngine(MDAEngine):
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                     
                     # Set laser powers
-                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["channel_states"]):
+                    for chan_idx, chan_bool in enumerate(data_dict["AO"]["ao_dict"]["channel_states"]):
                         if chan_bool:
                             self._mmc.setProperty(
                                 self._config["Lasers"]["name"],
                                 str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                                float(data_dict["AO"]["channel_powers"][chan_idx])
+                                float(data_dict["AO"]["ao_dict"]["channel_powers"][chan_idx])
                             )
                         else:
                             self._mmc.setProperty(
@@ -406,14 +406,14 @@ class OPMEngine(MDAEngine):
                 manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
         
             elif action_name == "AO-grid":               
-                if data_dict["AO"]["apply_existing"]:
+                if data_dict["AO"]["apply_ao_map"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
                     self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
-                    map_ao_grid(
+                    run_ao_grid_mapping(
                         stage_positions = data_dict["AO"]["stage_positions"],
-                        ao_dict = data_dict["AO"]["ao_dict"]
-                        save_dir_path = data_dict["AO"]["output_path"]
+                        ao_dict = data_dict["AO"]["ao_dict"],
+                        save_dir_path = data_dict["AO"]["output_path"],
                         verbose = True,
                     )
                     

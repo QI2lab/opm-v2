@@ -93,7 +93,7 @@
         "name": "TigerCommHub",
         "stage_step_size_um": 0.4,
         "excess_positions": 25,
-        "max_z_change_um": 3.0
+        "coverslip_max_dz": 3.0
     },
     "PLC": {
         "name": "PLogic:E:36",
@@ -103,7 +103,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
+        "opm_mode": "projection",
         "fluidics": "2",
         "camera_roi": {
             "center_x": 1142.0,
@@ -135,21 +135,21 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0.0,
-                4.0,
+                0.0,
                 100.0,
                 100.0,
                 0.0
             ],
             "channel_exposures_ms": [
                 50.0,
-                100.0,
+                50.0,
                 100.0,
                 100.0,
                 50.0
@@ -163,21 +163,21 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0.0,
-                4.0,
+                0.0,
                 100.0,
                 100.0,
                 0.0
             ],
             "channel_exposures_ms": [
                 50.0,
-                100.0,
+                50.0,
                 100.0,
                 100.0,
                 50.0
@@ -188,21 +188,21 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0.0,
-                4.0,
+                0.0,
                 100.0,
                 100.0,
                 0.0
             ],
             "channel_exposures_ms": [
                 50.0,
-                100.0,
+                50.0,
                 100.0,
                 100.0,
                 50.0

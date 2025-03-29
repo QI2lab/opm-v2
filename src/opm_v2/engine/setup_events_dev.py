@@ -6,6 +6,7 @@ from pymmcore_plus import CMMCorePlus
 from pathlib import Path
 import json
 from datetime import datetime
+from tqdm import trange
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.handlers.opm_mirror_handler import OPMMirrorHandler
@@ -83,7 +84,7 @@ def setup_optimizenow(
                 "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
                 "modal_delta": float(config["acq_config"]["AO"]["mode_delta"]),
                 "modal_alpha":float(config["acq_config"]["AO"]["mode_alpha"]),                        
-                "iterations": int(config["acq_config"]["AO"]["num_iterations"]),
+                "iterations": int(config["acq_config"]["AO"]["n_iterations"]),
                 "metric": str(config["acq_config"]["AO"]["metric"]),
                 "image_mirror_range_um" : config["acq_config"]["AO"]["image_mirror_range_um"],
                 "blanking": bool(True),
@@ -375,12 +376,12 @@ def setup_projection(
         )
         if min_z_pos > max_z_pos:
             step_z = -1 * step_z
-        num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
+        n_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
 
     else:
         min_z_pos = mmc.getZPosition()
         step_z = 0
-        num_z_pos = 1
+        n_z_pos = 1
     
     # Generate xy stage positions
     stage_positions = []
@@ -390,7 +391,7 @@ def setup_projection(
         max_y_pos = mda_grid_plan["top"]
         min_x_pos = mda_grid_plan["left"]
         max_x_pos = mda_grid_plan["right"]
-        num_x_pos = int(
+        n_x_pos = int(
             np.ceil(
                 np.abs(max_x_pos - min_x_pos) / (
                     tile_axis_overlap
@@ -400,24 +401,24 @@ def setup_projection(
             )
         )
         
-        num_y_pos = int(
+        n_y_pos = int(
             np.ceil(
                 np.abs(max_y_pos - min_y_pos) / (tile_axis_overlap*image_mirror_range_um)
             )
         )
         
-        step_x = (max_x_pos - min_x_pos) / num_x_pos
-        step_y = (max_y_pos - min_y_pos) / num_y_pos
+        step_x = (max_x_pos - min_x_pos) / n_x_pos
+        step_y = (max_y_pos - min_y_pos) / n_y_pos
         
         # Generate stage positions in a snake like pattern
-        for x_pos in range(num_x_pos):
+        for x_pos in range(n_x_pos):
             if x_pos % 2 == 0:                          
-                y_range = range(num_y_pos)
+                y_range = range(n_y_pos)
             else:  
-                y_range = range(num_y_pos - 1, -1, -1)
+                y_range = range(n_y_pos - 1, -1, -1)
 
             for y_pos in y_range:
-                for z_pos in range(num_z_pos):
+                for z_pos in range(n_z_pos):
                     stage_positions.append(
                         {
                             "x": float(np.round(min_x_pos + x_pos * step_x, 2)),
@@ -437,8 +438,8 @@ def setup_projection(
             )
             
     # update the wfc mirror positions array shape
-    num_stage_positions = len(stage_positions)
-    AOmirror_setup.n_positions = num_stage_positions
+    n_stage_positions = len(stage_positions)
+    AOmirror_setup.n_positions = n_stage_positions
     
     #----------------------------------------------------------------#
     # Populate a {t, p, c, z} event sequence
@@ -469,7 +470,7 @@ def setup_projection(
         if "time" in o2o3_mode:
             opm_events.append(o2o3_event)
             
-        for pos_idx in range(num_stage_positions):
+        for pos_idx in range(n_stage_positions):
             if need_to_setup_stage:
                 stage_event = MDAEvent(
                     action=CustomAction(
@@ -485,7 +486,7 @@ def setup_projection(
                 )
                 opm_events.append(stage_event)
                 
-                if num_stage_positions > 1:
+                if n_stage_positions > 1:
                     need_to_setup_stage = True
                 else:
                     need_to_setup_stage = False
@@ -626,7 +627,7 @@ def setup_projection(
     if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
         indice_sizes = {
             't' : int(np.maximum(1,n_time_steps)),
-            'p' : int(np.maximum(1,num_stage_positions)),
+            'p' : int(np.maximum(1,n_stage_positions)),
             'c' : int(np.maximum(1,n_active_channels)),
             'z' : int(1)
         }
@@ -832,7 +833,7 @@ def setup_mirrorscan(
                 "channel_powers" : AO_channel_powers,
                 "modal_delta": float(config["acq_config"]["AO"]["mode_delta"]),
                 "modal_alpha":float(config["acq_config"]["AO"]["mode_alpha"]),                        
-                "iterations": int(config["acq_config"]["AO"]["num_iterations"]),
+                "iterations": int(config["acq_config"]["AO"]["n_iterations"]),
                 "metric": str(config["acq_config"]["AO"]["metric"]),
                 "image_mirror_range_um" : AO_image_mirror_range,
                 "blanking": bool(True),
@@ -918,12 +919,12 @@ def setup_mirrorscan(
         )
         if min_z_pos > max_z_pos:
             step_z = -1 * step_z
-        num_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
+        n_z_pos = int(np.ceil(np.abs((max_z_pos - min_z_pos) / step_z)))
 
     else:
         min_z_pos = mmc.getZPosition()
         step_z = 0
-        num_z_pos = 1
+        n_z_pos = 1
     
     # Generate xy stage positions
     stage_positions = []
@@ -933,7 +934,7 @@ def setup_mirrorscan(
         max_y_pos = mda_grid_plan["top"]
         min_x_pos = mda_grid_plan["left"]
         max_x_pos = mda_grid_plan["right"]
-        num_x_pos = int(
+        n_x_pos = int(
             np.ceil(
                 np.abs(max_x_pos - min_x_pos) / (
                     tile_axis_overlap
@@ -943,24 +944,24 @@ def setup_mirrorscan(
             )
         )
         
-        num_y_pos = int(
+        n_y_pos = int(
             np.ceil(
                 np.abs(max_y_pos - min_y_pos) / (tile_axis_overlap*image_mirror_range_um)
             )
         )
         
-        step_x = (max_x_pos - min_x_pos) / num_x_pos
-        step_y = (max_y_pos - min_y_pos) / num_y_pos
+        step_x = (max_x_pos - min_x_pos) / n_x_pos
+        step_y = (max_y_pos - min_y_pos) / n_y_pos
         
         # Generate stage positions in a snake like pattern
-        for x_pos in range(num_x_pos):
+        for x_pos in range(n_x_pos):
             if x_pos % 2 == 0:                          
-                y_range = range(num_y_pos)
+                y_range = range(n_y_pos)
             else:  
-                y_range = range(num_y_pos - 1, -1, -1)
+                y_range = range(n_y_pos - 1, -1, -1)
 
             for y_pos in y_range:
-                for z_pos in range(num_z_pos):
+                for z_pos in range(n_z_pos):
                     stage_positions.append(
                         {
                             "x": float(np.round(min_x_pos + x_pos * step_x, 2)),
@@ -980,8 +981,8 @@ def setup_mirrorscan(
             )
             
     # update the wfc mirror positions array shape
-    num_stage_positions = len(stage_positions)
-    AOmirror_setup.n_positions = num_stage_positions
+    n_stage_positions = len(stage_positions)
+    AOmirror_setup.n_positions = n_stage_positions
     
     #----------------------------------------------------------------#
     # Populate a {t, p, c, z} event sequence
@@ -1012,7 +1013,7 @@ def setup_mirrorscan(
         if "time" in o2o3_mode:
             opm_events.append(o2o3_event)
             
-        for pos_idx in range(num_stage_positions):
+        for pos_idx in range(n_stage_positions):
             if need_to_setup_stage:
                 stage_event = MDAEvent(
                     action=CustomAction(
@@ -1028,7 +1029,7 @@ def setup_mirrorscan(
                 )
                 opm_events.append(stage_event)
                 
-                if num_stage_positions > 1:
+                if n_stage_positions > 1:
                     need_to_setup_stage = True
                 else:
                     need_to_setup_stage = False
@@ -1172,7 +1173,7 @@ def setup_mirrorscan(
     if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
         indice_sizes = {
             't' : int(np.maximum(1,n_time_steps)),
-            'p' : int(np.maximum(1,num_stage_positions)),
+            'p' : int(np.maximum(1,n_stage_positions)),
             'c' : int(np.maximum(1,n_active_channels)),
             'z' : int(np.maximum(1,n_scan_steps))
         }
@@ -1204,27 +1205,27 @@ def setup_stagescan(
     o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
     fluidics_mode = config["acq_config"]["fluidics"]
     
-    # Get the camera crop value
+    # Get the camera crop values
     camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
     camera_crop_x = int(config["acq_config"]["camera_roi"]["crop_x"])
     camera_center_y = int(config["acq_config"]["camera_roi"]["center_y"])
     camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
     
-    # Get pixel size
+    # Get pixel size and deskew Y-scale factor
     pixel_size_um = np.round(float(mmc.getPixelSizeUm()),3) # unit: um
-    
     opm_angle_scale = np.sin((np.pi/180.)*float(config["OPM"]["angle_deg"]))
     
     # Get the stage scan range, coverslip slope, and maximum CS dz change
     coverslip_slope = config["acq_config"]["stage_scan"]["coverslip_slope"]
     stage_scan_max_range = config["acq_config"]["stage_scan"]["stage_scan_range_um"]
-    max_z_change_um = float(config["Stage"]["max_z_change_um"])
+    coverslip_max_dz = float(config["Stage"]["coverslip_max_dz"])
     
     # Get the tile overlap settings
-    scan_tile_overlap_um = float(config["acq_config"]["scan_axis_overlap_um"]) 
-    scan_tile_overlap_mm = scan_tile_overlap_um/1000.
     scan_axis_step_um = float(config["Stage"]["stage_step_size_um"])  # unit: um 
+    scan_tile_overlap = float(config["acq_config"]["stage_scan"]["scan_axis_overlap"])  
     tile_axis_overlap = float(config["acq_config"]["stage_scan"]["tile_axis_overlap"])
+    scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + 20
+    scan_tile_overlap_mm = scan_tile_overlap_um/1000.
     
     # try to get camera conversion factor information
     try:
@@ -1253,54 +1254,25 @@ def setup_stagescan(
     if mda_grid_plan is None:
         print("Must select MDA grid plan for stage scanning")
         return None, None
+
+    laser_blanking = config["acq_config"][opm_mode+"_scan"]["laser_blanking"]
+    channel_states = config["acq_config"][opm_mode+"_scan"]["channel_states"]
+    channel_powers = config["acq_config"][opm_mode+"_scan"]["channel_powers"]
+    channel_exposures_ms = config["acq_config"][opm_mode+"_scan"]["channel_exposures_ms"]
+    channel_names = config["OPM"]["channel_ids"]
     
-    if not(use_mda_channels):
-        laser_blanking = config["acq_config"][opm_mode+"_scan"]["laser_blanking"]
-        channel_states = config["acq_config"][opm_mode+"_scan"]["channel_states"]
-        channel_powers = config["acq_config"][opm_mode+"_scan"]["channel_powers"]
-        channel_exposures_ms = config["acq_config"][opm_mode+"_scan"]["channel_exposures_ms"]
-        channel_names = config["OPM"]["channel_ids"]
-        
-    else:
-        mda_channels = sequence_dict["channels"]        
-        if not(mda_channels):
-            print("Must select channels to use in MDA widget")
-            return None, None
-        elif "Channel" not in mda_channels[0]["group"]:
-            print("Must select channels to use in MDA widget")
-            return None, None
-        
-        channel_names = config["OPM"]["channel_ids"]
-        channel_states = [False] * len(channel_names) 
-        channel_exposures_ms = [0.] * len(channel_names) 
-        channel_powers = [0.] * len(channel_names) 
-        
-        if mmc.getProperty("LaserBlanking", "Label")=="On":
-            laser_blanking = True
-        else:
-            laser_blanking = False
-            
-        # Iterate through MDA checked channels and update active lasers list
-        for mda_ch in mda_channels:
-            # Get the matching channel idx active lasers list
-            ch_id = mda_ch["config"]
-            ch_idx = config["OPM"]["channel_ids"].index(ch_id)
-            
-            # update active channel and powers
-            channel_states[ch_idx] = True
-            channel_exposures_ms[ch_idx] = mda_ch["exposure"]
-            channel_powers[ch_idx] = float(
-                mmc.getProperty(
-                    "Coherent-Scientific Remote",
-                    config["Lasers"]["laser_names"][ch_idx] + " - PowerSetpoint (%)"
-                )
-            )
-            
     n_active_channels = sum(channel_states)
     active_channel_names = [_name for _, _name in zip(channel_states, channel_names) if _]
     
     # Interleave only available if all channels have the same exposure.
-    active_channel_exps = [_exp for _, _exp in zip(channel_states, channel_exposures_ms) if _]
+    active_channel_exps = []
+    for ii, ch_state in enumerate(channel_states):
+        if ch_state:
+            active_channel_exps.append(channel_exposures_ms[ii])
+        else:
+            # set not used channel powers to 0
+            channel_powers[ii] = 0
+        
     if len(set(active_channel_exps))==1:
         interleaved_acq = True
     else:
@@ -1500,7 +1472,6 @@ def setup_stagescan(
     range_x_um = np.round(np.abs(max_x_pos - min_x_pos),2)
     range_y_um = np.round(np.abs(max_y_pos - min_y_pos),2)
     range_z_um = np.round(np.abs(max_z_pos - min_z_pos),2)
-
     # Define coverslip bounds, to offset Z positions
     cs_min_pos = min_z_pos
     cs_max_pos = cs_min_pos + range_x_um * coverslip_slope
@@ -1520,18 +1491,18 @@ def setup_stagescan(
         * (1-tile_axis_overlap)
     )
 
-    # Correct directions to move 
-    if min_y_pos > max_y_pos:
-        tile_axis_step_max *= -1
+    #--------------------------------------------------------------------#
+    # Correct directions for stage moves
     if min_z_pos > max_z_pos:
         z_axis_step_max *= -1
     if min_x_pos > max_x_pos:
         min_x_pos, max_x_pos = max_x_pos, min_x_pos
         
-    # Generate scan axis positions
+    #--------------------------------------------------------------------#
+    # Generate coverslip offset along the scan axis
     if coverslip_slope != 0:
         # Set the max scan range using coverslip slope
-        stage_scan_max_range = max_z_change_um / coverslip_slope
+        stage_scan_max_range = coverslip_max_dz / coverslip_slope
     else:
         stage_scan_max_range = 250
 
@@ -1552,23 +1523,23 @@ def setup_stagescan(
     # calculate scan axis tile locations, units: mm and s
 
     # Break scan range up using max scan range
-    num_scan_positions = int(
+    n_scan_positions = int(
         np.ceil(range_x_um / (stage_scan_max_range-scan_tile_overlap_um))
     )
     scan_tile_length_um = np.round(
-        (range_x_um/(num_scan_positions-1)) - (scan_tile_overlap_um/num_scan_positions),
+        (range_x_um/(n_scan_positions-1)) - (scan_tile_overlap_um/n_scan_positions),
         2
     )
-    scan_tile_z_step_um = np.round(cs_range_um / num_scan_positions, 2)
+    scan_tile_z_step_um = np.round(cs_range_um / n_scan_positions, 2)
     scan_axis_step_mm = scan_axis_step_um / 1000. # unit: mm
     scan_axis_start_mm = min_x_pos / 1000. # unit: mm
     scan_axis_end_mm = max_x_pos / 1000. # unit: mm
     scan_tile_length_mm = scan_tile_length_um / 1000. # unit: mm
 
-    scan_axis_start_pos_mm = np.full(num_scan_positions, scan_axis_start_mm)
-    scan_axis_end_pos_mm = np.full(num_scan_positions, scan_axis_end_mm)
-    scan_axis_z_positions = np.full(num_scan_positions, min_z_pos)
-    for ii in range(num_scan_positions):
+    scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
+    scan_axis_end_pos_mm = np.full(n_scan_positions, scan_axis_end_mm)
+    scan_axis_z_positions = np.full(n_scan_positions, min_z_pos)
+    for ii in range(n_scan_positions):
         scan_axis_start_pos_mm[ii] = scan_axis_start_mm + ii * (scan_tile_length_mm - scan_tile_overlap_mm)
         scan_axis_end_pos_mm[ii] = scan_axis_start_pos_mm[ii] + scan_tile_length_mm
         scan_axis_z_positions[ii] = min_z_pos + ii * scan_tile_z_step_um
@@ -1582,7 +1553,7 @@ def setup_stagescan(
     if DEBUG: 
         print(f"Stage scan positions, units: mm")
         print(f"Is the scan tile w/ overlap the same as the scan tile length?: {scan_tile_length_mm==scan_tile_length_w_overlap_mm}")
-        print(f'Number scan tiles: {num_scan_positions}')
+        print(f'Number scan tiles: {n_scan_positions}')
         print(f'Scan tile length um: {scan_tile_length_um}')
         print(f'Scan tile overlap um: {scan_tile_overlap_um}')
         print(f'Scan axis start positions: {scan_axis_start_pos_mm}.')
@@ -1594,45 +1565,46 @@ def setup_stagescan(
 
     #--------------------------------------------------------------------#
     # Generate tile axis positions
-    num_tile_positions = int(np.ceil(range_y_um / tile_axis_step_max)) + 1
-    tile_axis_positions = np.linspace(min_y_pos, max_y_pos, num_tile_positions)
-    tile_axis_step = tile_axis_positions[1]-tile_axis_positions[0]
+    n_tile_positions = int(np.ceil(range_y_um / tile_axis_step_max)) + 1
+    tile_axis_positions = np.round(np.linspace(min_y_pos, max_y_pos, n_tile_positions),2)
     if DEBUG:
         print("Tile axis positions units: um")
         print(f"Tile axis positions: {tile_axis_positions}")
-        print(f"Num tile axis positions: {num_tile_positions}")
+        print(f"Num tile axis positions: {n_tile_positions}")
         print(f"Tile axis step: {tile_axis_positions[1]-tile_axis_positions[0]}")
 
     #--------------------------------------------------------------------#
-    # Generate z axis positions, ignoring coverslip slop
-    num_z_positions = int(np.ceil(range_z_um / z_axis_step_max)) + 1
-    z_positions = np.round(np.linspace(min_z_pos, max_z_pos, num_z_positions), 2)
+    # Generate z axis positions, ignoring coverslip slope
+    n_z_positions = int(np.ceil(range_z_um / z_axis_step_max)) + 1
+    z_positions = np.round(np.linspace(min_z_pos, max_z_pos, n_z_positions), 2)
     z_axis_step_um = z_positions[1] - z_positions[0]
-    dz_per_scan_tile = cs_range_um / num_scan_positions
+
+    # Calculate the stage z change along the scan axis
+    dz_per_scan_tile = cs_range_um / n_scan_positions
 
     if DEBUG:
         print("\nZ axis positions, units: um")
         print(f"Z axis positions: {z_positions}")
         print(f"Z axis range: {range_z_um}")
         print(f"Z axis step: {z_axis_step_um}")
-        print(f"Num z axis positions: {num_z_positions}")
+        print(f"Num z axis positions: {n_z_positions}")
         print(f"Z offset per x-scan-tile: {dz_per_scan_tile}")
 
     #--------------------------------------------------------------------#
     # Generate stage positions 
-    num_stage_positions = num_scan_positions * num_tile_positions * num_z_positions
+    n_stage_positions = n_scan_positions * n_tile_positions * n_z_positions
     stage_positions = []
-    for scan_idx in range(num_scan_positions):
-            for tile_idx in range(num_tile_positions):
-                for z_idx in range(num_z_positions):
-                    stage_positions.append(
-                        {
-                            "x": float(np.round(scan_axis_start_pos_mm[scan_idx]*1000, 2)),
-                            "y": float(np.round(tile_axis_positions[tile_idx], 2)),
-                            "z": float(np.round(z_positions[z_idx] + dz_per_scan_tile*scan_idx, 2))
-                        }
-                    )
-    
+    for z_idx in range(n_z_positions):
+        for scan_idx in range(n_scan_positions):
+            for tile_idx in range(n_tile_positions):
+                stage_positions.append(
+                    {
+                        "x": float(np.round(scan_axis_start_pos_mm[scan_idx]*1000, 2)),
+                        "y": float(np.round(tile_axis_positions[tile_idx], 2)),
+                        "z": float(np.round(z_positions[z_idx] + dz_per_scan_tile*scan_idx, 2))
+                    }
+                )
+
     #----------------------------------------------------------------#
     # Create MDA event structure
     #----------------------------------------------------------------#
@@ -1640,7 +1612,7 @@ def setup_stagescan(
     opm_events: list[MDAEvent] = []
 
     if "none" not in ao_mode:
-        AOmirror_setup.n_positions = num_stage_positions
+        AOmirror_setup.n_positions = n_stage_positions
         
     # Flags to help ensure sequence-able events are kept together 
     need_to_setup_DAQ = True
@@ -1656,8 +1628,8 @@ def setup_stagescan(
     
     # check if generating AO grid        
     if "grid" in ao_mode:
-        generate_ao_grid_event = MDAEvent(**ao_grid_event)
-        generate_ao_grid_event.data["AO"]["stage_positions"] = stage_positions
+        generate_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
+        generate_ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
         opm_events.append(generate_ao_grid_event)
         
     #----------------------------------------------------------------#
@@ -1665,11 +1637,11 @@ def setup_stagescan(
     
     if DEBUG: 
             print(f'timepoints: {n_time_steps}')
-            print(f'Stage positions: {num_stage_positions}.')
+            print(f'Stage positions: {n_stage_positions}.')
             print(f'Scan positions: {scan_axis_positions+int(config["Stage"]["excess_positions"])}.')
             print(f'Active channels: {n_active_channels}')
             
-    for time_idx in range(n_time_steps):
+    for time_idx in trange(n_time_steps, desc="Timepoints:"):
         
         if "none" not in fluidics_mode and time_idx!=0:
             current_FP_event = MDAEvent(**fp_event.model_dump())
@@ -1679,26 +1651,26 @@ def setup_stagescan(
         if "time" in o2o3_mode:
             opm_events.append(o2o3_event)
         
-        pos_idx = 0
-        for scan_idx in range(num_scan_positions):
-            for tile_idx in range(num_tile_positions):
-                for z_idx in range(num_z_positions):
+        pos_idx = 0        
+        for z_idx in trange(n_z_positions, desc="Z-axis-tiles:"):
+            for scan_idx in trange(n_scan_positions, desc="Scan-axis-tiles:"):
+                for tile_idx in trange(n_tile_positions, desc="Tile-axis-tiles:"):
                     if need_to_setup_stage:      
                         stage_event = MDAEvent(
                             action=CustomAction(
                                 name="Stage-Move",
                                 data = {
                                     "Stage" : {
-                                        "x_pos" : stage_positions[scan_idx]["x"],
-                                        "y_pos" : stage_positions[tile_idx]["y"],
-                                        "z_pos" : stage_positions[z_idx]["z"],
+                                        "x_pos" : stage_positions[pos_idx]["x"],
+                                        "y_pos" : stage_positions[pos_idx]["y"],
+                                        "z_pos" : stage_positions[pos_idx]["z"],
                                     }
                                 }
                             )
                         )
                         opm_events.append(stage_event)
                         
-                        if num_stage_positions > 1:
+                        if n_stage_positions > 1:
                             need_to_setup_stage = True
                         else:
                             need_to_setup_stage = False
@@ -1708,9 +1680,9 @@ def setup_stagescan(
                     
                     # Apply the grid mirror state
                     if "grid" in ao_mode:
-                        apply_ao_grid_event = MDAEvent(**ao_grid_event)
-                        apply_ao_grid_event.data["AO"]["apply_existing"] = True
-                        apply_ao_grid_event.data["AO"]["pos_idx"] = int(pos_idx)
+                        apply_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
+                        apply_ao_grid_event.action.data["AO"]["apply_ao_map"] = True
+                        apply_ao_grid_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                         opm_events.append(apply_ao_grid_event)
                         
                     # Run AO optimization before acquiring current position
@@ -1732,7 +1704,6 @@ def setup_stagescan(
                     
                     # Finally, handle acquiring images. 
                     # These events are passed through to the normal MDAEngine and *should* be sequenced. 
-                    # if interleaved_acq:
                     if need_to_setup_DAQ:
                         need_to_setup_DAQ = True
                         opm_events.append(daq_event)
@@ -1788,9 +1759,9 @@ def setup_stagescan(
                                         "excess_scan_positions" : int(config["Stage"]["excess_positions"])
                                     },
                                     "Stage" : {
-                                        "x_pos" : stage_positions[scan_idx]["x"] + (scan_axis_idx * scan_axis_step_um),
-                                        "y_pos" : stage_positions[tile_idx]["y"],
-                                        "z_pos" : stage_positions[scan_idx]["z"],
+                                        "x_pos" : stage_positions[pos_idx]["x"] + (scan_axis_idx * scan_axis_step_um),
+                                        "y_pos" : stage_positions[pos_idx]["y"],
+                                        "z_pos" : stage_positions[pos_idx]["z"],
                                         "excess_image": is_excess_image
                                     }
                                 }
@@ -1800,10 +1771,9 @@ def setup_stagescan(
                         
     # Check if path ends if .zarr. If so, use our OutputHandler
     if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-
         indice_sizes = {
             't' : int(np.maximum(1,n_time_steps)),
-            'p' : int(np.maximum(1,num_stage_positions)),
+            'p' : int(np.maximum(1,n_stage_positions)),
             'c' : int(np.maximum(1,n_active_channels)),
             'z' : int(np.maximum(1,scan_axis_positions+int(config["Stage"]["excess_positions"])))
         }
@@ -1812,7 +1782,7 @@ def setup_stagescan(
             path=Path(output),
             indice_sizes=indice_sizes,
             delete_existing=True
-            )
+        )
             
         print(f"Using Qi2lab handler,\nindices: {indice_sizes}")
             

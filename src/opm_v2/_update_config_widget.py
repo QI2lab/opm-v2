@@ -798,7 +798,7 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][0] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][0] = exposure_ms
             
-        self.update_config()
+        self.update_config(update_config=False)
                
     def update_488_state(self):
         checked = self.chx_488_state.isChecked()
@@ -809,7 +809,7 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][1] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][1] = exposure_ms
             
-        self.update_config()
+        self.update_config(update_config=False)
     
     def update_561_state(self):
         checked = self.chx_561_state.isChecked()
@@ -820,7 +820,7 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][2] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][2] = exposure_ms
             
-        self.update_config()
+        self.update_config(update_config=False)
         
     def update_638_state(self):
         checked = self.chx_638_state.isChecked()
@@ -831,7 +831,7 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][3] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][3] = exposure_ms
 
-        self.update_config()
+        self.update_config(update_config=False)
     
     def update_705_state(self):
         checked = self.chx_705_state.isChecked()
@@ -842,18 +842,21 @@ class OPMSettings(QWidget):
             self.config["acq_config"][_mode+"_scan"]["channel_powers"][4] = power
             self.config["acq_config"][_mode+"_scan"]["channel_exposures_ms"][4] = exposure_ms
        
-        self.update_config()
+        self.update_config(update_config=False)
         
     #--------------------------------------------------------------------#
     # Methods to update configuration file and emit a signal when settings are updated.
     #--------------------------------------------------------------------#
     
-    def update_config(self):
+    def update_config(self, update_config: bool = True):
         """
         Update configuration file and local dict.
         """
-        with open(self.config_path, "r") as config_file:
-            config = json.load(config_file)
+        if update_config:
+            with open(self.config_path, "r") as config_file:
+                config = json.load(config_file)
+        else:
+            config = self.config
             
         for key_id in self.widgets.keys():
             for key in self.widgets[key_id]:
