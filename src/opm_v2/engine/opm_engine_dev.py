@@ -84,40 +84,45 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
-                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
-                
-                # Stage speed
-                command = "SPEED Y=0.1 X=0.1"
-                self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-
-                # make sure ASI controller is ready for next command
-                ready='B'
-                while(ready!='N'):
-                    print("in while loop setting stage move speed")
-                    command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-                    print('cmd sent')
-                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
-                    print("cmd rec.")
-                    sleep(.5)
-                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
-
+                        
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.2)
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.2)
+                      
                 # Move stage to position
                 print("about to move z")
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 
                 print("about to move xy")
-                self._mmc.setXYPosition(
-                    np.round(float(data_dict["Stage"]["x_pos"]),2),
-                    np.round(float(data_dict["Stage"]["y_pos"]),2)
-                )
+                target_x = np.round(float(data_dict["Stage"]["x_pos"]),2) 
+                target_y = np.round(float(data_dict["Stage"]["y_pos"]),2)
+                self._mmc.setXYPosition(target_x,target_y)
                 current_x, current_y = self._mmc.getXYPosition()
-                while not(np.round(current_x/10,0) == np.round(float(data_dict["Stage"]["x_pos"])/10,0)) or not(np.round(current_y/10,0) == np.round(float(data_dict["Stage"]["y_pos"])/10,0)):
+                
+                
+                
+                old_x = current_x
+                old_y = current_y
+                counter = 0
+                while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
                     sleep(.5)
                     current_x, current_y = self._mmc.getXYPosition()
-                print("stage moved")
+                    if old_x == current_x and old_y == current_y:
+                        counter = counter + 1
+                        print(
+                            "Stage move stationary!",
+                            f"\ncurrent_x:{current_x} current_y:{current_y}",
+                            f"\ntarget_x:{target_x} target_y{target_y}"
+                        )
+                    else:
+                        old_x = current_x
+                        old_y = current_y
+                    if counter >= 5:
+                        break
                     
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.1)
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.1)
+                      
             elif action_name == "ASI-setupscan":
                 # ensure commands are sent to the stage controller
                 self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
@@ -258,7 +263,7 @@ class OPMEngine(MDAEngine):
                                 str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                                 0.0
                             )
-            
+                                              
             elif action_name == "AO-grid":
                 
                 if data_dict["AO"]["apply_ao_map"]:
@@ -301,7 +306,11 @@ class OPMEngine(MDAEngine):
                                 str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                                 0.0
                             )
-            
+                    
+                    # Set the stage speed for larger moves
+                    command = "SPEED Y=0.2 X=0.2"
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    
             elif action_name == "DAQ":
                 # Stop and clear waveform tasks
                 self.opmDAQ.stop_waveform_playback()

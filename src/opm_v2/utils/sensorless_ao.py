@@ -66,6 +66,7 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
+    daq_mode: Optional[str] = "projection",
     psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
@@ -89,7 +90,7 @@ def run_ao_optimization(
     opmNIDAQ_local.stop_waveform_playback()
     opmNIDAQ_local.clear_tasks()
     opmNIDAQ_local.set_acquisition_params(
-        scan_type="projection",
+        scan_type=daq_mode,
         channel_states=channel_states,
         image_mirror_range_um=image_mirror_range_um,
         laser_blanking=True,
@@ -1240,16 +1241,16 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
 #-------------------------------------------------#
 
 def run_ao_grid_mapping(
-    stage_positions: np.ndarray,
+    stage_positions: List,
     ao_dict: dict,
     save_dir_path: Path = None,
     verbose: bool = False,
-) -> np.ndarray:
+) -> bool:
     """_summary_
 
     Parameters
     ----------
-    stage_positions : np.ndarray
+    stage_positions : list
         Experimental stage positions. Optimized for stage scan acquisitions
     ao_dict : dict
         A dictionary containing AO optimization parameters, including:
@@ -1278,26 +1279,50 @@ def run_ao_grid_mapping(
         ]
     )
     
-    # Extract unique x values
+    # Extract scan positions
     scan_axis_positions = np.unique(stage_positions_array[:, 2])
-    ao_scan_axis_positions = scan_axis_positions - np.diff(scan_axis_positions)[0]/2
+    if scan_axis_positions.shape[0]==1:
+        print("AO Grid not optimized to work on 1 scan position!")
+        return False
+    if scan_axis_positions[0]>scan_axis_positions[1]:
+        print("AO grid is only working for scanning in positive directions!")
+        return False
+    
+    scan_tile_dx = np.diff(scan_axis_positions)[0]/2
+    ao_scan_axis_positions = scan_axis_positions + scan_tile_dx
+    
+    # Extract tile positons, only sample the middle of the tile axis
     tile_axis_positions = np.unique(stage_positions_array[:, 1])
     ao_tile_axis_position = np.mean(tile_axis_positions)
     
+    # Extract the number of z positions per scan tile
+    num_z_positions = np.unique(
+            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][:, 0]
+        ).shape[0]
+    
+    # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
-    for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):    
-        z_tile_positions = np.unique(
-            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
-        )
-        for z_pos in z_tile_positions:
+    for z_idx in range(num_z_positions):
+        for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
+            # Extract the unique z positions for this scan tile, use the z_idx
+            z_tile_positions = np.unique(
+                stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
+            )
             ao_stage_positions.append(
                 {
-                    "z": z_pos,
+                    "z": z_tile_positions[z_idx],
                     "y": ao_tile_axis_position,
                     "x": scan_tile_pos
                 }
             )
-           
+    if verbose:
+        print(
+            "\nAO grid positions:",
+            f"\nY tile position: {ao_tile_axis_position}",
+            f"\nScan axis dx: {scan_tile_dx}",
+            f"\nScan axis positions: {ao_scan_axis_positions}",
+            f"\nNumber of z-planes: {num_z_positions}"    
+        )
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
     ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.wfc_coeffs_array.shape[1]))
@@ -1307,25 +1332,31 @@ def run_ao_grid_mapping(
     print("\nGenerating AO map:")
     print(f"Number of positions: {num_ao_pos}")
     
-    for pos_idx in range(num_ao_pos):
-        # make sure ASI controller is ready for next command
+    # Visit AO stage positions and measure best WFC positions
+    for ao_pos_idx in range(num_ao_pos):
         
-        # Move stage to position
-        print("about to move z")
-        mmc.setPosition(np.round(ao_stage_positions[pos_idx]["z"],2))
+        if verbose:
+            print(f"\nMoving stage to: {ao_stage_positions[ao_pos_idx]}")
+        target_x = ao_stage_positions[ao_pos_idx]["x"]
+        target_y = ao_stage_positions[ao_pos_idx]["y"]
+        target_z = ao_stage_positions[ao_pos_idx]["z"]
+        
+        mmc.setPosition(np.round(target_z,2))
         mmc.waitForDevice(mmc.getFocusDevice())
         
         mmc.setXYPosition(
-            np.round(float(ao_stage_positions[pos_idx]["x"]),2),
-            np.round(float(ao_stage_positions[pos_idx]["y"]),2)
+            np.round(float(target_x),2),
+            np.round(float(target_y),2)
         )
         current_x, current_y = mmc.getXYPosition()
-        while not(np.round(current_x/10,0) == np.round(float(ao_stage_positions[pos_idx]["x"])/10,0)) or not(np.round(current_y/10,0) == np.round(float(ao_stage_positions[pos_idx]["y"])/10,0)):
+        while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
             sleep(.5)
+            if verbose:
+                print("MOVING. . . ",
+                      f"current xy: {current_x, current_y}")
             current_x, current_y = mmc.getXYPosition()
-        print("stage moved")
         
-        current_save_dir = save_dir_path / Path(f"grid_pos_{int(pos_idx)}")
+        current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
             metric_to_use=ao_dict["metric"],
@@ -1338,30 +1369,62 @@ def run_ao_grid_mapping(
             save_dir_path=current_save_dir,
             verbose=verbose
         )
-
-        ao_grid_wfc_coeffs[pos_idx] = aoMirror_local.current_coeffs.copy()
-        ao_grid_wfc_positions[pos_idx] = aoMirror_local.current_positions.copy()
+        
+        ao_grid_wfc_coeffs[ao_pos_idx] = aoMirror_local.current_coeffs.copy()
+        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_positions.copy()
     
     # Map ao_grid_wfc_coeffs to experiment stage positions.
     position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
     position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
     
-    for pos_idx in range(len(stage_positions)):
-        z = stage_positions[pos_idx]["z"]
-        y = stage_positions[pos_idx]["y"]
-        x = stage_positions[pos_idx]["x"]
+    if verbose:
+        "Mapping AO grid to exp. stage positions."
         
-        # get the scan axis
-        scan_axis_idx = np.where(scan_axis_positions==x)[0][0]
-        z_tile_positions = np.unique(
-            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_axis_idx]][:, 0]
-        )
+    # Define a threshold for matching AO grid positions
+    AO_POSITION_THRESHOLD = 0
+
+    # Convert AO positions and stage positions into structured arrays for efficient lookup
+    ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
+    stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
+
+    # Find the closest AO match per stage position
+    for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
+        # Find AO positions within threshold range of the current stage X
+        to_use = ao_stage_positions_array[:, 2] - stage_x > AO_POSITION_THRESHOLD
+        relevant_ao_positions = ao_stage_positions_array[to_use]
         
-        z_axis_idx = np.argmin(np.abs(z_tile_positions-z))
-        ao_grid_idx = 2*scan_axis_idx + z_axis_idx
+        if relevant_ao_positions.size == 0:
+            print(f"Warning: No AO match found for stage position {stage_positions[pos_idx]}")
+            continue  # Skip this position if no match
+
+        # Compute Euclidean distance only among relevant AO positions
+        distances = np.linalg.norm(relevant_ao_positions - [stage_z, stage_y, stage_x], axis=1)
+        
+        # Get index of closest AO position
+        ao_grid_idx = np.where(to_use)[0][np.argmin(distances)]
+        
+        # Assign the corresponding AO grid data
         position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
         position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
 
+        if verbose:
+            print(
+                f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
+                f"Exp. stage position: {stage_positions[pos_idx]}"
+            )
+            
+    # # For each stage position, find the closest AO grid position
+    # for pos_idx in range(len(stage_positions)):
+    #     ao_grid_idx = np.argmin(distances[pos_idx])
+    #     position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
+    #     position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
+        
+    #     if verbose:
+    #         print(
+    #             f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
+    #             f"Exp. stage position: {stage_positions[pos_idx]}"
+    #         )
+            
     aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
     aoMirror_local.wfc_positions_array = position_wfc_positions
     
