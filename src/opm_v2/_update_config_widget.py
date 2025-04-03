@@ -540,7 +540,7 @@ class OPMSettings(QWidget):
         #--------------------------------------------------------------------#
         self.spbx_stage_slope =  QDoubleSpinBox()  
         self.spbx_stage_slope.setDecimals(3)
-        self.spbx_stage_slope.setRange(0, 0.10)
+        self.spbx_stage_slope.setRange(-0.10, 0.10)
         self.spbx_stage_slope.setSingleStep(0.001)
         self.spbx_stage_slope.setFixedWidth(80)
         self.spbx_stage_slope.setAlignment(Qt.AlignmentFlag.AlignCenter)

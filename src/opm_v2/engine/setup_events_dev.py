@@ -1422,11 +1422,11 @@ def setup_stagescan(
     #----------------------------------------------------------------#
     # Create the fluidics event data
     if "none" not in fluidics_mode:
-        fluidics_rounds = 11 # DPS added to get right number of timepoints for event structure
+        fluidics_rounds = 8 # DPS added to get right number of timepoints for event structure
         fp_action_data = {
             "Fluidics": {
                 # hardcoding 11 rounds
-                "total_rounds": 11, # int(fluidics_mode),
+                "total_rounds": 8, # int(fluidics_mode),
                 "current_round": int(0)
             }
         }

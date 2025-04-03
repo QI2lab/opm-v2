@@ -99,8 +99,6 @@ class OPMEngine(MDAEngine):
                 self._mmc.setXYPosition(target_x,target_y)
                 current_x, current_y = self._mmc.getXYPosition()
                 
-                
-                
                 old_x = current_x
                 old_y = current_y
                 counter = 0
@@ -394,7 +392,7 @@ class OPMEngine(MDAEngine):
         # execute stage scan if requested
         if self.execute_stage_scan:
                            
-            print("sending SCAN")
+            print("sending SCAN\n")
             self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand","1SCAN")
             
             self.execute_stage_scan = False
@@ -451,7 +449,9 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.start_waveform_playback()
                 
             elif action_name == "Fluidics":
-                run_fluidic_program(True)
+                response = input("Is Fluidics complete?")
+                print(f"response:{response}\n")
+                # run_fluidic_program(True)
                 
         else:
             result = super().exec_event(event)

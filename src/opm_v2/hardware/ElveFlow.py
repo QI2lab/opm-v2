@@ -67,7 +67,14 @@ class OB1Controller():
         self.from_OB1_pin = self.board.get_pin(self.from_OB1_pin_location)
         self.from_OB1_pin.register_callback(self._input_callback)
         self.from_OB1_pin.enable_reporting()
-
+    
+    def close_board(self):
+        self.to_OB1_pin.write(False)
+        self.board.exit()
+        self.board = None
+        self.from_OB1_pin = None
+        self.to_OB1_pin = None
+                
     def set_polling_rate(self,polling_rate_ms: int = 1000):
         """
         Set the sampling interval for the Arduino
@@ -75,13 +82,6 @@ class OB1Controller():
               pulse from the ElveFlow controller is missed.
         """
         self.board.setSamplingInterval(polling_rate_ms)
-
-    def close_board(self):
-        """
-        Close arduino connection.
-        """
-        self.to_OB1_pin.write(False)
-        self.board.exit()
 
     def _input_callback(self,
                         data: float = None,
@@ -116,3 +116,6 @@ class OB1Controller():
         while (perf_counter() - timer_start < pulse_duration):
             continue
         self.to_OB1_pin.write(False)
+
+    
+    
