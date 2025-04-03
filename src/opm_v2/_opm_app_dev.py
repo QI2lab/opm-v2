@@ -166,13 +166,6 @@ def main() -> None:
         verbose = bool(config["NIDAQ"]["verbose"])
     )
     opmNIDAQ.reset()
-
-    # Initialize ElveFlow OB1 Controller
-    opmOB1 = OB1Controller(
-        port=config["OB1"]["port"],
-        to_OB1_pin=config["OB1"]["to_OB1_pin"],
-        from_OB1_pin=config["OB1"]["from_OB1_pin"]
-    )
     
     # Initialize and close alignment laser shutter
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
