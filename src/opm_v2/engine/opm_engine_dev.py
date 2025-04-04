@@ -435,6 +435,7 @@ class OPMEngine(MDAEngine):
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
+                        daq_mode=data_dict["AO"]["daq_mode"],
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),

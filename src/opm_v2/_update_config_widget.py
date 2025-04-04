@@ -47,15 +47,6 @@ class OPMSettings(QWidget):
         #--------------------------------------------------------------------#
         
         #--------------------------------------------------------------------#
-        self.cmbx_ao_metric =  QComboBox()
-        self.cmbx_ao_metric.addItems(self.config["OPM"]["ao_metrics"])
-        self.cmbx_ao_metric.setFixedWidth(80)
-        self.cmbx_ao_metric.currentIndexChanged.connect(self.update_config)
-        
-        self.layout_ao_metric = QHBoxLayout()
-        self.layout_ao_metric.addWidget(QLabel("Metric key:"))
-        self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
-        
         self.cmbx_ao_active_channel =  QComboBox()
         self.cmbx_ao_active_channel.addItems(self.config["OPM"]["channel_ids"])
         self.cmbx_ao_active_channel.setFixedWidth(80)
@@ -97,7 +88,7 @@ class OPMSettings(QWidget):
         self.sldr_ao_exposure.valueChanged.connect(self.update_ao_exposure_spbx)
         
         self.spbx_ao_exposure = QDoubleSpinBox()
-        self.spbx_ao_exposure.setRange(50, 1000)
+        self.spbx_ao_exposure.setRange(20, 1000)
         self.spbx_ao_exposure.setDecimals(0)
         self.spbx_ao_exposure.setValue(self.config["acq_config"]["AO"]["exposure_ms"])
         self.spbx_ao_exposure.setFixedWidth(80)
@@ -156,6 +147,16 @@ class OPMSettings(QWidget):
         self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
         
         #--------------------------------------------------------------------#
+        self.cmbx_ao_daq_mode =  QComboBox()
+        self.cmbx_ao_daq_mode.addItems(self.config["OPM"]["daq_modes"])
+        self.cmbx_ao_daq_mode.setFixedWidth(80)
+        self.cmbx_ao_daq_mode.currentIndexChanged.connect(self.update_config)
+        
+        self.layout_ao_daq_mode = QHBoxLayout()
+        self.layout_ao_daq_mode.addWidget(QLabel("DAQ mode:"))
+        self.layout_ao_daq_mode.addWidget(self.cmbx_ao_daq_mode)
+        
+        #--------------------------------------------------------------------#
         self.spbx_num_iterations =  QSpinBox()
         self.spbx_num_iterations.setRange(1, 10)
         self.spbx_num_iterations.setValue(self.config["acq_config"]["AO"]["num_iterations"])
@@ -199,6 +200,7 @@ class OPMSettings(QWidget):
         # setup sub layouts in ao settings
         self.layout_ao_settings.addLayout(self.layout_ao_mode)
         self.layout_ao_settings.addLayout(self.layout_ao_metric)
+        self.layout_ao_settings.addLayout(self.layout_ao_daq_mode)
         self.layout_ao_settings.addLayout(self.layout_ao_active_channel)
         self.layout_ao_settings.addLayout(self.layout_active_channel_power)
         self.layout_ao_settings.addLayout(self.layout_ao_exposure)     
@@ -539,9 +541,9 @@ class OPMSettings(QWidget):
 
         #--------------------------------------------------------------------#
         self.spbx_stage_slope =  QDoubleSpinBox()  
-        self.spbx_stage_slope.setDecimals(3)
+        self.spbx_stage_slope.setDecimals(4)
         self.spbx_stage_slope.setRange(-0.10, 0.10)
-        self.spbx_stage_slope.setSingleStep(0.001)
+        self.spbx_stage_slope.setSingleStep(0.0001)
         self.spbx_stage_slope.setFixedWidth(80)
         self.spbx_stage_slope.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.spbx_stage_slope.setValue(self.config["acq_config"]["stage_scan"]["coverslip_slope"])
@@ -556,7 +558,7 @@ class OPMSettings(QWidget):
         
         #--------------------------------------------------------------------#
         self.sldr_proj_image_range = QSlider(Qt.Orientation.Horizontal)
-        self.sldr_proj_image_range.setMinimum(0)   
+        self.sldr_proj_image_range.setMinimum(0)
         self.sldr_proj_image_range.setMaximum(250)
         self.sldr_proj_image_range.setValue(int(self.config["acq_config"]["projection_scan"]["image_mirror_range_um"]))
         # self.sldr_proj_image_range.setTickInterval(0.1)
@@ -871,6 +873,9 @@ class OPMSettings(QWidget):
         
         config["acq_config"]["opm_mode"] = self.cmbx_opm_mode.currentText()
         config["acq_config"]["fluidics"] = self.cmbx_fluidics_mode.currentText()
+        config["acq_config"]["AO"]["daq_mode"] = self.cmbx_ao_daq_mode.currentText()
+        config["acq_config"]["AO"]["metric"] = self.cmbx_ao_metric.currentText()
+        
         if self.cmbx_fluidics_mode.currentText()=="on":
             laser_blanking = True
         else:
@@ -889,7 +894,7 @@ class OPMSettings(QWidget):
 if __name__ ==  "__main__":
     app = QApplication(sys.argv)
     # Put your path here.
-    config_path = Path("/home/steven/Documents/qi2lab/github/opm_v2/opm_config_20250312.json")
+    config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250312.json")
     window = OPMSettings(config_path)
     window.show()
     
