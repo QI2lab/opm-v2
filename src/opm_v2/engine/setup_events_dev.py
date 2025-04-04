@@ -62,7 +62,12 @@ def setup_optimizenow(
         AO_channel_states = [False] * len(config["OPM"]["channel_ids"]) 
         AO_channel_powers = [0.] * len(config["OPM"]["channel_ids"])
         AO_active_channel_id = config["acq_config"]["AO"]["active_channel_id"]
-        AO_camera_crop_y = int(config["acq_config"]["AO"]["image_mirror_range_um"]/mmc.getPixelSizeUm())
+        AO_daq_mode = str(config["acq_config"]["AO"]["daq_mode"])
+        if "2d" in AO_daq_mode:
+            AO_camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
+        elif "projection" in AO_daq_mode:
+            AO_camera_crop_y = int(config["acq_config"]["AO"]["image_mirror_range_um"]/mmc.getPixelSizeUm())
+            
         AO_save_path = Path(str(config["acq_config"]["AO"]["save_dir_path"])) / Path(f"{timestamp}_ao_optimizeNOW")
         
         # Set the active channel in the daq channel list
@@ -79,6 +84,7 @@ def setup_optimizenow(
         # Define AO optimization action data   
         ao_action_data = {
             "AO" : {
+                "daq_mode":str(config["acq_config"]["AO"]["daq_mode"]),
                 "channel_states": AO_channel_states,
                 "channel_powers" : AO_channel_powers,
                 "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
@@ -1344,6 +1350,7 @@ def setup_stagescan(
                 "AO" : {
                     "stage_positions": None,
                     "ao_dict": {
+                        "daq_mode": str(config["acq_config"]["AO"]["daq_mode"]),
                         "channel_states": AO_channel_states,
                         "channel_powers" : AO_channel_powers,
                         "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
@@ -1376,6 +1383,7 @@ def setup_stagescan(
                 "AO" : {
                     "channel_states": AO_channel_states,
                     "channel_powers" : AO_channel_powers,
+                    "daq_mode": str(config["acq_config"]["AO"]["daq_mode"]),
                     "exposure_ms": float(config["acq_config"]["AO"]["exposure_ms"]),
                     "modal_delta": float(config["acq_config"]["AO"]["mode_delta"]),
                     "modal_alpha":float(config["acq_config"]["AO"]["mode_alpha"]),                        
@@ -1501,9 +1509,9 @@ def setup_stagescan(
     # Generate coverslip offset along the scan axis
     if coverslip_slope != 0:
         # Set the max scan range using coverslip slope
-        stage_scan_max_range = coverslip_max_dz / coverslip_slope
+        stage_scan_max_range = np.abs(coverslip_max_dz / coverslip_slope)
     else:
-        stage_scan_max_range = float(config["acq_config"]["stage_scan"]["stage_scan_range_um"])  
+        stage_scan_max_range = float(config["acq_config"]["stage_scan"]["stage_scan_range_um"])
 
 
     if DEBUG: 
@@ -1534,7 +1542,6 @@ def setup_stagescan(
             (range_x_um/n_scan_positions) + (n_scan_positions-1)*(scan_tile_overlap_um/(n_scan_positions)),
             2
         )
-    scan_tile_z_step_um = np.round(cs_range_um / n_scan_positions, 2)
     scan_axis_step_mm = scan_axis_step_um / 1000. # unit: mm
     scan_axis_start_mm = min_x_pos / 1000. # unit: mm
     scan_axis_end_mm = max_x_pos / 1000. # unit: mm
@@ -1542,19 +1549,18 @@ def setup_stagescan(
 
     scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
     scan_axis_end_pos_mm = np.full(n_scan_positions, scan_axis_end_mm)
-    scan_axis_z_positions = np.full(n_scan_positions, min_z_pos)
     for ii in range(n_scan_positions):
         scan_axis_start_pos_mm[ii] = scan_axis_start_mm + ii * (scan_tile_length_mm - scan_tile_overlap_mm)
         scan_axis_end_pos_mm[ii] = scan_axis_start_pos_mm[ii] + scan_tile_length_mm
-        scan_axis_z_positions[ii] = min_z_pos + ii * scan_tile_z_step_um
         
     scan_axis_start_pos_mm = np.round(scan_axis_start_pos_mm,2)
     scan_axis_end_pos_mm = np.round(scan_axis_end_pos_mm,2)
     scan_tile_length_w_overlap_mm = np.round(np.abs(scan_axis_end_pos_mm[0]-scan_axis_start_pos_mm[0]),2)
     scan_axis_positions = np.rint(scan_tile_length_w_overlap_mm / scan_axis_step_mm).astype(int)
     scan_axis_speed = np.round(scan_axis_step_mm / exposure_s / n_active_channels,5) 
-
+    
     if DEBUG: 
+        print(f"scan speed values: {scan_axis_step_mm}, {exposure_s}, {n_active_channels}")
         print(f"Stage scan positions, units: mm")
         print(f"Is the scan tile w/ overlap the same as the scan tile length?: {scan_tile_length_mm==scan_tile_length_w_overlap_mm}")
         print(f'Number scan tiles: {n_scan_positions}')
@@ -1563,8 +1569,8 @@ def setup_stagescan(
         print(f'Scan axis start positions: {scan_axis_start_pos_mm}.')
         print(f'Scan axis end positions: {scan_axis_end_pos_mm}.')
         print(f'Scan axis positions: {scan_axis_positions}')
-        print(f'Scan axis coverslip offsets: {scan_tile_z_step_um}')
         print(f'Scan tile size: {scan_tile_length_w_overlap_mm}')
+        print(f'Scan axis speed (mm/s): {scan_axis_speed}\n')
         print(f'Scan axis speed (mm/s): {scan_axis_speed}\n')
 
     #--------------------------------------------------------------------#
@@ -1592,7 +1598,7 @@ def setup_stagescan(
         z_axis_step_um = np.round(z_positions[1] - z_positions[0],2)
 
     # Calculate the stage z change along the scan axis
-    dz_per_scan_tile = cs_range_um / n_scan_positions
+    dz_per_scan_tile = (cs_range_um / n_scan_positions) * np.sign(coverslip_slope)
 
     if DEBUG:
         print("\nZ axis positions, units: um")
@@ -1654,7 +1660,7 @@ def setup_stagescan(
             print(f'Scan positions: {scan_axis_positions+int(config["Stage"]["excess_positions"])}.')
             print(f'Active channels: {n_active_channels}')
             
-    for time_idx in trange(n_time_steps, desc="Timepoints:"):
+    for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
         
         if "none" not in fluidics_mode and time_idx!=0:
             current_FP_event = MDAEvent(**fp_event.model_dump())
@@ -1665,7 +1671,7 @@ def setup_stagescan(
             opm_events.append(o2o3_event)
         
         pos_idx = 0        
-        for z_idx in trange(n_z_positions, desc="Z-axis-tiles:", leave=True):
+        for z_idx in trange(n_z_positions, desc="Z-axis-tiles:", leave=False):
             for scan_idx in trange(n_scan_positions, desc="Scan-axis-tiles:", leave=False):
                 for tile_idx in trange(n_tile_positions, desc="Tile-axis-tiles:", leave=False):
                     if need_to_setup_stage:      

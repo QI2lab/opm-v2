@@ -1293,7 +1293,8 @@ def run_ao_grid_mapping(
     
     # Extract tile positons, only sample the middle of the tile axis
     tile_axis_positions = np.unique(stage_positions_array[:, 1])
-    ao_tile_axis_position = np.mean(tile_axis_positions)
+    # ao_tile_axis_position = np.mean(tile_axis_positions)
+    ao_tile_axis_positions = np.linspace(tile_axis_positions[0], tile_axis_positions[-1],9)[2::2][:-1]
     
     # Extract the number of z positions per scan tile
     num_z_positions = np.unique(
@@ -1303,22 +1304,23 @@ def run_ao_grid_mapping(
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
     for z_idx in range(num_z_positions):
-        for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
-            # Extract the unique z positions for this scan tile, use the z_idx
-            z_tile_positions = np.unique(
-                stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
-            )
-            ao_stage_positions.append(
-                {
-                    "z": z_tile_positions[z_idx],
-                    "y": ao_tile_axis_position,
-                    "x": scan_tile_pos
-                }
-            )
+        for tile_idx, tile_axis_pos in enumerate(ao_tile_axis_positions):
+            for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
+                # Extract the unique z positions for this scan tile, use the z_idx
+                z_tile_positions = np.unique(
+                    stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
+                )
+                ao_stage_positions.append(
+                    {
+                        "z": z_tile_positions[z_idx],
+                        "y": tile_axis_pos,
+                        "x": scan_tile_pos
+                    }
+                )
     if verbose:
         print(
             "\nAO grid positions:",
-            f"\nY tile position: {ao_tile_axis_position}",
+            f"\nY tile position: {ao_tile_axis_positions}",
             f"\nScan axis dx: {scan_tile_dx}",
             f"\nScan axis positions: {ao_scan_axis_positions}",
             f"\nNumber of z-planes: {num_z_positions}"    
@@ -1360,6 +1362,7 @@ def run_ao_grid_mapping(
         current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
             metric_to_use=ao_dict["metric"],
+            daq_mode=ao_dict["daq_mode"],
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
