@@ -163,7 +163,7 @@
         "stage_scan": {
             "coverslip_slope": -0.0049,
             "stage_scan_range_um": 1000.0,
-            "scan_axis_overlap": 0.2,
+            "scan_axis_overlap_um": 30,
             "tile_axis_overlap": 0.15,
             "laser_blanking": false,
             "channel_states": [
