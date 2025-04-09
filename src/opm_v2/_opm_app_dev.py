@@ -152,7 +152,7 @@ def main() -> None:
     
     opmAOmirror.set_mirror_positions_flat()
 
-    # load OPM NIDAQ and OPM AO mirror classes
+    # load OPM NIDAQ
     opmNIDAQ = OPMNIDAQ(
         name = str(config["NIDAQ"]["name"]),
         scan_type = str(config["NIDAQ"]["scan_type"]),
@@ -201,23 +201,6 @@ def main() -> None:
         with open(config_path, "r") as config_file:
             new_config = json.load(config_file)
         config.update(new_config)
-        
-    def calculate_projection_crop(image_mirror_range_um: float):
-        """Return the projection mode ROI y-crop
-
-        Parameters
-        ----------
-        image_mirror_range_um : float
-            image mirror scan range in um
-
-        Returns
-        -------
-        roi_height_px: float
-            ROI height in pixels
-        """
-        roi_height_um = image_mirror_range_um
-        roi_height_px = int(roi_height_um / mmc.getPixelSizeUm())
-        return roi_height_px
 
     def update_live_state(device_name=None, property_name=None):
         """Update microscope states and values upon changes to in the GUI
@@ -241,10 +224,12 @@ def main() -> None:
             return
         
         if DEBUGGING:
-            print("update_live_state:")
-            print(f"    device name: {device_name}, property name: {property_name}")
-        
-        
+            print(
+                "\nUpdate_live_state triggered:",
+                f"\n  device name: {device_name},"
+                f"\n  property name: {property_name}"
+            )
+                
         # Only 2d and projection modes are available in live mode
         opm_mode = mmc.getProperty("OPM-live-mode", "Label")
         if "Standard" in opm_mode:
@@ -268,7 +253,9 @@ def main() -> None:
             _image_mirror_neutral_v = config["NIDAQ"]["image_mirror_neutral_v"]
             opmNIDAQ_update_state.projection_mirror_calibration = _projection_calibration
             opmNIDAQ_update_state._ao_neutral_positions[0] = _image_mirror_neutral_v
-        
+
+            print(f"  Was sequence acquisition running: {restart_sequence}")
+            
         #--------------------------------------------------------------------#
         # Grab gui values 
         _exposure_ms = round(float(mmc.getProperty(config["Camera"]["camera_id"], "Exposure")), 0)
@@ -284,26 +271,24 @@ def main() -> None:
         #--------------------------------------------------------------------#
         # Enforce camera ROI
         if _scan_type=="projection":
-            crop_y = calculate_projection_crop(_image_mirror_range_um)
-            change_crop = True
-        elif "Camera-CropY" in device_name:
+            crop_y =  int(_image_mirror_range_um / mmc.getPixelSizeUm())
+        else:
             crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
-            change_crop = True
-        else: 
-            change_crop = False
         
-        if change_crop:
-            if not (crop_y == mmc.getROI()[-1]): 
-                current_roi = mmc.getROI()
-                mmc.clearROI()
-                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-                mmc.setROI(
-                    config["Camera"]["roi_center_x"] - int(config["Camera"]["roi_crop_x"]//2),
-                    config["Camera"]["roi_center_y"] - int(crop_y//2),
-                    config["Camera"]["roi_crop_x"],
-                    crop_y
-                )
-                mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+        if not (crop_y == mmc.getROI()[-1]): 
+            current_roi = mmc.getROI()
+            mmc.clearROI()
+            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            mmc.setROI(
+                config["Camera"]["roi_center_x"] - int(config["Camera"]["roi_crop_x"]//2),
+                config["Camera"]["roi_center_y"] - int(crop_y//2),
+                config["Camera"]["roi_crop_x"],
+                crop_y
+            )
+            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            
+            if DEBUGGING:
+                print(f"  Camera crop updated: {crop_y}")
                 
         #--------------------------------------------------------------------#
         # Enforce the camera exposure
@@ -312,9 +297,11 @@ def main() -> None:
             # Set the camera exposure
             _exposure_ms = 500
         
-        mmc.setProperty(str(config["Camera"]["camera_id"]),"Exposure",_exposure_ms)
-        mmc.waitForDevice(str(config["Camera"]["camera_id"]))
-        
+        if mmc.getExposure()!=_exposure_ms:
+            mmc.setProperty(str(config["Camera"]["camera_id"]),"Exposure",_exposure_ms)
+            mmc.waitForDevice(str(config["Camera"]["camera_id"]))
+            print(f"  Updating camera exposure:{_exposure_ms}")
+            
         #--------------------------------------------------------------------#
         # update DAQ values and prepare new waveform, restart acq.
         opmNIDAQ_update_state.set_acquisition_params(
@@ -324,12 +311,28 @@ def main() -> None:
             exposure_ms=_exposure_ms,
         )
         
+        if DEBUGGING:
+            print(
+                "  DAQ update parameters:",
+                f"\n   scan_type: {_scan_type}",
+                f"\n   channel_states: {_channel_states}",
+                f"\n   image_mirror_range_um: {_image_mirror_range_um}",
+                f"\n   exposure_ms: {_exposure_ms}",
+            )
         #--------------------------------------------------------------------#
         # Update mirror positions
         if "AO_mode" in device_name:
             ao_mirror_state = mmc.getProperty("AO-mode", "Label")
+            
+            if DEBUGGING:
+                starting_positions = AOMirror_update_state.current_positions
+                print(
+                    f"\nUpdate AO_mode recieved, stage: {ao_mirror_state}",
+                    f"  Prior wfc positions: \n{starting_positions}"
+                )
+            
             AOMirror_update_state = AOMirror.instance()
-            if "ystem" in ao_mirror_state:
+            if "system" in ao_mirror_state:
                 mirror_key = "system_flat"
             elif "optimized" in ao_mirror_state:
                 mirror_key = "last_optimized"
@@ -337,11 +340,17 @@ def main() -> None:
                 AOMirror_update_state.wfc_positions[mirror_key]
             )
             
+            if DEBUGGING:
+                end_positions = AOMirror_update_state.current_positions
+                print(
+                    f"  Post mirror update positions: \n{end_positions}",
+                    f"  Did it change: {starting_positions==end_positions}"
+                )
+                
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
             
     # Connect changes in gui fields to the update_live_state method.            
-    # mmc.events.propertyChanged.connect(update_live_state)
     mmc.events.configSet.connect(update_live_state)
         
     def setup_preview_mode_callback():
@@ -360,9 +369,15 @@ def main() -> None:
         if any(opmNIDAQ_setup_preview.channel_states):
             # Check OPM mode and set up NIDAQ accordingly
             opmNIDAQ_setup_preview.clear_tasks()
+            update_live_state()
             opmNIDAQ_setup_preview.generate_waveforms()
             opmNIDAQ_setup_preview.program_daq_waveforms()
             opmNIDAQ_setup_preview.start_waveform_playback()
+            
+            if DEBUGGING:
+                print(
+                    "Reprogrammed daq with live update settings"
+                )
 
     # Connect the above callback to the event that a continuous sequence is starting
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
@@ -382,7 +397,7 @@ def main() -> None:
         """
 
         #--------------------------------------------------------------------#
-        # Get the acquisition settings
+        # Get the acquisition settings from configuration on disk
         #--------------------------------------------------------------------#
         
         update_config()
@@ -391,7 +406,18 @@ def main() -> None:
         ao_mode = config["acq_config"]["AO"]["ao_mode"]
         o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
         fluidics_mode = config["acq_config"]["fluidics"]
-                  
+        output_modified = output.parent / Path(output.name)
+        
+        if DEBUGGING:
+            print(
+                "-----------------------------------------------------",
+                "\nStageScan acquisition selected:",
+                f"\n  opm_mode: {opm_mode}",
+                f"\n  ao_mode: {ao_mode}",
+                f"\n  O2O3_mode: {o2o3_mode}",
+                f"\n  fluidics_mode: {fluidics_mode}\n\n",
+                f"\n  output_path: {output_modified}"
+            )
         #--------------------------------------------------------------------#
         # Validate acquisition settings
         #--------------------------------------------------------------------#
@@ -454,10 +480,17 @@ def main() -> None:
             # tell AO mirror class where to save mirror information
             opmAOmirror_local = AOMirror.instance()
             opmAOmirror_local.output_path = output.parents[0]
+            
+            if DEBUGGING:
+                print(
+                    "\n Mirror coeff. amplitudes before calling run_mda:",
+                    f"{opmAOmirror_local.current_coeffs}\n\n"
+                )
 
         if opm_events is None:
-            print("MDA acquisition not started!")
+            print("OPM events empty, acquisition not started!")
             return
+        
         #--------------------------------------------------------------------#
         # Run Qi2lab custom MDA acquisition
         #--------------------------------------------------------------------#

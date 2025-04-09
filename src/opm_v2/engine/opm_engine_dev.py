@@ -24,7 +24,7 @@ from pathlib import Path
 import numpy as np
 from time import sleep
 
-
+DEBUGGING = True
 class OPMEngine(MDAEngine):
     def __init__(self, mmc, config_path: Path, use_hardware_sequencing: bool = True) -> None:
 
@@ -84,23 +84,22 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
-                        
+                if DEBUGGING:
+                    print("Setting up stage move")
+                    
                 self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.2)
                 self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.2)
                       
                 # Move stage to position
-                print("about to move z")
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 
-                print("about to move xy")
                 target_x = np.round(float(data_dict["Stage"]["x_pos"]),2) 
                 target_y = np.round(float(data_dict["Stage"]["y_pos"]),2)
-                self._mmc.setXYPosition(target_x,target_y)
                 current_x, current_y = self._mmc.getXYPosition()
-                
                 old_x = current_x
                 old_y = current_y
+                self._mmc.setXYPosition(target_x,target_y)
                 counter = 0
                 while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
                     sleep(.5)
@@ -157,7 +156,16 @@ class OPMEngine(MDAEngine):
                     self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
                     ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
                     sleep(.5)
-
+                
+                if DEBUGGING:
+                    command = "SPEED X? Y?"
+                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    actual_speed = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
+                    print(
+                        "ASI stage scan setup:",
+                        f"\n  actual speed: {actual_speed}")
+                    
+                    
                 # Set scan axis to true 1D scan with no backlash
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
@@ -190,6 +198,25 @@ class OPMEngine(MDAEngine):
                     500
                 )
 
+                if DEBUGGING:
+                    print(
+                        "Scan positions:",
+                        f"\n start: {
+                            self._mmc.getProperty(
+                                self._mmc.getXYStageDevice(),
+                                "ScanFastAxisStartPosition(mm)"
+                            )}",
+                        f"\n end: {
+                            self._mcc.getProperty(
+                                self._mmc.getXYStageDevice(),
+                                "ScanFastAxisStopPosition(mm)"
+                            )}",
+                        f"Scan settling time: {
+                            self._mmc.getProperty(
+                                self._mmc.getXYStageDevice(),
+                                "ScanSettlingTime(ms)"
+                            )}"                        
+                    )
                 # put controller back into standard communication mode
                 self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
                 
@@ -391,10 +418,7 @@ class OPMEngine(MDAEngine):
 
         # execute stage scan if requested
         if self.execute_stage_scan:
-                           
-            print("sending SCAN\n")
             self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand","1SCAN")
-            
             self.execute_stage_scan = False
             
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:

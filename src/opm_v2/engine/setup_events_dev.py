@@ -18,8 +18,9 @@ from opm_v2.engine.opm_custom_actions import (
     DAQ_event,
     ASI_setup_event
 )
-DEBUG = True
+DEBUGGING = True
 use_mda_channels = False
+
 def setup_optimizenow(
         mmc: CMMCorePlus,
         config: dict,
@@ -647,7 +648,6 @@ def setup_projection(
         
     return opm_events, handler
 
-    
 def setup_mirrorscan(
         mmc: CMMCorePlus,
         config: dict,
@@ -658,6 +658,9 @@ def setup_mirrorscan(
     AOmirror_setup = AOMirror.instance()
     OPMdaq_setup = OPMNIDAQ.instance()
     
+    #--------------------------------------------------------------------#
+    # Compile acquisition settings from configuration
+    #--------------------------------------------------------------------#
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
     o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
     fluidics_mode = config["acq_config"]["fluidics"]
@@ -936,10 +939,10 @@ def setup_mirrorscan(
     stage_positions = []
     
     if mda_grid_plan is not None:
-        min_y_pos = mda_grid_plan["bottom"]
-        max_y_pos = mda_grid_plan["top"]
-        min_x_pos = mda_grid_plan["left"]
-        max_x_pos = mda_grid_plan["right"]
+        min_y_pos = np.round(mda_grid_plan["bottom"],1)
+        max_y_pos = np.round(mda_grid_plan["top"],1)
+        min_x_pos = np.round(mda_grid_plan["left"],1)
+        max_x_pos = np.round(mda_grid_plan["right"],1)
         n_x_pos = int(
             np.ceil(
                 np.abs(max_x_pos - min_x_pos) / (
@@ -1194,7 +1197,6 @@ def setup_mirrorscan(
         
     return opm_events, handler
 
-
 def setup_stagescan(
         mmc: CMMCorePlus,
         config: dict,
@@ -1205,6 +1207,9 @@ def setup_stagescan(
     
     AOmirror_setup = AOMirror.instance()
     
+    #--------------------------------------------------------------------#
+    # Compile acquisition settings from configuration
+    #--------------------------------------------------------------------#
     # Get the acquisition modes
     opm_mode = config["acq_config"]["opm_mode"]
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
@@ -1223,43 +1228,17 @@ def setup_stagescan(
     
     # Get the stage scan range, coverslip slope, and maximum CS dz change
     coverslip_slope = config["acq_config"]["stage_scan"]["coverslip_slope"]
-    stage_scan_max_range = config["acq_config"]["stage_scan"]["stage_scan_range_um"]
+    scan_axis_max_range = config["acq_config"]["stage_scan"]["stage_scan_range_um"]
     coverslip_max_dz = float(config["Stage"]["coverslip_max_dz"])
     
     # Get the tile overlap settings
     scan_axis_step_um = float(config["Stage"]["stage_step_size_um"])  # unit: um 
     tile_axis_overlap = float(config["acq_config"]["stage_scan"]["tile_axis_overlap"])
-    scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + 20
+    scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(config["acq_config"]["stage_scan"]["scan_axis_overlap_um"])
     scan_tile_overlap_mm = scan_tile_overlap_um/1000.
     
-    # try to get camera conversion factor information
-    try:
-        offset = mmc.getProperty(
-            config["Camera"]["camera_id"],
-            "CONVERSION FACTOR OFFSET"
-        )
-        e_to_ADU = mmc.getProperty(
-            config["Camera"]["camera_id"],
-            "CONVERSION FACTOR COEFF"
-        )
-    except Exception:
-        offset = 0.
-        e_to_ADU = 1.
-
-    # Split apart sequence dictionary
-    sequence_dict = json.loads(sequence.model_dump_json())
-    mda_grid_plan = sequence_dict["grid_plan"]
-    mda_time_plan = sequence_dict["time_plan"]
-    mda_z_plan = sequence_dict["z_plan"]
-    
-    #--------------------------------------------------------------------#
-    # Compile mda channels from active tabs and config
-    #--------------------------------------------------------------------#
-    
-    if mda_grid_plan is None:
-        print("Must select MDA grid plan for stage scanning")
-        return None, None
-
+    #----------------------------------------------------------------#
+    # Get channel settings
     laser_blanking = config["acq_config"][opm_mode+"_scan"]["laser_blanking"]
     channel_states = config["acq_config"][opm_mode+"_scan"]["channel_states"]
     channel_powers = config["acq_config"][opm_mode+"_scan"]["channel_powers"]
@@ -1292,6 +1271,35 @@ def setup_stagescan(
     exposure_s = np.round(exposure_ms / 1000.,2)
     
     #----------------------------------------------------------------#
+    # try to get camera conversion factor information
+    try:
+        offset = mmc.getProperty(
+            config["Camera"]["camera_id"],
+            "CONVERSION FACTOR OFFSET"
+        )
+        e_to_ADU = mmc.getProperty(
+            config["Camera"]["camera_id"],
+            "CONVERSION FACTOR COEFF"
+        )
+    except Exception:
+        offset = 0.
+        e_to_ADU = 1.
+
+    #--------------------------------------------------------------------#
+    # Compile mda acquisition settings from active tabs
+    #--------------------------------------------------------------------#
+    
+    # Split apart sequence dictionary
+    sequence_dict = json.loads(sequence.model_dump_json())
+    mda_grid_plan = sequence_dict["grid_plan"]
+    mda_time_plan = sequence_dict["time_plan"]
+    mda_z_plan = sequence_dict["z_plan"]
+    
+    if mda_grid_plan is None:
+        print("Must select MDA grid plan for stage scanning")
+        return None, None
+
+    #----------------------------------------------------------------#
     # Create custom action data
     #----------------------------------------------------------------#
             
@@ -1320,6 +1328,10 @@ def setup_stagescan(
     daq_event = MDAEvent(**DAQ_event.model_dump())
     daq_event.action.data.update(daq_action_data)
     
+    if DEBUGGING:
+        print("\n\nDAQ action data:")
+        print(json.dumps(daq_action_data, indent=4))
+        
     #----------------------------------------------------------------#
     # Create the AO event data    
     if "none" not in ao_mode:
@@ -1408,6 +1420,10 @@ def setup_stagescan(
             ao_optimization_event = MDAEvent(**AO_optimize_event.model_dump())
             ao_optimization_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
+            
+            if DEBUGGING:
+                print("\n\nAO action data: \n")
+                print(json.dumps(ao_action_data, indent=4))
 
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
@@ -1427,6 +1443,11 @@ def setup_stagescan(
         o2o3_event = MDAEvent(**O2O3_af_event.model_dump())
         o2o3_event.action.data.update(o2o3_action_data)
 
+        
+        if DEBUGGING:
+            print("\n\nAO action data: \n")
+            print(json.dumps(o2o3_action_data, indent=4))
+            
     #----------------------------------------------------------------#
     # Create the fluidics event data
     if "none" not in fluidics_mode:
@@ -1441,7 +1462,11 @@ def setup_stagescan(
         
         fp_event = MDAEvent(**FP_event.model_dump())
         fp_event.action.data.update(fp_action_data)
-    
+        
+        if DEBUGGING:
+            print("\n\nAO action data: \n")
+            print(json.dumps(fp_action_data, indent=4))
+            
     #----------------------------------------------------------------#
     # Compile mda positions from active tabs, and config
     #----------------------------------------------------------------#
@@ -1479,13 +1504,14 @@ def setup_stagescan(
     range_x_um = np.round(np.abs(max_x_pos - min_x_pos),2)
     range_y_um = np.round(np.abs(max_y_pos - min_y_pos),2)
     range_z_um = np.round(np.abs(max_z_pos - min_z_pos),2)
+    
     # Define coverslip bounds, to offset Z positions
     cs_min_pos = min_z_pos
     cs_max_pos = cs_min_pos + range_x_um * coverslip_slope
     cs_range_um = np.round(np.abs(cs_max_pos - cs_min_pos),2)
 
     #--------------------------------------------------------------------#
-    # Calculate tile steps
+    # Calculate tile steps / range
     z_axis_step_max = (
         camera_crop_y
         * pixel_size_um
@@ -1497,46 +1523,45 @@ def setup_stagescan(
         * pixel_size_um
         * (1-tile_axis_overlap)
     )
+    
+    if coverslip_slope != 0:
+        # Set the max scan range using coverslip slope
+        scan_axis_max_range = np.abs(coverslip_max_dz / coverslip_slope)
+    else:
+        scan_axis_max_range = float(config["acq_config"]["stage_scan"]["stage_scan_range_um"])
 
-    #--------------------------------------------------------------------#
     # Correct directions for stage moves
     if min_z_pos > max_z_pos:
         z_axis_step_max *= -1
     if min_x_pos > max_x_pos:
-        min_x_pos, max_x_pos = max_x_pos, min_x_pos
-        
-    #--------------------------------------------------------------------#
-    # Generate coverslip offset along the scan axis
-    if coverslip_slope != 0:
-        # Set the max scan range using coverslip slope
-        stage_scan_max_range = np.abs(coverslip_max_dz / coverslip_slope)
-    else:
-        stage_scan_max_range = float(config["acq_config"]["stage_scan"]["stage_scan_range_um"])
+        min_x_pos, max_x_pos = max_x_pos, min_x_pos        
 
-
-    if DEBUG: 
-        print("Compiles settings to generate positions:")
-        print(f'Scan start: {min_x_pos}')
-        print(f'Scan end: {max_x_pos}')
-        print(f'Tile start: {min_y_pos}')
-        print(f'Tile end: {max_y_pos}')
-        print(f"Z position minimum:{min_z_pos}")
-        print(f"Z position maximum:{max_z_pos}")
-        print(f'Coverslip slope: {coverslip_slope}')
-        print(f'Coverslip low: {cs_min_pos}')
-        print(f'Coverslip high: {cs_max_pos}')
-        print(f'Max scan range (CS used?:{coverslip_slope!=0}): {stage_scan_max_range}\n')
+    if DEBUGGING: 
+        print(
+            "\n\nXYZ Stage position settings:",
+            f'\n  Scan start: {min_x_pos}',
+            f'\n  Scan end: {max_x_pos}',
+            f'\n  Tile start: {min_y_pos}',
+            f'\n  Tile end: {max_y_pos}',
+            f"\n  Z position min:{min_z_pos}",
+            f"\n  Z position max:{max_z_pos}",
+            f'\n  Coverslip slope: {coverslip_slope}',
+            f'\n  Coverslip low: {cs_min_pos}',
+            f'\n  Coverslip high: {cs_max_pos}',
+            f'\n  Max scan range (CS used?:{coverslip_slope!=0}): {scan_axis_max_range}\n'
+        )
         
     #--------------------------------------------------------------------#
     # calculate scan axis tile locations, units: mm and s
-
+    
     # Break scan range up using max scan range
-    if stage_scan_max_range >= range_x_um:
+    if scan_axis_max_range >= range_x_um:
         n_scan_positions = 1
         scan_tile_length_um = range_x_um
     else:
+        # Round up so that the scan length is never longer than the max scan range
         n_scan_positions = int(
-            np.ceil(range_x_um / (stage_scan_max_range))
+            np.ceil(range_x_um / (scan_axis_max_range))
         )
         scan_tile_length_um = np.round(
             (range_x_um/n_scan_positions) + (n_scan_positions-1)*(scan_tile_overlap_um/(n_scan_positions)),
@@ -1547,6 +1572,7 @@ def setup_stagescan(
     scan_axis_end_mm = max_x_pos / 1000. # unit: mm
     scan_tile_length_mm = scan_tile_length_um / 1000. # unit: mm
 
+    # Initialize scan position start/end arrays with the scan start / end values
     scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
     scan_axis_end_pos_mm = np.full(n_scan_positions, scan_axis_end_mm)
     for ii in range(n_scan_positions):
@@ -1558,20 +1584,26 @@ def setup_stagescan(
     scan_tile_length_w_overlap_mm = np.round(np.abs(scan_axis_end_pos_mm[0]-scan_axis_start_pos_mm[0]),2)
     scan_axis_positions = np.rint(scan_tile_length_w_overlap_mm / scan_axis_step_mm).astype(int)
     scan_axis_speed = np.round(scan_axis_step_mm / exposure_s / n_active_channels,5) 
+    scan_tile_sizes = [np.round(np.abs(scan_axis_end_pos_mm[ii]-scan_axis_start_pos_mm[ii]),2) for ii in range(len(scan_axis_end_pos_mm))]
     
-    if DEBUG: 
-        print(f"scan speed values: {scan_axis_step_mm}, {exposure_s}, {n_active_channels}")
-        print(f"Stage scan positions, units: mm")
-        print(f"Is the scan tile w/ overlap the same as the scan tile length?: {scan_tile_length_mm==scan_tile_length_w_overlap_mm}")
-        print(f'Number scan tiles: {n_scan_positions}')
-        print(f'Scan tile length um: {scan_tile_length_um}')
-        print(f'Scan tile overlap um: {scan_tile_overlap_um}')
-        print(f'Scan axis start positions: {scan_axis_start_pos_mm}.')
-        print(f'Scan axis end positions: {scan_axis_end_pos_mm}.')
-        print(f'Scan axis positions: {scan_axis_positions}')
-        print(f'Scan tile size: {scan_tile_length_w_overlap_mm}')
-        print(f'Scan axis speed (mm/s): {scan_axis_speed}\n')
-        print(f'Scan axis speed (mm/s): {scan_axis_speed}\n')
+    if DEBUGGING: 
+        print(
+            "\nScan-axis calculated parameters:",
+            f'\n  Number scan tiles: {n_scan_positions}',
+            f'\n  tile length um: {scan_tile_length_um}',
+            f'\n  tile overlap um: {scan_tile_overlap_um}',
+            f'\n  tile length with overlap: {scan_tile_length_w_overlap_mm}',
+            f"\n  Is the scan tile w/ overlap the same as the scan tile length?: {scan_tile_length_mm==scan_tile_length_w_overlap_mm}",
+            f"\n  step size (mm): {scan_axis_step_mm}",
+            f"\n  exposure: {exposure_s}",
+            f"\n  number of active channels: {n_active_channels}",
+            f'\n  Scan axis speed (mm/s): {scan_axis_speed}\n'
+            f"\n  Stage scan positions, units: mm",
+            f'\n  Scan axis start positions: {scan_axis_start_pos_mm}.',
+            f'\n  Scan axis end positions: {scan_axis_end_pos_mm}.',
+            f'\n  Number of scan positions: {scan_axis_positions}',
+            f"\n  Are all scan tiles the same size: {np.allclose(scan_tile_sizes, scan_tile_sizes[0])}"
+        )
 
     #--------------------------------------------------------------------#
     # Generate tile axis positions
@@ -1582,7 +1614,7 @@ def setup_stagescan(
     else:
         tile_axis_step = tile_axis_positions[1]-tile_axis_positions[0]
     
-    if DEBUG:
+    if DEBUGGING:
         print("Tile axis positions units: um")
         print(f"Tile axis positions: {tile_axis_positions}")
         print(f"Num tile axis positions: {n_tile_positions}")
@@ -1600,7 +1632,7 @@ def setup_stagescan(
     # Calculate the stage z change along the scan axis
     dz_per_scan_tile = (cs_range_um / n_scan_positions) * np.sign(coverslip_slope)
 
-    if DEBUG:
+    if DEBUGGING:
         print("\nZ axis positions, units: um")
         print(f"Z axis positions: {z_positions}")
         print(f"Z axis range: {range_z_um} um")
@@ -1622,7 +1654,7 @@ def setup_stagescan(
                         "z": float(np.round(z_positions[z_idx] + dz_per_scan_tile*scan_idx, 2))
                     }
                 )
-    if DEBUG:
+    if DEBUGGING:
         print(stage_positions)
     #----------------------------------------------------------------#
     # Create MDA event structure
@@ -1654,7 +1686,7 @@ def setup_stagescan(
     #----------------------------------------------------------------#
     # setup nD mirror-based AO-OPM acquisition event structure
     
-    if DEBUG: 
+    if DEBUGGING: 
             print(f'timepoints: {n_time_steps}')
             print(f'Stage positions: {n_stage_positions}.')
             print(f'Scan positions: {scan_axis_positions+int(config["Stage"]["excess_positions"])}.')
@@ -1734,10 +1766,16 @@ def setup_stagescan(
                     current_ASI_setup_event.action.data["ASI"]["scan_axis_speed_mm_s"] = float(scan_axis_speed)
                     opm_events.append(current_ASI_setup_event)
                     
+                    if DEBUGGING:
+                        print("\n\ASI scan setup action data: \n")
+                        print(json.dumps(current_ASI_setup_event.action.data, indent=4))
+                        
                     # create camera events
-                    for scan_axis_idx in range(scan_axis_positions+int(config["Stage"]["excess_positions"])):
+                    excess_starting_images = int(config["Stage"]["excess_positions"])
+                    excess_ending_images = 0
+                    for scan_axis_idx in range(scan_axis_positions+int(excess_starting_images) + int(excess_ending_images)):
                         for chan_idx in range(n_active_channels):
-                            if scan_axis_idx < int(config["Stage"]["excess_positions"]):
+                            if (scan_axis_idx < excess_starting_images) or (scan_axis_idx > (scan_axis_positions + excess_starting_images)):
                                 is_excess_image = True
                             else:
                                 is_excess_image = False
@@ -1803,7 +1841,7 @@ def setup_stagescan(
             delete_existing=True
         )
             
-        print(f"Using Qi2lab handler,\nindices: {indice_sizes}")
+        print(f"\nUsing Qi2lab handler,\nindices: {indice_sizes}\n")
             
     else:
         print("Using default handler")

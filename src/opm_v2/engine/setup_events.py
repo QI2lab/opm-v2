@@ -328,7 +328,7 @@ def setup_stagescan(
                 })
     print(f"validate number of stage positions: {n_stage_pos} vs from loop: {len(stage_positions_mm)}")
     AOmirror_stage.n_positions = n_stage_pos
-    #SJS Stage positions are 0
+
     #--------------------------------------------------------------------#
     #--------------------------------------------------------------------#
     # Create CustomAction events
