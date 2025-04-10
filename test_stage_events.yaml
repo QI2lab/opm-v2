@@ -1,0 +1,37 @@
+axis_order:
+- p
+- g
+- z
+- c
+channels:
+- config: 405nm
+  exposure: 100.0
+- config: 488nm
+  exposure: 100.0
+- config: 561nm
+  exposure: 100.0
+grid_plan:
+  columns: 1
+  fov_height: 264.96000000000004
+  fov_width: 264.96000000000004
+  rows: 1
+metadata:
+  pymmcore_widgets:
+    version: 0.9.1
+stage_positions:
+- x: 1933.36
+  y: -1269.09
+  z: -3587.54
+- x: 2753.36
+  y: -1269.09
+  z: -3587.54
+- x: 2753.36
+  y: -2269.07
+  z: -3587.54
+- x: 1953.36
+  y: -2269.07
+  z: -3587.54
+z_plan:
+  bottom: -3587.54
+  step: 1.0
+  top: -3487.45

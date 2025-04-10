@@ -26,16 +26,20 @@ def run_fluidic_program(verbose: bool = False):
     # input("press enter after starting ESI sequence")
     
     opmOB1_local.trigger_OB1()
+    
     if verbose:
         print(" Triggering OB1")
         
     time.sleep(1)
+    
     if verbose:
         print(" Waiting for OB1 trigger")
+        
     opmOB1_local.wait_for_OB1()
     
     if verbose:
         print(" OB1 trigger recieved, ESI sequence complete")
+        
     opmOB1_local.close_board()
     
     return True
