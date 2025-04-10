@@ -94,10 +94,7 @@
         "roi_crop_y": 128
     },
     "Stage": {
-        "name": "TigerCommHub",
-        "stage_step_size_um": 0.4,
-        "excess_positions": 46,
-        "coverslip_max_dz": 3.0
+        "name": "TigerCommHub"
     },
     "PLC": {
         "name": "PLogic:E:36",
@@ -108,7 +105,7 @@
     },
     "acq_config": {
         "opm_mode": "stage",
-        "fluidics": "8",
+        "fluidics": "none",
         "camera_roi": {
             "center_x": 1142.0,
             "center_y": 1151.0,
@@ -127,15 +124,15 @@
             "mode_alpha": 0.5,
             "num_iterations": 2,
             "image_mirror_range_um": 125.0,
-            "active_channel_id": "488nm",
+            "active_channel_id": "405nm",
             "active_channel_power": 20.0,
             "exposure_ms": 20.0,
-            "ao_mode": "none",
+            "ao_mode": "generate grid",
             "save_dir_path": "G:/optimize_now",
             "daq_mode": "2d"
         },
         "mirror_scan": {
-            "image_mirror_range_um": 50.0,
+            "image_mirror_range_um": 60.0,
             "image_mirror_step_size_um": 0.4,
             "laser_blanking": false,
             "channel_states": [
@@ -146,25 +143,29 @@
                 false
             ],
             "channel_powers": [
-                0.0,
-                25.0,
-                100.0,
-                100.0,
+                1.0,
+                3.0,
+                3.0,
+                4.0,
                 0.0
             ],
             "channel_exposures_ms": [
+                50.0,
                 10.0,
-                60.0,
-                60.0,
-                60.0,
-                10.0
+                10.0,
+                10.0,
+                50.0
             ]
         },
         "stage_scan": {
-            "coverslip_slope": -0.0049,
+            "coverslip_slope": -0.1,
+            "coverslip_max_dz": 3.0,
+            "stage_step_size_um": 0.4,
             "stage_scan_range_um": 1000.0,
             "scan_axis_overlap_um": 30,
             "tile_axis_overlap": 0.15,
+            "excess_start_frames": 0,
+            "excess_end_frames": 0,
             "laser_blanking": false,
             "channel_states": [
                 false,
@@ -174,18 +175,18 @@
                 false
             ],
             "channel_powers": [
-                0.0,
-                25.0,
-                100.0,
-                100.0,
+                1.0,
+                3.0,
+                3.0,
+                4.0,
                 0.0
             ],
             "channel_exposures_ms": [
+                50.0,
                 10.0,
-                60.0,
-                60.0,
-                60.0,
-                10.0
+                10.0,
+                10.0,
+                50.0
             ]
         },
         "projection_scan": {
@@ -199,18 +200,18 @@
                 false
             ],
             "channel_powers": [
-                0.0,
-                25.0,
-                100.0,
-                100.0,
+                1.0,
+                3.0,
+                3.0,
+                4.0,
                 0.0
             ],
             "channel_exposures_ms": [
+                50.0,
                 10.0,
-                60.0,
-                60.0,
-                60.0,
-                10.0
+                10.0,
+                10.0,
+                50.0
             ]
         }
     }

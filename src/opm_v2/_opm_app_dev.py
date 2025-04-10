@@ -40,6 +40,7 @@ from opm_v2.engine.setup_events_dev import (
     setup_optimizenow
 )
 
+
 use_mda_channels = False
 DEBUGGING = True
 if TYPE_CHECKING:
@@ -321,9 +322,9 @@ def main() -> None:
             )
         #--------------------------------------------------------------------#
         # Update mirror positions
-        if "AO_mode" in device_name:
+        if device_name=="AO_mode":
             ao_mirror_state = mmc.getProperty("AO-mode", "Label")
-            
+            AOMirror_update_state = opmAOmirror.instance()
             if DEBUGGING:
                 starting_positions = AOMirror_update_state.current_positions
                 print(
@@ -346,7 +347,7 @@ def main() -> None:
                     f"  Post mirror update positions: \n{end_positions}",
                     f"  Did it change: {starting_positions==end_positions}"
                 )
-                
+                    
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
             

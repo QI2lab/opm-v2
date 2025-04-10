@@ -1229,13 +1229,18 @@ def setup_stagescan(
     # Get the stage scan range, coverslip slope, and maximum CS dz change
     coverslip_slope = config["acq_config"]["stage_scan"]["coverslip_slope"]
     scan_axis_max_range = config["acq_config"]["stage_scan"]["stage_scan_range_um"]
-    coverslip_max_dz = float(config["Stage"]["coverslip_max_dz"])
+    coverslip_max_dz = float(config["acq_config"]["stage_scan"]["coverslip_max_dz"])
     
     # Get the tile overlap settings
-    scan_axis_step_um = float(config["Stage"]["stage_step_size_um"])  # unit: um 
+    scan_axis_step_um = float(config["acq_config"]["stage_scan"]["stage_step_size_um"])  # unit: um 
     tile_axis_overlap = float(config["acq_config"]["stage_scan"]["tile_axis_overlap"])
     scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(config["acq_config"]["stage_scan"]["scan_axis_overlap_um"])
     scan_tile_overlap_mm = scan_tile_overlap_um/1000.
+    
+    
+    # create camera events
+    excess_starting_images = int(config["acq_config"]["stage_scan"]["excess_start_frames"])
+    excess_ending_images = int(config["acq_config"]["stage_scan"]["excess_end_frames"])
     
     #----------------------------------------------------------------#
     # Get channel settings
@@ -1586,6 +1591,20 @@ def setup_stagescan(
     scan_axis_speed = np.round(scan_axis_step_mm / exposure_s / n_active_channels,5) 
     scan_tile_sizes = [np.round(np.abs(scan_axis_end_pos_mm[ii]-scan_axis_start_pos_mm[ii]),2) for ii in range(len(scan_axis_end_pos_mm))]
     
+    # Check for scan speed actual settings
+    mmc.setProperty(mmc.getXYStageDevice(), "MotorSpeedX-S(mm/s)", scan_axis_speed)
+    mmc.waitForDevice(mmc.getXYStageDevice())
+    actual_speed_x = float(mmc.getProperty(mmc.getXYStageDevice(), "MotorSpeedX-S(mm/s)"))
+    actual_exposure = np.round(scan_axis_step_mm / actual_speed_x / n_active_channels,5) 
+    
+    print(f"needed exposure: = {actual_exposure}")
+    
+    channel_exposures_ms = [actual_exposure*1000]*len(channel_exposures_ms)
+    daq_event.action.data["Camera"]["exposure_channels"] = channel_exposures_ms
+    exposure_ms = actual_exposure*1000
+    exposure_s = actual_exposure
+    scan_axis_speed = actual_speed_x
+    
     if DEBUGGING: 
         print(
             "\nScan-axis calculated parameters:",
@@ -1633,12 +1652,14 @@ def setup_stagescan(
     dz_per_scan_tile = (cs_range_um / n_scan_positions) * np.sign(coverslip_slope)
 
     if DEBUGGING:
-        print("\nZ axis positions, units: um")
-        print(f"Z axis positions: {z_positions}")
-        print(f"Z axis range: {range_z_um} um")
-        print(f"Z axis step: {z_axis_step_um} um")
-        print(f"Num z axis positions: {n_z_positions}")
-        print(f"Z offset per x-scan-tile: {dz_per_scan_tile} um")
+        print(
+            "Z axis positions, units: um",
+            f"\n  Z axis positions: {z_positions}",
+            f"\n  Z axis range: {range_z_um} um",
+            f"\n  Z axis step: {z_axis_step_um} um",
+            f"\n  Num z axis positions: {n_z_positions}",
+            f"\n  Z offset per x-scan-tile: {dz_per_scan_tile} um"
+        )   
 
     #--------------------------------------------------------------------#
     # Generate stage positions 
@@ -1687,10 +1708,13 @@ def setup_stagescan(
     # setup nD mirror-based AO-OPM acquisition event structure
     
     if DEBUGGING: 
-            print(f'timepoints: {n_time_steps}')
-            print(f'Stage positions: {n_stage_positions}.')
-            print(f'Scan positions: {scan_axis_positions+int(config["Stage"]["excess_positions"])}.')
-            print(f'Active channels: {n_active_channels}')
+            print(
+                "Acquisition shape values:"
+                f'\n  timepoints: {n_time_steps}',
+                f'\n  Stage positions: {n_stage_positions}.',
+                f'\n  Scan positions: {scan_axis_positions+int(excess_starting_images)+int(excess_ending_images)}.',
+                f'\n  Active channels: {n_active_channels}'
+            )
             
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
         
@@ -1767,12 +1791,14 @@ def setup_stagescan(
                     opm_events.append(current_ASI_setup_event)
                     
                     if DEBUGGING:
-                        print("\n\ASI scan setup action data: \n")
+                        print("\nASI scan setup action data: \n")
                         print(json.dumps(current_ASI_setup_event.action.data, indent=4))
+                    
+                    if DEBUGGING:
+                        print(
+                            f"Excess frame values (start/end): {excess_starting_images} / {excess_ending_images}"
+                        )
                         
-                    # create camera events
-                    excess_starting_images = int(config["Stage"]["excess_positions"])
-                    excess_ending_images = 0
                     for scan_axis_idx in range(scan_axis_positions+int(excess_starting_images) + int(excess_ending_images)):
                         for chan_idx in range(n_active_channels):
                             if (scan_axis_idx < excess_starting_images) or (scan_axis_idx > (scan_axis_positions + excess_starting_images)):
@@ -1813,7 +1839,7 @@ def setup_stagescan(
                                         "camera_Zstage_orientation" : str(config["OPM"]["camera_Zstage_orientation"]),
                                         "camera_XYstage_orientation" : str(config["OPM"]["camera_XYstage_orientation"]),
                                         "camera_mirror_orientation" : str(config["OPM"]["camera_mirror_orientation"]),
-                                        "excess_scan_positions" : int(config["Stage"]["excess_positions"])
+                                        "excess_scan_positions" : int(excess_starting_images)
                                     },
                                     "Stage" : {
                                         "x_pos" : stage_positions[pos_idx]["x"] + (scan_axis_idx * scan_axis_step_um),
@@ -1832,7 +1858,7 @@ def setup_stagescan(
             't' : int(np.maximum(1,n_time_steps)),
             'p' : int(np.maximum(1,n_stage_positions)),
             'c' : int(np.maximum(1,n_active_channels)),
-            'z' : int(np.maximum(1,scan_axis_positions+int(config["Stage"]["excess_positions"])))
+            'z' : int(np.maximum(1,scan_axis_positions+int(excess_starting_images)+int(excess_ending_images)))
         }
 
         handler = OPMMirrorHandler(
