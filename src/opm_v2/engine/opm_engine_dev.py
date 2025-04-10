@@ -121,9 +121,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.1)
                       
             elif action_name == "ASI-setupscan":
-                # ensure commands are sent to the stage controller
-                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","No")
-
+                #--------------------------------------------------------#
                 # Setup PLC controller for TTL output to stage sync signal
                 plcName = self._config["PLC"]["name"] # 'PLogic:E:36'
                 propPosition = self._config["PLC"]["position"] # 'PointerPosition'
@@ -132,40 +130,32 @@ class OPMEngine(MDAEngine):
                 addrStageSync = int(self._config["PLC"]["signalid"]) # 46  # TTL5 on Tiger backplane = stage sync signal
                 
                 self._mmc.setProperty(plcName, propPosition, addrOutputBNC1)
-                
-                # Setup PLC controller to emit stage sync signal
                 self._mmc.setProperty(plcName, propCellConfig, addrStageSync)
+            
                 
-                # make sure ASI controller is ready for next command
-                ready='B'
-                while(ready!='N'):
-                    command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
-                    sleep(.5)
-                
+                #--------------------------------------------------------#
                 # Set scan axis speed
-                # command = "SPEED X=" + str(data_dict["ASI"]["scan_axis_speed_mm_s"])
-                command = "SPEED X=" + str(data_dict["ASI"]["scan_axis_speed_mm_s"]) + " Y=0.1"
-                self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-
-                # make sure ASI controller is ready for next command
-                ready='B'
-                while(ready!='N'):
-                    command = 'STATUS'
-                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-                    ready = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
-                    sleep(.5)
-                
-                if DEBUGGING:
-                    command = "SPEED X? Y?"
-                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-                    actual_speed = self._mmc.getProperty(self._config["Stage"]["name"],"SerialResponse")
-                    print(
-                        "ASI stage scan setup:",
-                        f"\n  actual speed: {actual_speed}")
-                    
-                    
+                self._mmc.setProperty(
+                    self._mmc.getXYStageDevice(),
+                    "MotorSpeedX-S(mm/s)",
+                    np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)
+                )    
+                self._mmc.setProperty(
+                    self._mmc.getXYStageDevice(),
+                    "MotorSpeedY-S(mm/s)",
+                    0.1
+                )    
+                # while not(
+                #     float(self._mmc.getProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)")) == np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)
+                #     ):
+                #     sleep(0.1)
+                #     self._mmc.setProperty(
+                #         self._mmc.getXYStageDevice(),
+                #         "MotorSpeedX-S(mm/s)",
+                #         np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)
+                #     )   
+                #     self._mmc.waitForDevice(self._mmc.getXYStageDevice())
+                #--------------------------------------------------------#
                 # Set scan axis to true 1D scan with no backlash
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
@@ -182,6 +172,14 @@ class OPMEngine(MDAEngine):
                     "ScanFastAxis",
                     "1st axis"
                 )
+                # self._mmc.setProperty(
+                #     self._mmc.getXYStageDevice(),
+                #     "ScanSettlingTime(ms)",
+                #     500
+                # )
+                
+                #--------------------------------------------------------#
+                # Set scan axis start/end positions
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
                     "ScanFastAxisStartPosition(mm)",
@@ -192,33 +190,44 @@ class OPMEngine(MDAEngine):
                     "ScanFastAxisStopPosition(mm)",
                     np.round(data_dict["ASI"]["scan_axis_end_mm"],2)
                 )
+                
+                
+                #--------------------------------------------------------#
+                # Set the scan state
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
-                    "ScanSettlingTime(ms)",
-                    500
+                    "ScanState",
+                    "Idle"
                 )
 
                 if DEBUGGING:
+                    actual_speed_x = float(
+                        self._mmc.getProperty(
+                            self._mmc.getXYStageDevice(),
+                            "MotorSpeedX-S(mm/s)"
+                        )
+                    )
                     print(
-                        "Scan positions:",
-                        f"\n start: {
+                        "\nScan positions:",
+                        f"\n  start: {
                             self._mmc.getProperty(
                                 self._mmc.getXYStageDevice(),
                                 "ScanFastAxisStartPosition(mm)"
                             )}",
-                        f"\n end: {
-                            self._mcc.getProperty(
+                        f"\n  end: {
+                            self._mmc.getProperty(
                                 self._mmc.getXYStageDevice(),
                                 "ScanFastAxisStopPosition(mm)"
                             )}",
-                        f"Scan settling time: {
+                        f"\n  Scan settling time: {
                             self._mmc.getProperty(
                                 self._mmc.getXYStageDevice(),
                                 "ScanSettlingTime(ms)"
-                            )}"                        
+                            )}",
+                        f"\n  actual speed: {actual_speed_x}",
+                        f"\n  requested speed: {np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}", 
+                        f"\n  Do stage speeds match: {actual_speed_x==np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}"                     
                     )
-                # put controller back into standard communication mode
-                self._mmc.setProperty(self._config["Stage"]["name"],"OnlySendSerialCommandOnChange","Yes")
                 
                 # put camera into external START trigger mode
                 self._mmc.setProperty(self._config["Camera"]["camera_id"],"Trigger","START")
@@ -333,9 +342,20 @@ class OPMEngine(MDAEngine):
                             )
                     
                     # Set the stage speed for larger moves
-                    command = "SPEED Y=0.2 X=0.2"
-                    self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
-                    
+                    # command = "SPEED Y=0.2 X=0.2"
+                    # self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
+                    # Set scan axis speed
+                    self._mmc.setProperty(
+                        self._mmc.getXYStageDevice(),
+                        "MotorSpeedX-S(mm/s)",
+                        0.2
+                    )    
+                    self._mmc.setProperty(
+                        self._mmc.getXYStageDevice(),
+                        "MotorSpeedY-S(mm/s)",
+                        0.2
+                    ) 
+            
             elif action_name == "DAQ":
                 # Stop and clear waveform tasks
                 self.opmDAQ.stop_waveform_playback()
@@ -377,6 +397,12 @@ class OPMEngine(MDAEngine):
                 )
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
+                if DEBUGGING:
+                    print(
+                        f"Camera Exposure: ",
+                        f"Actual: {self._mmc.getExposure()}",
+                        f"Requested: {exposure_ms}",
+                    )
                 # Update daq waveform values and setup daq for playback
                 if str(data_dict["DAQ"]["mode"]) == "stage":
                     self.opmDAQ.set_acquisition_params(
@@ -418,9 +444,12 @@ class OPMEngine(MDAEngine):
 
         # execute stage scan if requested
         if self.execute_stage_scan:
-            self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand","1SCAN")
+            self._mmc.setProperty(
+                    self._mmc.getXYStageDevice(),
+                    "ScanState",
+                    "Running"
+                )
             self.execute_stage_scan = False
-            
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.
 
@@ -488,14 +517,16 @@ class OPMEngine(MDAEngine):
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
-        print("Acq finished, tearing down.")
+        if DEBUGGING:
+            print("Acq finished, tearing down.")
         
         # Shut down DAQ
         self.opmDAQ.stop_waveform_playback()
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
 
-        print("Daq reset")
+        if DEBUGGING:
+            print("Daq reset")
 
         # Put camera back into internal mode
         self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")

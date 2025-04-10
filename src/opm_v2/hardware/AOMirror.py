@@ -150,7 +150,7 @@ class AOMirror:
         self._current_positions = np.asarray(self.flat_positions)
         
         # here is a spot to keep mirror position arrays
-        self._wfc_positions = {
+        self.wfc_positions = {
             "mirror_flat":self.flat_positions,
             "system_flat":self.flat_positions,
             "last_optimized": self.flat_positions,

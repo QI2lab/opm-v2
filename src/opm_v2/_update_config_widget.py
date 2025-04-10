@@ -367,7 +367,7 @@ class OPMSettings(QWidget):
         self.spbx_561_power.setValue(0)
         self.spbx_561_power.setFixedWidth(80)
         self.spbx_561_power.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.spbx_561_power.valueChanged.connect(self.update_ao_active_power_slider)
+        self.spbx_561_power.valueChanged.connect(self.update_561_slider)
         self.spbx_561_power.valueChanged.connect(self.update_561_state)
         
         self.spbx_561_exp = QDoubleSpinBox()
