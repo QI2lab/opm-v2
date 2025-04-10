@@ -91,8 +91,8 @@ class OPMNIDAQ:
         laser_blanking: bool = True,
         image_mirror_calibration: float = .0433,
         projection_mirror_calibration: float = .0052,
-        image_mirror_neutral_um: float = 0.0,
-        projection_mirror_neutral_um: float = 0.0,
+        image_mirror_neutral_v: float = 0.0,
+        projection_mirror_neutral_v: float = 0.0,
         image_mirror_step_size_um = 0.4,
         verbose: bool=False
     ):
@@ -119,7 +119,7 @@ class OPMNIDAQ:
         self._num_do_channels = 8
         self._do_waveform = np.zeros((self._num_do_channels),dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
-        self._ao_neutral_positions = [image_mirror_neutral_um, projection_mirror_neutral_um]
+        self._ao_neutral_positions = [image_mirror_neutral_v, projection_mirror_neutral_v]
         
         # Configure hardware pin addresses.
         self._dev_name = name
@@ -338,7 +338,7 @@ class OPMNIDAQ:
             self._image_mirror_range_um = value
         else:
             self._image_mirror_range_um = value
-        
+
         # setup image galvo mirror
         self._image_mirror_min_volt = -(self._image_mirror_range_um * self._image_mirror_calibration) / 2. + self._ao_neutral_positions[0] # unit: volts
         self._image_axis_range_volts = self._image_mirror_range_um * self._image_mirror_calibration

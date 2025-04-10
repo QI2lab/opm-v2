@@ -7,8 +7,6 @@ TO DO:
 
 2024/12 DPS initial work
 """
-from opm_v2.hardware.AOMirror import AOMirror
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from pymmcore_plus import CMMCorePlus
 import numpy as np
 from numpy.typing import ArrayLike
@@ -16,45 +14,48 @@ from typing import Optional, Tuple, Sequence, List
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
-from scipy.interpolate import RegularGridInterpolator
 from pathlib import Path
 from tifffile import imwrite
 import zarr
+from time import sleep
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+
 
 mode_names = [
-            "Vert. Tilt",
-            "Horz. Tilt",
-            "Defocus",
-            "Vert. Asm.",
-            "Oblq. Asm.",
-            "Vert. Coma",
-            "Horz. Coma",
-            "3rd Spherical",
-            "Vert. Tre.",
-            "Horz. Tre.",
-            "Vert. 5th Asm.",
-            "Oblq. 5th Asm.",
-            "Vert. 5th Coma",
-            "Horz. 5th Coma",
-            "5th Spherical",
-            "Vert. Tetra.",
-            "Oblq. Tetra.",
-            "Vert. 7th Tre.",
-            "Horz. 7th Tre.",
-            "Vert. 7th Asm.",
-            "Oblq. 7th Asm.",
-            "Vert. 7th Coma",
-            "Horz. 7th Coma",
-            "7th Spherical",
-            "Vert. Penta.",
-            "Horz. Penta.",
-            "Vert. 9th Tetra.",
-            "Oblq. 9th Tetra.",
-            "Vert. 9th Tre.",
-            "Horz. 9th Tre.",
-            "Vert. 9th Asm.",
-            "Oblq. 9th Asm.",
-        ]
+    "Vert. Tilt",
+    "Horz. Tilt",
+    "Defocus",
+    "Vert. Asm.",
+    "Oblq. Asm.",
+    "Vert. Coma",
+    "Horz. Coma",
+    "3rd Spherical",
+    "Vert. Tre.",
+    "Horz. Tre.",
+    "Vert. 5th Asm.",
+    "Oblq. 5th Asm.",
+    "Vert. 5th Coma",
+    "Horz. 5th Coma",
+    "5th Spherical",
+    "Vert. Tetra.",
+    "Oblq. Tetra.",
+    "Vert. 7th Tre.",
+    "Horz. 7th Tre.",
+    "Vert. 7th Asm.",
+    "Oblq. 7th Asm.",
+    "Vert. 7th Coma",
+    "Horz. 7th Coma",
+    "7th Spherical",
+    "Vert. Penta.",
+    "Horz. Penta.",
+    "Vert. 9th Tetra.",
+    "Oblq. 9th Tetra.",
+    "Vert. 9th Tre.",
+    "Horz. 9th Tre.",
+    "Vert. 9th Asm.",
+    "Oblq. 9th Asm.",
+]
 
 #-------------------------------------------------#
 # AO optimization
@@ -65,6 +66,7 @@ def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
     metric_to_use: Optional[str] = "shannon_dct",
+    daq_mode: Optional[str] = "projection",
     psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
@@ -88,7 +90,7 @@ def run_ao_optimization(
     opmNIDAQ_local.stop_waveform_playback()
     opmNIDAQ_local.clear_tasks()
     opmNIDAQ_local.set_acquisition_params(
-        scan_type="projection",
+        scan_type=daq_mode,
         channel_states=channel_states,
         image_mirror_range_um=image_mirror_range_um,
         laser_blanking=True,
@@ -134,7 +136,7 @@ def run_ao_optimization(
     opmNIDAQ_local.start_waveform_playback()
     starting_image = mmc.snap()
     
-    if "shannon" in metric_to_use:
+    if "DCT" in metric_to_use:
         starting_metric = metric_shannon_dct(
             image=starting_image,
             psf_radius_px=psf_radius_px,
@@ -173,8 +175,8 @@ def run_ao_optimization(
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f"AO iteration: {k+1} / {num_iterations}",
-                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}\n"
+                    f"\nAO iteration: {k+1} / {num_iterations}",
+                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}"
                     )
                 
             # Grab the current starting mode coeff for this iteration
@@ -205,7 +207,7 @@ def run_ao_optimization(
                     imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
 
                     """Calculate metric."""
-                    if "shannon" in metric_to_use:
+                    if "DCT" in metric_to_use:
                         metric = metric_shannon_dct(
                             image=image,
                             psf_radius_px=psf_radius_px,
@@ -226,6 +228,7 @@ def run_ao_optimization(
                 if save_dir_path:
                     mode_images.append(image)
                     # TODO: update iter_modes
+                    
             """After looping through all mirror perturbations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
@@ -282,7 +285,7 @@ def run_ao_optimization(
                 image = mmc.snap()
                     
                 """Calculate metric."""
-                if "shannon" in metric_to_use:
+                if "DCT" in metric_to_use:
                     metric = metric_shannon_dct(
                         image=image,
                         psf_radius_px=psf_radius_px,
@@ -297,7 +300,7 @@ def run_ao_optimization(
                     print("    Metric is NAN, setting to 0")
                     metric = float(np.nan_to_num(metric))
                 
-                if round(metric,3)>=round(optimal_metric,3):
+                if round(metric,4)>=round(optimal_metric,4):
                     coeff_to_keep = coeff_opt
                     optimal_metric = metric
                     if verbose:
@@ -343,11 +346,7 @@ def run_ao_optimization(
             metrics_per_iteration.append(iter_metrics)
             coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
             images_per_iteration.append(image)
-            
-            # check if we are in tissue!
-            if not(any(_m >= 1.0 for _m in metrics_per_mode)):
-                print("No metrics over 1.0 detected! We must not be tissue??, skipping next AO iteration.")
-                return
+
         """Loop back to top and do the next iteration"""
         
     #---------------------------------------------#
@@ -403,10 +402,12 @@ def run_ao_optimization(
 # Plotting functions
 #-------------------------------------------------#
 
-def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
-                        zernike_mode_names: ArrayLike,
-                        save_dir_path: Optional[Path] = None,
-                        show_fig: Optional[bool] = False):
+def plot_zernike_coeffs(
+    optimal_coefficients: ArrayLike,
+    zernike_mode_names: ArrayLike,
+    save_dir_path: Optional[Path] = None,
+    show_fig: Optional[bool] = False
+):
     """_summary_
 
     Parameters
@@ -439,7 +440,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
                 color=colors[j % len(colors)],
                 s=125, 
                 marker=marker_style
-                )  
+            )  
         ax.axhline(y=i, linestyle="--", linewidth=1, color='k')
         
     # Plot a vertical line at 0 for reference
@@ -456,7 +457,7 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     ax.legend(
         [f'Iteration: {i+1}' for i in range(optimal_coefficients.shape[0])], 
         loc='upper right'
-        )
+    )
 
     # Remove grid lines
     ax.grid(False)
@@ -467,12 +468,14 @@ def plot_zernike_coeffs(optimal_coefficients: ArrayLike,
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
-def plot_metric_progress(metrics_per_mode: ArrayLike,
-                         num_iterations: ArrayLike,
-                         modes_to_optimize: List[int],
-                         zernike_mode_names: List[str],
-                         save_dir_path: Optional[Path] = None,
-                         show_fig: Optional[bool] = False):
+def plot_metric_progress(
+    metrics_per_mode: ArrayLike,
+    num_iterations: ArrayLike,
+    modes_to_optimize: List[int],
+    zernike_mode_names: List[str],
+    save_dir_path: Optional[Path] = None,
+    show_fig: Optional[bool] = False
+):
     """_summary_
 
     Parameters
@@ -496,7 +499,7 @@ def plot_metric_progress(metrics_per_mode: ArrayLike,
     metrics_per_mode = np.reshape(
         metrics_per_mode[1:], # ignore the starting metric 
         (num_iterations, len(modes_to_optimize))
-        )
+    )
 
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -507,7 +510,14 @@ def plot_metric_progress(metrics_per_mode: ArrayLike,
 
     # Loop over iterations and plot each series
     for ii, series in enumerate(metrics_per_mode):
-        ax.plot(series, color=colors[ii], label=f"iteration {ii}", marker=markers[ii], linestyle="--", linewidth=1)
+        ax.plot(
+            series,
+            color=colors[ii],
+            label=f"iteration {ii}", 
+            marker=markers[ii],
+            linestyle="--", 
+            linewidth=1
+        )
 
     # Set the x-axis to correspond to the modes_to_optimize
     mode_labels = [zernike_mode_names[i] for i in modes_to_optimize]
@@ -533,7 +543,7 @@ def plot_2d_localization_fit_summary(
     coords_2d,
     save_dir_path: Path = None,
     showfig: bool = False
-    ):
+):
     """_summary_
 
     Parameters
@@ -572,40 +582,52 @@ def plot_2d_localization_fit_summary(
     width_ratios=[1,0.7,0.1,0.1,0.1]
     height_ratios=[1,0.1,0.5,0.5,0.5,0.5,0.5]
     figh_sum = plt.figure(figsize=(10,8))
-    grid_sum = figh_sum.add_gridspec(nrows=len(height_ratios),
-                                     ncols=len(width_ratios),
-                                     width_ratios=width_ratios,
-                                     height_ratios=height_ratios,
-                                     hspace=0.2,
-                                     wspace=0.3
-                                     )
+    grid_sum = figh_sum.add_gridspec(
+        nrows=len(height_ratios),
+        ncols=len(width_ratios),
+        width_ratios=width_ratios,
+        height_ratios=height_ratios,
+        hspace=0.2,
+        wspace=0.3
+    )
 
     ax_proj_sxy = figh_sum.add_subplot(grid_sum[0,:2])
     ax_cmap_i_sxy = figh_sum.add_subplot(grid_sum[0,2])
     ax_cmap_sxy = figh_sum.add_subplot(grid_sum[0,4])
-    figh_sum = plot_bead_locations(img,
-                                    centers,
-                                    weights=[fit_results["fit_params"][to_keep, 4]],
-                                    color_lists=["autumn"],
-                                    color_limits=[[0.05,0.5]],
-                                    cbar_labels=[r"$\sigma_{xy}$"],
-                                    title="Max intensity projection with Sxy",
-                                    coords=coords_2d,
-                                    gamma=0.5,
-                                    axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
-                                    )
-    ax_proj_sxy.set_title(f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}")
+    figh_sum = plot_bead_locations(
+        img,
+        centers,
+        weights=[fit_results["fit_params"][to_keep, 4]],
+        color_lists=["autumn"],
+        color_limits=[[0.05,0.5]],
+        cbar_labels=[r"$\sigma_{xy}$"],
+        title="Max intensity projection with Sxy",
+        coords=coords_2d,
+        gamma=0.5,
+        axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
+    )
+    ax_proj_sxy.set_title(
+        f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}"
+    )
 
     # Create axes for plotting x, y specific results
     ax_sxy_cx = figh_sum.add_subplot(grid_sum[3,0])
-    ax_sxy_cy = figh_sum.add_subplot(grid_sum[3,1:],
-                                     sharey=ax_sxy_cx)
+    ax_sxy_cy = figh_sum.add_subplot(
+        grid_sum[3,1:],
+        sharey=ax_sxy_cx
+    )
     ax_amp_cx = figh_sum.add_subplot(grid_sum[4,0],sharex=ax_sxy_cx)
-    ax_amp_cy = figh_sum.add_subplot(grid_sum[4,1:],
-                                     sharey=ax_amp_cx,sharex=ax_sxy_cy)
+    ax_amp_cy = figh_sum.add_subplot(
+        grid_sum[4,1:],
+        sharey=ax_amp_cx,
+        sharex=ax_sxy_cy
+    )
     ax_bg_cx = figh_sum.add_subplot(grid_sum[5,0],sharex=ax_sxy_cx)
-    ax_bg_cy = figh_sum.add_subplot(grid_sum[5,1:],
-                                    sharey=ax_bg_cx,sharex=ax_sxy_cy)
+    ax_bg_cy = figh_sum.add_subplot(
+        grid_sum[5,1:],
+        sharey=ax_bg_cx,
+        sharex=ax_sxy_cy
+    )
     ax_sxy_cx.set_ylabel(r"$\sigma_{xy}$ ($\mu m$)")
     ax_amp_cx.set_ylabel("amplitude")
     ax_bg_cx.set_ylabel("background")
@@ -647,7 +669,10 @@ def plot_2d_localization_fit_summary(
     else:
         plt.close(figh_sum)
     if save_dir_path:
-        figh_sum.savefig(save_dir_path / Path("ao_localization_results.png"), dpi=150)
+        figh_sum.savefig(
+            save_dir_path / Path("ao_localization_results.png"),
+            dpi=150
+        )
     
     figh_sum = None
     del figh_sum
@@ -681,7 +706,11 @@ def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
         center = (image.shape[1]//2, image.shape[0]//2)
     return center
 
-def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int]) -> ArrayLike:
+def get_cropped_image(
+    image: ArrayLike,
+    crop_size: int,
+    center: Tuple[int, int]
+) -> ArrayLike:
     """
     Extract a square region from an image centered at a given point.
 
@@ -713,8 +742,15 @@ def get_cropped_image(image: ArrayLike, crop_size: int, center: Tuple[int, int])
 # Functions for fitting and calculations
 #-------------------------------------------------#
 
-def gauss2d(coords_xy: ArrayLike, amplitude: float, center_x: float, center_y: float,
-            sigma_x: float, sigma_y: float, offset: float) -> ArrayLike:
+def gauss2d(
+    coords_xy: ArrayLike,
+    amplitude: float,
+    center_x: float,
+    center_y: float,
+    sigma_x: float,
+    sigma_y: float,
+    offset: float
+) -> ArrayLike:
     """
     Generates a 2D Gaussian function for curve fitting.
 
@@ -897,11 +933,12 @@ def localize_2d_img(
         "threshold":3000,
         "amp_bounds":(1000, 30000),
         "sxy_bounds":(0.100, 1.0)
-        },
+    },
     save_dir_path: Path = None,
     label: str = "", 
     showfig: bool = False,
-    verbose: bool = False):
+    verbose: bool = False
+):
     """_summary_
 
     Parameters
@@ -990,12 +1027,13 @@ def localize_2d_img(
 # Functions to calculate image metrics
 #-------------------------------------------------#
 
-def metric_brightness(image: ArrayLike,
-                      crop_size: Optional[int] = None,
-                      threshold: Optional[float] = 100,
-                      image_center: Optional[int] = None,
-                      return_image: Optional[bool] = False
-                      ) -> float:
+def metric_brightness(
+    image: ArrayLike,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = 100,
+    image_center: Optional[int] = None,
+    return_image: Optional[bool] = False
+) -> float:
     """
     Compute weighted metric for 2D Gaussian.
 
@@ -1042,7 +1080,7 @@ def metric_shannon_dct(
     threshold: Optional[float] = None,
     image_center: Optional[int] = None,
     return_image: Optional[bool] = False
-    ) -> float:
+) -> float:
     """Compute the Shannon entropy metric using DCT.
 
     Parameters
@@ -1090,12 +1128,13 @@ def metric_shannon_dct(
     else:
         return shannon_dct
 
-def metric_gauss2d(image: ArrayLike,
-                   crop_size: Optional[int] = None,
-                   threshold: Optional[float] = 100,
-                   image_center: Optional[int] = None,
-                   return_image: Optional[bool]= False
-                   ) -> float:
+def metric_gauss2d(
+    image: ArrayLike,
+    crop_size: Optional[int] = None,
+    threshold: Optional[float] = 100,
+    image_center: Optional[int] = None,
+    return_image: Optional[bool]= False
+) -> float:
     """Compute weighted metric for 2D gaussian.
 
     Parameters
@@ -1201,157 +1240,198 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
 # Helper function for generating grid
 #-------------------------------------------------#
 
-def map_ao_grid(stage_positions: np.ndarray,
-                xy_ao_range: float,
-                z_ao_range: float,
-                xy_interp_range: float,
-                z_interp_range: float,
-                ao_dict: dict,
-                save_dir_path: Path = None,
-                verbose: bool = False,
-    ) -> np.ndarray:
-    """
-    Maps and interpolates adaptive optics (AO) mirror coefficients over a structured 
-    3D grid of stage positions.
+def run_ao_grid_mapping(
+    stage_positions: List,
+    ao_dict: dict,
+    save_dir_path: Path = None,
+    verbose: bool = False,
+) -> bool:
+    """_summary_
 
-    This function:
-    1. Generates a structured grid of stage positions in a snake-like pattern.
-    2. Runs AO optimization at each sampled position to collect mirror coefficients.
-    3. Interpolates AO mirror coefficients over a finer 3D grid using linear interpolation.
-
-    Parameters:
-    -----------
-    stage_positions : np.ndarray
-        An array of dictionaries containing stage positions with keys "x", "y", and "z".
-    xy_ao_range : float
-        The spacing (in microns) between adjacent x and y sample points for AO optimization.
-    z_ao_range : float
-        The spacing (in microns) between adjacent z sample points for AO optimization.
-    xy_interp_range : float
-        The spacing (in microns) for interpolation along the x and y axes.
-    z_interp_range : float
-        The spacing (in microns) for interpolation along the z-axis.
+    Parameters
+    ----------
+    stage_positions : list
+        Experimental stage positions. Optimized for stage scan acquisitions
     ao_dict : dict
         A dictionary containing AO optimization parameters, including:
-        - "image_mirror_step_size_um"
         - "image_mirror_range_um"
         - "exposure_ms"
         - "channel_states"
-        - "shannon_dct" (metric)
-        - "psf_radius_px"
-        - "num_iterations"
+        - "metric"
+        - "modal_alpha"
+        - "iterations"
     save_dir_path : Path, optional
         Path to save AO optimization data. Default is None.
     verbose : bool, optional
         If True, prints additional debugging information. Default is False.
 
-    Returns:
-    --------
+    Returns
+    -------
     np.ndarray
-        A 2D array where each row corresponds to an interpolated stage position,
-        and each column corresponds to an AO mirror coefficient.
-    np.ndarray
-        A 2D array where each row corresponds to a stage position where the mode coefficient was interpolated
+        _description_
     """
     aoMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
     
-    stage_positions_array = np.array([
-        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
-    ])
+    stage_positions_array = np.array(
+        [
+            (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+        ]
+    )
     
-    # Generate array of stage positions to sample and run AO
-    max_z_pos = np.max(stage_positions_array[:, 0])
-    min_z_pos = np.min(stage_positions_array[:, 0])
-    max_y_pos = np.max(stage_positions_array[:, 1])
-    min_y_pos = np.min(stage_positions_array[:, 1])
-    max_x_pos = np.max(stage_positions_array[:, 2])
-    min_x_pos = np.min(stage_positions_array[:, 2])
+    # Extract scan positions
+    scan_axis_positions = np.unique(stage_positions_array[:, 2])
+    if scan_axis_positions.shape[0]==1:
+        print("AO Grid not optimized to work on 1 scan position!")
+        return False
+    if scan_axis_positions[0]>scan_axis_positions[1]:
+        print("AO grid is only working for scanning in positive directions!")
+        return False
     
-    # Calculate number of grid points
-    n_z_samples = int(np.ceil(np.abs(max_z_pos - min_z_pos) / z_ao_range)) + 1
-    n_y_samples = int(np.ceil(np.abs(max_y_pos - min_y_pos) / xy_ao_range)) + 1
-    n_x_samples = int(np.ceil(np.abs(max_x_pos - min_x_pos) / xy_ao_range)) + 1
+    scan_tile_dx = np.diff(scan_axis_positions)[0]/2
+    ao_scan_axis_positions = scan_axis_positions + scan_tile_dx
     
-    # Generate stage positions in a snake-like pattern
-    sample_stage_positions = []
-    for x_idx in range(n_x_samples):
-        y_range = range(n_y_samples) if x_idx % 2 == 0 else range(n_y_samples - 1, -1, -1)
-        for y_idx in y_range:
-            for z_idx in range(n_z_samples):
-                sample_stage_positions.append([
-                    float(np.round(min_x_pos + x_idx * xy_ao_range, 2)),
-                    float(np.round(min_y_pos + y_idx * xy_ao_range, 2)),
-                    float(np.round(min_z_pos + z_idx * z_ao_range, 2))
-                ])
+    # Extract tile positons, only sample the middle of the tile axis
+    tile_axis_positions = np.unique(stage_positions_array[:, 1])
+    # ao_tile_axis_position = np.mean(tile_axis_positions)
+    ao_tile_axis_positions = np.linspace(tile_axis_positions[0], tile_axis_positions[-1],9)[2::2][:-1]
     
-    sample_stage_positions = np.asarray(sample_stage_positions)
+    # Extract the number of z positions per scan tile
+    num_z_positions = np.unique(
+            stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][:, 0]
+        ).shape[0]
     
-    # Extract unique grid points
-    unique_x = np.unique(sample_stage_positions[:, 2])  # x positions
-    unique_y = np.unique(sample_stage_positions[:, 1])  # y positions
-    unique_z = np.unique(sample_stage_positions[:, 0])  # z positions
-
-    # Storage for mirror coefficients
-    mirror_coeffs_grid = np.zeros((len(sample_stage_positions), aoMirror_local.n_positions))
-
+    # compile AO stage positions to visit, visit XY positions before stepping in Z
+    ao_stage_positions = []
+    for z_idx in range(num_z_positions):
+        for tile_idx, tile_axis_pos in enumerate(ao_tile_axis_positions):
+            for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
+                # Extract the unique z positions for this scan tile, use the z_idx
+                z_tile_positions = np.unique(
+                    stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
+                )
+                ao_stage_positions.append(
+                    {
+                        "z": z_tile_positions[z_idx],
+                        "y": tile_axis_pos,
+                        "x": scan_tile_pos
+                    }
+                )
+    if verbose:
+        print(
+            "\nAO grid positions:",
+            f"\nY tile position: {ao_tile_axis_positions}",
+            f"\nScan axis dx: {scan_tile_dx}",
+            f"\nScan axis positions: {ao_scan_axis_positions}",
+            f"\nNumber of z-planes: {num_z_positions}"    
+        )
+    # Save AO optimization results here
+    num_ao_pos = len(ao_stage_positions)
+    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.wfc_coeffs_array.shape[1]))
+    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.wfc_positions_array.shape[1]))
+    
     # Run AO optimization for each stage position
-    for i, (z_pos, y_pos, x_pos) in enumerate(sample_stage_positions):
-        mmc.setPosition(z_pos)
+    print("\nGenerating AO map:")
+    print(f"Number of positions: {num_ao_pos}")
+    
+    # Visit AO stage positions and measure best WFC positions
+    for ao_pos_idx in range(num_ao_pos):
+        
+        if verbose:
+            print(f"\nMoving stage to: {ao_stage_positions[ao_pos_idx]}")
+        target_x = ao_stage_positions[ao_pos_idx]["x"]
+        target_y = ao_stage_positions[ao_pos_idx]["y"]
+        target_z = ao_stage_positions[ao_pos_idx]["z"]
+        
+        mmc.setPosition(np.round(target_z,2))
         mmc.waitForDevice(mmc.getFocusDevice())
-        mmc.setXYPosition(x_pos, y_pos)
-        mmc.waitForDevice(mmc.getXYStageDevice())
-
+        
+        mmc.setXYPosition(
+            np.round(float(target_x),2),
+            np.round(float(target_y),2)
+        )
+        current_x, current_y = mmc.getXYPosition()
+        while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
+            sleep(.5)
+            if verbose:
+                print("MOVING. . . ",
+                      f"current xy: {current_x, current_y}")
+            current_x, current_y = mmc.getXYPosition()
+        
+        current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
+        current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
-            metric_to_use=ao_dict["shannon_dct"],
+            metric_to_use=ao_dict["metric"],
+            daq_mode=ao_dict["daq_mode"],
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
-            psf_radius_px=ao_dict["psf_radius_px"],
-            num_iterations=ao_dict["num_iterations"],
-            num_mode_steps=3,
-            init_delta_range=0.200,
-            delta_range_alpha_per_iter=0.5,
-            save_dir_path=save_dir_path,
+            num_iterations=ao_dict["iterations"],
+            init_delta_range=ao_dict["modal_delta"],
+            delta_range_alpha_per_iter=ao_dict["modal_alpha"],
+            save_dir_path=current_save_dir,
             verbose=verbose
         )
-
-        mirror_coeffs_grid[i] = AOMirror.current_coeffs()
+        
+        ao_grid_wfc_coeffs[ao_pos_idx] = aoMirror_local.current_coeffs.copy()
+        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_positions.copy()
     
-    # Reshape mirror coefficients into a structured grid
-    mirror_coeffs_grid_reshaped = mirror_coeffs_grid.reshape(
-        (len(unique_z), len(unique_y), len(unique_x), -1)  # -1 keeps last dimension
-    )
-
-    # Create interpolators for each AO mode
-    coeff_interp_functions = [
-        RegularGridInterpolator(
-            (unique_z, unique_y, unique_x),  
-            mirror_coeffs_grid_reshaped[:, :, :, coef_idx],  
-            method="linear",
-            bounds_error=False,
-            fill_value=None
-        )
-        for coef_idx in range(mirror_coeffs_grid.shape[1])  
-    ]
-
-    # Generate interpolation grid
-    interp_stage_positions = []
-    for x in np.arange(min_x_pos, max_x_pos + xy_interp_range, xy_interp_range):
-        for y in np.arange(min_y_pos, max_y_pos + xy_interp_range, xy_interp_range):
-            for z in np.arange(min_z_pos, max_z_pos + z_interp_range, z_interp_range):
-                interp_stage_positions.append([z, y, x])
+    # Map ao_grid_wfc_coeffs to experiment stage positions.
+    position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
+    position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
     
-    interp_stage_positions = np.array(interp_stage_positions)
+    if verbose:
+        "Mapping AO grid to exp. stage positions."
+        
+    # Define a threshold for matching AO grid positions
+    AO_POSITION_THRESHOLD = 0
 
-    # Interpolate mirror coefficients
-    interp_mirror_coeffs = np.zeros([interp_stage_positions.shape[0], aoMirror_local.n_positions])
-    for ii, pos in enumerate(interp_stage_positions):
-        for coef_idx, interp_func in enumerate(coeff_interp_functions):
-            interp_mirror_coeffs[ii, coef_idx] = interp_func(pos)
+    # Convert AO positions and stage positions into structured arrays for efficient lookup
+    ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
+    stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
 
-    return interp_mirror_coeffs, interp_stage_positions
+    # Find the closest AO match per stage position
+    for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
+        # Find AO positions within threshold range of the current stage X
+        to_use = ao_stage_positions_array[:, 2] - stage_x > AO_POSITION_THRESHOLD
+        relevant_ao_positions = ao_stage_positions_array[to_use]
+        
+        if relevant_ao_positions.size == 0:
+            print(f"Warning: No AO match found for stage position {stage_positions[pos_idx]}")
+            continue  # Skip this position if no match
 
+        # Compute Euclidean distance only among relevant AO positions
+        distances = np.linalg.norm(relevant_ao_positions - [stage_z, stage_y, stage_x], axis=1)
+        
+        # Get index of closest AO position
+        ao_grid_idx = np.where(to_use)[0][np.argmin(distances)]
+        
+        # Assign the corresponding AO grid data
+        position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
+        position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
+
+        if verbose:
+            print(
+                f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
+                f"Exp. stage position: {stage_positions[pos_idx]}"
+            )
+            
+    # # For each stage position, find the closest AO grid position
+    # for pos_idx in range(len(stage_positions)):
+    #     ao_grid_idx = np.argmin(distances[pos_idx])
+    #     position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
+    #     position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
+        
+    #     if verbose:
+    #         print(
+    #             f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
+    #             f"Exp. stage position: {stage_positions[pos_idx]}"
+    #         )
+            
+    aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
+    aoMirror_local.wfc_positions_array = position_wfc_positions
+    
+    return True
 
 #-------------------------------------------------#
 # Helper functions for saving optmization results
