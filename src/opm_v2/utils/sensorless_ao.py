@@ -1281,20 +1281,20 @@ def run_ao_grid_mapping(
     
     # Extract scan positions
     scan_axis_positions = np.unique(stage_positions_array[:, 2])
-    if scan_axis_positions.shape[0]==1:
-        print("AO Grid not optimized to work on 1 scan position!")
-        return False
-    if scan_axis_positions[0]>scan_axis_positions[1]:
-        print("AO grid is only working for scanning in positive directions!")
-        return False
-    
-    scan_tile_dx = np.diff(scan_axis_positions)[0]/2
+    if len(scan_axis_positions)==1:
+        scan_tile_dx = 250
+    else:
+        scan_tile_dx = np.diff(scan_axis_positions)[0]/2
+        
+        if scan_axis_positions[0]>scan_axis_positions[1]:
+            scan_axis_positions = scan_axis_positions[-1::-1]
+        
     ao_scan_axis_positions = scan_axis_positions + scan_tile_dx
     
     # Extract tile positons, only sample the middle of the tile axis
     tile_axis_positions = np.unique(stage_positions_array[:, 1])
-    # ao_tile_axis_position = np.mean(tile_axis_positions)
-    ao_tile_axis_positions = np.linspace(tile_axis_positions[0], tile_axis_positions[-1],9)[2::2][:-1]
+    ao_tile_axis_positions = np.mean(tile_axis_positions)
+    # ao_tile_axis_positions = np.linspace(tile_axis_positions[0], tile_axis_positions[-1],9)[2::2][:-1]
     
     # Extract the number of z positions per scan tile
     num_z_positions = np.unique(
@@ -1304,19 +1304,19 @@ def run_ao_grid_mapping(
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
     for z_idx in range(num_z_positions):
-        for tile_idx, tile_axis_pos in enumerate(ao_tile_axis_positions):
-            for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
-                # Extract the unique z positions for this scan tile, use the z_idx
-                z_tile_positions = np.unique(
-                    stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
-                )
-                ao_stage_positions.append(
-                    {
-                        "z": z_tile_positions[z_idx],
-                        "y": tile_axis_pos,
-                        "x": scan_tile_pos
-                    }
-                )
+        # for tile_idx, tile_axis_pos in enumerate(ao_tile_axis_positions):
+        for scan_tile, scan_tile_pos in enumerate(ao_scan_axis_positions):  
+            # Extract the unique z positions for this scan tile, use the z_idx
+            z_tile_positions = np.unique(
+                stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_tile]][:, 0]
+            )
+            ao_stage_positions.append(
+                {
+                    "z": float(z_tile_positions[z_idx]),
+                    "y": float(ao_tile_axis_positions),
+                    "x": float(scan_tile_pos)
+                }
+            )
     if verbose:
         print(
             "\nAO grid positions:",

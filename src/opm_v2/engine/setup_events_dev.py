@@ -1460,7 +1460,7 @@ def setup_stagescan(
         fp_action_data = {
             "Fluidics": {
                 # hardcoding 11 rounds
-                "total_rounds": 8, # int(fluidics_mode),
+                "total_rounds": fluidics_rounds, # int(fluidics_mode),
                 "current_round": int(0)
             }
         }
@@ -1641,7 +1641,7 @@ def setup_stagescan(
 
     #--------------------------------------------------------------------#
     # Generate z axis positions, ignoring coverslip slope
-    n_z_positions = int(np.ceil(range_z_um / z_axis_step_max)) + 1
+    n_z_positions = int(np.ceil(np.abs(range_z_um / z_axis_step_max))) + 1
     z_positions = np.round(np.linspace(min_z_pos, max_z_pos, n_z_positions), 2)
     if n_z_positions==1:
         z_axis_step_um = 0.
@@ -1658,7 +1658,8 @@ def setup_stagescan(
             f"\n  Z axis range: {range_z_um} um",
             f"\n  Z axis step: {z_axis_step_um} um",
             f"\n  Num z axis positions: {n_z_positions}",
-            f"\n  Z offset per x-scan-tile: {dz_per_scan_tile} um"
+            f"\n  Z offset per x-scan-tile: {dz_per_scan_tile} um",
+            f"\n  Z axis step max: {z_axis_step_max}"
         )   
 
     #--------------------------------------------------------------------#
