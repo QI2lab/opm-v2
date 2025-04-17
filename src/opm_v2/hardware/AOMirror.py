@@ -24,7 +24,7 @@ class AOMirror:
         _description_
     interaction_matrix_file_path : Path
         _description_
-    flat_positions_file_path : Path, default=  None
+    system_flat_file_path : Path, default=  None
         _description_
     coeff_file_path : Path, default = None
         _description_
@@ -51,7 +51,8 @@ class AOMirror:
         wfc_config_file_path: Path,
         haso_config_file_path: Path,
         interaction_matrix_file_path: Path,
-        flat_positions_file_path: Path = None,
+        system_flat_file_path: Path = None,
+        mirror_flat_file_path: Path = None,
         coeff_file_path: Path = None,
         n_modes: int = 32,
         n_positions: int = 1,
@@ -68,7 +69,8 @@ class AOMirror:
         self._wfc_config_file_path = wfc_config_file_path
         self._interaction_matrix_file_path = interaction_matrix_file_path
         self._coeff_file_path = coeff_file_path
-        self._flat_positions_file_path = flat_positions_file_path
+        self._system_flat_file_path = system_flat_file_path
+        self._mirror_flat_file_path = mirror_flat_file_path
         self._n_modes = n_modes
         self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
@@ -141,20 +143,24 @@ class AOMirror:
         # Set up wfc positions and position tracking
         #---------------------------------------------#
         
-        if self._flat_positions_file_path is not None:
-            self.flat_positions = np.asarray(self.wfc.get_positions_from_file(str(flat_positions_file_path)))
+        if self._system_flat_file_path is not None:
+            self.system_flat_positions = np.asarray(self.wfc.get_positions_from_file(str(self._system_flat_file_path)))
         else:
-            self.flat_positions = np.zeros(self.wfc.nb_actuators)
-                    
+            self.system_flat_positions = np.zeros(self.wfc.nb_actuators)
+        if self._mirror_flat_file_path is not None:
+            self.mirror_flat_positions = np.asarray(self.wfc.get_positions_from_file(str(self._mirror_flat_file_path)))
+        else:
+            self.mirror_flat_positions = np.zeros(self.wfc.nb_actuators)
+        
         self._current_coeffs = np.zeros(n_modes,dtype=np.float32)
-        self._current_positions = np.asarray(self.flat_positions)
+        self._current_positions = np.asarray(self.system_flat_positions)
         
         # here is a spot to keep mirror position arrays
         self.wfc_positions = {
-            "mirror_flat":self.flat_positions,
-            "system_flat":self.flat_positions,
-            "last_optimized": self.flat_positions,
-            "grid": np.empty([1, self.wfc.nb_actuators])
+            "mirror_flat":self.mirror_flat_positions,
+            "system_flat":self.system_flat_positions,
+            "last_optimized": self.system_flat_positions,
+            "grid": np.empty([1, self.wfc.nb_actuators], self.system_flat_positions)
             }          
         # here we store a 1d array of ao mirror positions that correspond to stage positions array.
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
@@ -201,39 +207,7 @@ class AOMirror:
             "Vert. 9th Asm.", # 30
             "Oblq. 9th Asm.", # 31
         ]
-
-    # @property
-    # def wfc_positions(self) -> dict:
-    #     """ Dictionary of saved wfc positions
-        
-    #     Returns
-    #     -------
-    #     wfc_positions: dict
-    #         Dictionary containing saved positions;
-    #         'mirror_flat', 'system_flat', 'last_optimized'        
-    #     """
-        
-    #     return getattr(self,"_wfc_positions",None)
-    
-    # @wfc_positions.setter
-    # def wfc_positions(self, key: str, value: np.ndarray):
-    #     """Set / add / modify saved wfc positions
-
-    #     Parameters
-    #     ----------
-    #     key : str
-    #         Dictionary key for given wfc positions array.
-    #     value : np.ndarray
-    #         wfc actuator positions array.
-
-    #     Returns
-    #     -------
-    #     _type_
-    #         _description_
-    #     """
-        
-        
-        
+                
     @property
     def output_path(self) -> str|Path:
         """Output path.
@@ -301,7 +275,7 @@ class AOMirror:
     def current_positions(self, value: np.ndarray):
         """Set and update current mirror positions."""
         self._current_positions = value
-        self._deltas = self._current_positions - self.flat_positions
+        self._deltas = self._current_positions - self.system_flat_positions
 
     @property
     def current_coeffs(self) -> np.ndarray:
@@ -336,11 +310,14 @@ class AOMirror:
         else:
             return True
         
-    def get_mirror_positions(self):
+    def get_mirror_positions(self, key: str=None):
         """Update stored mirror positions from wavefront corrector."""
         self.current_positions = np.array(self.wfc.get_current_positions())
         self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
 
+        if key in self.wfc_positions:
+            return self.wfc_positions[key]         
+    
     def set_mirror_positions_flat(self):
         """Set mirror to positions to system flat."""
         self.set_mirror_positions(self.wfc_positions["system_flat"])
@@ -399,7 +376,7 @@ class AOMirror:
         )
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
-        new_positions = np.asarray(self.flat_positions) + np.asarray(deltas)
+        new_positions = np.asarray(self.system_flat_positions) + np.asarray(deltas)
                 
         if self._validate_positions(new_positions):
             self.wfc.move_to_absolute_positions(new_positions)

@@ -145,7 +145,7 @@ def main() -> None:
         wfc_config_file_path = Path(config["AOMirror"]["wfc_config_path"]),
         haso_config_file_path = Path(config["AOMirror"]["haso_config_path"]),
         interaction_matrix_file_path = Path(config["AOMirror"]["wfc_correction_path"]),
-        flat_positions_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
+        system_flat_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
         n_modes = 32,
         n_positions=1,
         modes_to_ignore = []
