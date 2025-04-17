@@ -23,6 +23,9 @@ import json
 from pathlib import Path
 import numpy as np
 from time import sleep
+import logging
+
+logging.getLogger("pymmcore-plus")
 
 DEBUGGING = True
 class OPMEngine(MDAEngine):
@@ -145,16 +148,7 @@ class OPMEngine(MDAEngine):
                     "MotorSpeedY-S(mm/s)",
                     0.1
                 )    
-                # while not(
-                #     float(self._mmc.getProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)")) == np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)
-                #     ):
-                #     sleep(0.1)
-                #     self._mmc.setProperty(
-                #         self._mmc.getXYStageDevice(),
-                #         "MotorSpeedX-S(mm/s)",
-                #         np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)
-                #     )   
-                #     self._mmc.waitForDevice(self._mmc.getXYStageDevice())
+
                 #--------------------------------------------------------#
                 # Set scan axis to true 1D scan with no backlash
                 self._mmc.setProperty(
@@ -172,11 +166,11 @@ class OPMEngine(MDAEngine):
                     "ScanFastAxis",
                     "1st axis"
                 )
-                # self._mmc.setProperty(
-                #     self._mmc.getXYStageDevice(),
-                #     "ScanSettlingTime(ms)",
-                #     500
-                # )
+                self._mmc.setProperty(
+                    self._mmc.getXYStageDevice(),
+                    "ScanSettlingTime(ms)",
+                    2000
+                )
                 
                 #--------------------------------------------------------#
                 # Set scan axis start/end positions
@@ -341,9 +335,6 @@ class OPMEngine(MDAEngine):
                                 0.0
                             )
                     
-                    # Set the stage speed for larger moves
-                    # command = "SPEED Y=0.2 X=0.2"
-                    # self._mmc.setProperty(self._config["Stage"]["name"],"SerialCommand",command)
                     # Set scan axis speed
                     self._mmc.setProperty(
                         self._mmc.getXYStageDevice(),
@@ -434,9 +425,6 @@ class OPMEngine(MDAEngine):
                 # Wait for MM core
                 self._mmc.waitForSystem()
 
-            elif action_name == "Fluidics":
-                print("Triggering ESI fluidics sequence\n")
-                
         else:
             super().setup_event(event)
             
@@ -450,6 +438,7 @@ class OPMEngine(MDAEngine):
                     "Running"
                 )
             self.execute_stage_scan = False
+            
     def exec_event(self, event: MDAEvent) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
         """Execute `event`.
 
@@ -503,9 +492,8 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.start_waveform_playback()
                 
             elif action_name == "Fluidics":
-                response = input("Is Fluidics complete?")
-                print(f"response:{response}\n")
-                # run_fluidic_program(True)
+                print("\nSending ttl pulse to OB1 to CLEAVE and apply READOUTS")
+                run_fluidic_program(True)
                 
         else:
             result = super().exec_event(event)
@@ -534,9 +522,9 @@ class OPMEngine(MDAEngine):
         self._mmc.setProperty(self._config["Camera"]["camera_id"],"TRIGGER SOURCE","INTERNAL")
         self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
 
-        self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.1)
-        self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.1)
-        
+        self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.2)
+        self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.2)
+                
         # Set all lasers to zero emission
         for laser in self._config["Lasers"]["laser_names"]:
             self._mmc.setProperty(
