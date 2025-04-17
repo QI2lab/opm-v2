@@ -1287,12 +1287,25 @@ def run_ao_grid_mapping(
             (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
         ]
     )
-    
-    # Generate grid extents from stage positions
-    
+
     # Extract unique positions along each axis
     tile_axis_positions = np.unique(stage_positions_array[:, 1])
     scan_axis_positions = np.unique(stage_positions_array[:, 2])
+
+    # Extract scan positions
+    scan_axis_positions = np.unique(stage_positions_array[:, 2])
+    if len(scan_axis_positions)==1:
+        scan_tile_dx = 250
+    else:
+        scan_tile_dx = np.diff(scan_axis_positions)[0]/2
+        
+        if scan_axis_positions[0]>scan_axis_positions[1]:
+            scan_axis_positions = scan_axis_positions[-1::-1]
+  
+    ao_scan_axis_positions = scan_axis_positions + scan_tile_dx
+    
+    # Extract unique positions along each axis
+    tile_axis_positions = np.unique(stage_positions_array[:, 1])
     
     # Extract the number of z positions per scan tile
     num_z_positions = np.unique(

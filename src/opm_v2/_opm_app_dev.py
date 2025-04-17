@@ -172,6 +172,9 @@ def main() -> None:
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
     opmPicardShutter.closeShutter()
     
+    # Load OB1 Controller for fluidics control
+    ob1_kenobi = OB1Controller()
+    
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["OPM"]["mm_config_path"]))
@@ -196,6 +199,9 @@ def main() -> None:
     )
     mmc.waitForDevice(str(config["Camera"]["camera_id"]))
 
+    if DEBUGGING:
+        mmc.enableDebugLog(True)
+        
     def update_config():
         """Updates config from file on disk
         """
@@ -407,22 +413,11 @@ def main() -> None:
         ao_mode = config["acq_config"]["AO"]["ao_mode"]
         o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
         fluidics_mode = config["acq_config"]["fluidics"]
-        output_modified = output.parent / Path(output.name)
-        
-        if DEBUGGING:
-            print(
-                "-----------------------------------------------------",
-                "\nStageScan acquisition selected:",
-                f"\n  opm_mode: {opm_mode}",
-                f"\n  ao_mode: {ao_mode}",
-                f"\n  O2O3_mode: {o2o3_mode}",
-                f"\n  fluidics_mode: {fluidics_mode}\n\n",
-                f"\n  output_path: {output_modified}"
-            )
+
         #--------------------------------------------------------------------#
         # Validate acquisition settings
         #--------------------------------------------------------------------#
-        
+          
         if ("now" in ao_mode) or ("now" in o2o3_mode):
             optimize_now = True
         else: 
@@ -431,6 +426,11 @@ def main() -> None:
         if not(optimize_now) and not(output):
             print("Must set acquisition path to excecute acquisition")
             return
+        
+        if output:
+            output_modified = output.parent / Path(output.name)
+        else:
+            output_modified = None
         
         if "none" not in fluidics_mode:
             # load dialog to have user verify ESI is running.
@@ -447,6 +447,18 @@ def main() -> None:
             else:
                 print("ESI Sequence accepted")
         
+            if DEBUGGING:
+                print(
+                "-----------------------------------------------------",
+                "\nStageScan acquisition selected:",
+                f"\n  opm_mode: {opm_mode}",
+                f"\n  ao_mode: {ao_mode}",
+                f"\n  O2O3_mode: {o2o3_mode}",
+                f"\n  fluidics_mode: {fluidics_mode}",
+                f"\n  output_path: {output_modified}\n",
+                "-----------------------------------------------------",
+            )
+            
         #--------------------------------------------------------------------#
         # Get event structure for requested acquisition type
         #--------------------------------------------------------------------#
