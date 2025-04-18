@@ -35,7 +35,7 @@ def main():
         laser_blanking = bool(config["NIDAQ"]["laser_blanking"]),
         image_mirror_calibration = float(str(config["NIDAQ"]["image_mirror_calibration"])),
         projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
-        image_mirror_step_size_um = float(str(config["NIDAQ"]["image_mirror_step_size_um"])),
+        image_mirror_step_um = float(str(config["NIDAQ"]["image_mirror_step_um"])),
         verbose = bool(config["NIDAQ"]["verbose"])
     )
     opmNIDAQ.reset()

@@ -134,11 +134,16 @@ def main() -> None:
         
     # Load the widget for interacting with the configuration.
     opmSettings_widget = OPMSettings(config_path=config_path)
-    dock_widget = QDockWidget("OPM Settings", win)  
+    dock_widget = QDockWidget("OPM Settings", win)
     dock_widget.setWidget(opmSettings_widget)
     dock_widget.setObjectName("OPMConfigurator")
-    win.addDockWidget(Qt.RightDockWidgetArea, dock_widget)  
+    win.addDockWidget(Qt.LeftDockWidgetArea, dock_widget)  
     dock_widget.setFloating(False)
+    opmSettings_widget.update_405_state()
+    opmSettings_widget.update_488_state()
+    opmSettings_widget.update_405_state()
+    opmSettings_widget.update_405_state()
+    opmSettings_widget.update_405_state()
     
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
@@ -163,7 +168,7 @@ def main() -> None:
         projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
         image_mirror_neutral_v = float(str(config["NIDAQ"]["image_mirror_neutral_v"])),
         projection_mirror_neutral_v = float(str(config["NIDAQ"]["projection_mirror_neutral_v"])),
-        image_mirror_step_size_um = float(str(config["NIDAQ"]["image_mirror_step_size_um"])),
+        image_mirror_step_um = float(str(config["NIDAQ"]["image_mirror_step_um"])),
         verbose = bool(config["NIDAQ"]["verbose"])
     )
     opmNIDAQ.reset()
@@ -335,7 +340,8 @@ def main() -> None:
             
     # Connect changes in gui fields to the update_live_state method.            
     mmc.events.configSet.connect(update_live_state)
-        
+    update_live_state()
+    
     def setup_preview_mode_callback():
         """Callback to intercept preview mode and setup the OPM.
         

@@ -160,7 +160,7 @@ class AOMirror:
             "mirror_flat":self.mirror_flat_positions,
             "system_flat":self.system_flat_positions,
             "last_optimized": self.system_flat_positions,
-            "grid": np.empty([1, self.wfc.nb_actuators], self.system_flat_positions)
+            "grid": np.full([1, self.wfc.nb_actuators], self.system_flat_positions)
             }          
         # here we store a 1d array of ao mirror positions that correspond to stage positions array.
         self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))

@@ -22,7 +22,7 @@
         "laser_blanking": true,
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
-        "image_mirror_step_size_um": 0.1,
+        "image_mirror_step_um": 0.1,
         "image_mirror_neutral_um": 0.4,
         "projection_mirror_neutral_um": 0.0,
         "verbose": false
