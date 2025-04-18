@@ -69,7 +69,7 @@ class OPMNIDAQ:
         image mirror calibration in V/um
     projection_mirror_calibration: float, default = .0052
         projection mirror calibration in V/um
-    image_mirror_step_size_um: float, default = 0.4
+    image_mirror_step_um: float, default = 0.4
         image mirror step size in um. default value is Nyquist sampled for our OPM.
     """
 
@@ -93,7 +93,7 @@ class OPMNIDAQ:
         projection_mirror_calibration: float = .0052,
         image_mirror_neutral_v: float = 0.0,
         projection_mirror_neutral_v: float = 0.0,
-        image_mirror_step_size_um = 0.4,
+        image_mirror_step_um = 0.4,
         verbose: bool=False
     ):
         
@@ -107,7 +107,7 @@ class OPMNIDAQ:
         self.laser_blanking = laser_blanking
         self.image_mirror_calibration = image_mirror_calibration
         self.projection_mirror_calibration = projection_mirror_calibration
-        self.image_mirror_step_size_um = image_mirror_step_size_um
+        self.image_mirror_step_um = image_mirror_step_um
         self.verbose = verbose
         
         # Define waveform generation parameters
@@ -278,21 +278,21 @@ class OPMNIDAQ:
             self._projection_mirror_calibration = value
             
     @property
-    def image_mirror_step_size_um(self) -> float:
+    def image_mirror_step_um(self) -> float:
         """Image mirror step size in microns.
         
         This is the lateral footprint along the coverslip.
         
         Returns
         -------
-        image_mirror_step_size_um: float
+        image_mirror_step_um: float
             Image mirror step size in microns.
         """
         
-        return getattr(self,"_image_mirror_step_size_um",None)
+        return getattr(self,"_image_mirror_step_um",None)
     
-    @image_mirror_step_size_um.setter
-    def image_mirror_step_size_um(self, value: float):
+    @image_mirror_step_um.setter
+    def image_mirror_step_um(self, value: float):
         """Set the image mirror step size in microns.
         
         Parameters
@@ -301,12 +301,12 @@ class OPMNIDAQ:
             Image mirror step size in microns.
         """
         
-        if not hasattr(self, "_image_mirror_step_size_um") or self._image_mirror_step_size_um is None:
-            self._image_mirror_step_size_um = value
+        if not hasattr(self, "_image_mirror_step_um") or self._image_mirror_step_um is None:
+            self._image_mirror_step_um = value
         else:
-            self._image_mirror_step_size_um = value
+            self._image_mirror_step_um = value
 
-        self._image_axis_step_volts = self._image_mirror_step_size_um * self._image_mirror_calibration
+        self._image_axis_step_volts = self._image_mirror_step_um * self._image_mirror_calibration
         # temp = self.image_mirror_range_um.copy()
         # self.image_mirror_range_um = temp
             
@@ -403,7 +403,7 @@ class OPMNIDAQ:
         self,
         scan_type: str = None,
         channel_states: Sequence[bool] = None,
-        image_mirror_step_size_um: float = None,
+        image_mirror_step_um: float = None,
         image_mirror_range_um: float = None,
         laser_blanking: bool = None,
         exposure_ms: float = None
@@ -417,7 +417,7 @@ class OPMNIDAQ:
             scan type. One of "2d", "mirror", "projection", or "stage
         channel_states: Sequence[bool]
             channel states, in order of [405nm, 488nm, 561nm, 637nm, 730nm].
-        image_mirror_step_size_um: float
+        image_mirror_step_um: float
             Image mirror step size in microns. This is the lateral footprint along the coverslip.
         image_mirror_range_um: float
             Image mirror sweep in microns.
@@ -435,8 +435,8 @@ class OPMNIDAQ:
             self.laser_blanking = laser_blanking
         if exposure_ms:
             self.exposure_ms = exposure_ms
-        if image_mirror_step_size_um:
-            self.image_mirror_step_size_um = image_mirror_step_size_um
+        if image_mirror_step_um:
+            self.image_mirror_step_um = image_mirror_step_um
         if image_mirror_range_um:
             self.image_mirror_range_um = image_mirror_range_um
             

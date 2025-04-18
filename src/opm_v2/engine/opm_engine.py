@@ -346,6 +346,7 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # Update daq waveform values and setup daq for playback
                 self.opmDAQ.clear_tasks()
+                exposure_ms = data_dict['Camera']['exposure_channels'][0]
                 if str(data_dict["DAQ"]["mode"]) == "stage":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = "stage",
@@ -365,7 +366,7 @@ class OPMEngine(MDAEngine):
                     self.opmDAQ.set_acquisition_params(
                         scan_type = "mirror",
                         channel_states = data_dict["DAQ"]["channel_states"],
-                        image_mirror_step_size_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
+                        image_mirror_step_um = float(data_dict["DAQ"]["image_mirror_step_um"]),
                         image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms

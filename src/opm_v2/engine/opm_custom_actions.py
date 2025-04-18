@@ -1,6 +1,5 @@
 
 from useq import MDAEvent, CustomAction
-from types import MappingProxyType as mappingproxy
 
 O2O3_af_event = MDAEvent(
     action=CustomAction(

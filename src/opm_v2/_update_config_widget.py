@@ -773,9 +773,11 @@ class OPMSettings(QWidget):
             config['acq_config'][_mode+'_scan']['laser_blanking'] = laser_blanking
 
         self.config = config
-        
+               
         with open(self.config_path, 'w') as file:
                 json.dump(self.config, file, indent=4)
+        
+
         
         self.settings_changed.emit()
         
