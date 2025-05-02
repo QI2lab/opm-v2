@@ -16,7 +16,7 @@ import traceback
 from contextlib import suppress
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-
+from datetime import datetime
 from PyQt6.QtCore import pyqtSignal, Qt
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QDockWidget
@@ -40,8 +40,6 @@ from opm_v2.engine.setup_events import (
     setup_optimizenow
 )
 
-
-use_mda_channels = False
 DEBUGGING = True
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -157,7 +155,7 @@ def main() -> None:
     )
     
     opmAOmirror.set_mirror_positions_flat()
-
+    
     # load OPM NIDAQ
     opmNIDAQ = OPMNIDAQ(
         name = str(config["NIDAQ"]["name"]),
@@ -173,6 +171,7 @@ def main() -> None:
     )
     opmNIDAQ.reset()
     
+    
     # Initialize and close alignment laser shutter
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
     opmPicardShutter.closeShutter()
@@ -183,8 +182,13 @@ def main() -> None:
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["OPM"]["mm_config_path"]))
+    
+    
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
-
+    mda_widget.save_info.save_dir.setText(r"G:/")
+    mda_widget.tab_wdg.grid_plan.setMode("bounds")
+    mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()
+    
     if DEBUGGING:
         mmc.enableDebugLog(True)
         
@@ -309,7 +313,8 @@ def main() -> None:
             )
         #--------------------------------------------------------------------#
         # Update mirror positions
-        if device_name=="AO_mode":
+        if device_name is not None and "AO" in device_name:
+        # if "AO" in device_name:
             ao_mirror_state = mmc.getProperty("AO-mode", "Label")
             AOMirror_update_state = opmAOmirror.instance()
             if DEBUGGING:
@@ -324,24 +329,47 @@ def main() -> None:
                 mirror_key = "system_flat"
             elif "optimized" in ao_mirror_state:
                 mirror_key = "last_optimized"
+            elif "mirror" in ao_mirror_state:
+                mirror_key = "mirror_flat"
             AOMirror_update_state.set_mirror_positions(
                 AOMirror_update_state.wfc_positions[mirror_key]
             )
             
             if DEBUGGING:
                 end_positions = AOMirror_update_state.current_positions
-                print(
+                print( 
                     f"\n    Post mirror update positions: \n{end_positions}",
                     f"\n    Did it change: {starting_positions==end_positions}"
                 )
                     
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
-            
+       
     # Connect changes in gui fields to the update_live_state method.            
     mmc.events.configSet.connect(update_live_state)
     update_live_state()
     
+    def update_ao_mirror_state():
+            
+        AOMirror_update = AOMirror.instance()
+        update_config()
+        ao_mirror_state = config["acq_config"]["AO"]["mirror_state"]
+        if 'mirror' in ao_mirror_state:
+            position_key = 'mirror_flat'
+        elif 'system' in ao_mirror_state:
+            position_key = 'system_flat'
+        elif 'optimized' in ao_mirror_state:
+            position_key = 'last_optimized'
+        else:
+            position_key = 'system_flat'
+            
+        AOMirror_update.set_mirror_positions( AOMirror_update.wfc_positions[position_key])
+        
+        if DEBUGGING:
+            print(f'Mirror state updated to: {position_key}')
+        
+    opmSettings_widget.settings_changed.connect(update_ao_mirror_state)
+        
     def setup_preview_mode_callback():
         """Callback to intercept preview mode and setup the OPM.
         
@@ -355,10 +383,10 @@ def main() -> None:
             opmNIDAQ_setup_preview.stop_waveform_playback()
         
         # check if any channels are active. If not, don't setup DAQ.
+        update_live_state()
         if any(opmNIDAQ_setup_preview.channel_states):
             # Check OPM mode and set up NIDAQ accordingly
             opmNIDAQ_setup_preview.clear_tasks()
-            update_live_state()
             opmNIDAQ_setup_preview.generate_waveforms()
             opmNIDAQ_setup_preview.program_daq_waveforms()
             opmNIDAQ_setup_preview.start_waveform_playback()
@@ -410,9 +438,12 @@ def main() -> None:
             return
         
         if output:
-            output_modified = output.parent / Path(output.name)
-        else:
-            output_modified = None
+            now = datetime.now()
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
+            new_dir.mkdir(exist_ok=True) 
+            new_output = new_dir / Path(output.name)
+            output = new_output
         
         if "none" not in fluidics_mode:
             # load dialog to have user verify ESI is running.
@@ -429,17 +460,17 @@ def main() -> None:
             else:
                 print("ESI Sequence accepted")
         
-            if DEBUGGING:
-                print(
-                "-----------------------------------------------------",
-                "\nStageScan acquisition selected:",
-                f"\n  opm_mode: {opm_mode}",
-                f"\n  ao_mode: {ao_mode}",
-                f"\n  O2O3_mode: {o2o3_mode}",
-                f"\n  fluidics_mode: {fluidics_mode}",
-                f"\n  output_path: {output_modified}\n",
-                "-----------------------------------------------------",
-            )
+        if DEBUGGING:
+            print(
+            "-----------------------------------------------------",
+            "\nQi2lab OPM scan acquisition selected:",
+            f"\n  opm_mode: {opm_mode}",
+            f"\n  ao_mode: {ao_mode}",
+            f"\n  O2O3_mode: {o2o3_mode}",
+            f"\n  fluidics_mode: {fluidics_mode}",
+            f"\n  output_path: {new_output}\n",
+            "-----------------------------------------------------",
+        )
             
         #--------------------------------------------------------------------#
         # Get event structure for requested acquisition type

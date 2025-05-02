@@ -1379,7 +1379,7 @@ def setup_stagescan(
     active_channel_exps = []
     for ii, ch_state in enumerate(channel_states):
         if ch_state:
-            active_channel_exps.append(channel_exposures_ms[ii])
+            active_channel_exps.append(np.round(channel_exposures_ms[ii],2))
         else:
             # set not used channel powers to 0
             channel_powers[ii] = 0
@@ -1546,10 +1546,6 @@ def setup_stagescan(
             ao_optimization_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
             
-            if DEBUGGING:
-                print('\n\nAO action data: \n')
-                print(json.dumps(ao_action_data, indent=4))
-
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if 'none' not in o2o3_mode:
@@ -1567,16 +1563,11 @@ def setup_stagescan(
         
         o2o3_event = MDAEvent(**O2O3_af_event.model_dump())
         o2o3_event.action.data.update(o2o3_action_data)
-
-        
-        if DEBUGGING:
-            print('\n\nAO action data: \n')
-            print(json.dumps(o2o3_action_data, indent=4))
             
     #----------------------------------------------------------------#
     # Create the fluidics event data
-    fluidics_rounds = int(fluidics_mode)
     if 'none' not in fluidics_mode:
+        fluidics_rounds = int(fluidics_mode)
         fp_action_data = {
             'Fluidics': {
                 'total_rounds': fluidics_rounds,
@@ -1647,6 +1638,8 @@ def setup_stagescan(
     if coverslip_slope != 0:
         # Set the max scan range using coverslip slope
         scan_axis_max_range = np.abs(coverslip_max_dz / coverslip_slope)
+        # if scan_axis_max_range > float(config['acq_config']['stage_scan']['stage_scan_range_um']):
+        #     scan_axis_max_range = float(config['acq_config']['stage_scan']['stage_scan_range_um'])
     else:
         scan_axis_max_range = float(config['acq_config']['stage_scan']['stage_scan_range_um'])
 
@@ -1690,7 +1683,7 @@ def setup_stagescan(
     scan_axis_step_mm = scan_axis_step_um / 1000. # unit: mm
     scan_axis_start_mm = min_x_pos / 1000. # unit: mm
     scan_axis_end_mm = max_x_pos / 1000. # unit: mm
-    scan_tile_length_mm = scan_tile_length_um / 1000. # unit: mm
+    scan_tile_length_mm = np.round(scan_tile_length_um / 1000.,2) # unit: mm
 
     # Initialize scan position start/end arrays with the scan start / end values
     scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
@@ -1725,7 +1718,8 @@ def setup_stagescan(
             f'\n  Number scan tiles: {n_scan_positions}',
             f'\n  tile length um: {scan_tile_length_um}',
             f'\n  tile overlap um: {scan_tile_overlap_um}',
-            f'\n  tile length with overlap: {scan_tile_length_w_overlap_mm}',
+            f'\n  tile length mm: {scan_tile_length_mm}',
+            f'\n  tile length with overlap (mm): {scan_tile_length_w_overlap_mm}',
             f'\n  Is the scan tile w/ overlap the same as the scan tile length?: {scan_tile_length_mm==scan_tile_length_w_overlap_mm}',
             f'\n  step size (mm): {scan_axis_step_mm}',
             f'\n  exposure: {exposure_s}',
@@ -1828,7 +1822,7 @@ def setup_stagescan(
                 f'\n  Stage positions: {n_stage_positions}',
                 f'\n  Scan positions: {scan_axis_positions+int(excess_starting_images)+int(excess_ending_images)}',
                 f'\n  Active channels: {n_active_channels}',
-                f'Excess frame values (start/end): {excess_starting_images} / {excess_ending_images}'
+                f'\n  Excess frame values (start/end): {excess_starting_images} / {excess_ending_images}'
             )
             
     for time_idx in trange(n_time_steps, desc= 'Timepoints:', leave=True):

@@ -370,7 +370,7 @@ def run_ao_optimization(
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
     
     # update mirror dict with current positions
-    aoMirror_local.wfc_positions["last_optimization"] = aoMirror_local.current_positions
+    aoMirror_local.wfc_positions["last_optimized"] = aoMirror_local.current_positions
     
     opmNIDAQ_local.stop_waveform_playback()
     
@@ -1287,87 +1287,57 @@ def run_ao_grid_mapping(
             (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
         ]
     )
-
     # Extract unique positions along each axis
     tile_axis_positions = np.unique(stage_positions_array[:, 1])
     scan_axis_positions = np.unique(stage_positions_array[:, 2])
 
-    # Extract scan positions
-    scan_axis_positions = np.unique(stage_positions_array[:, 2])
-    if len(scan_axis_positions)==1:
-        scan_tile_dx = 250
-    else:
-        scan_tile_dx = np.diff(scan_axis_positions)[0]/2
-        
-        if scan_axis_positions[0]>scan_axis_positions[1]:
-            scan_axis_positions = scan_axis_positions[-1::-1]
-  
-    ao_scan_axis_positions = scan_axis_positions + scan_tile_dx
-    
-    # Extract unique positions along each axis
-    tile_axis_positions = np.unique(stage_positions_array[:, 1])
-    
-    # Extract the number of z positions per scan tile
     num_z_positions = np.unique(
         stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][:, 0]
     ).shape[0]
-    
-    if len(scan_axis_positions)==1:
-        scan_axis_delta = 0
+
+    if len(scan_axis_positions)==1 or num_scan_positions==1:
+        ao_scan_axis_positions = np.asarray([np.mean(scan_axis_positions)])
     else:
-        scan_tile_delta = scan_axis_positions[1] - scan_axis_positions[0]
+        if num_scan_positions>len(scan_axis_positions)+1:
+            num_scan_positions=len(scan_axis_positions)+1
         scan_axis_min = scan_axis_positions[0]
-        scan_axis_max = scan_axis_positions[-1] + scan_tile_delta
-        scan_axis_range = np.abs(scan_axis_max - scan_axis_min)
-        scan_axis_delta = scan_axis_range / num_scan_positions
+        scan_axis_max = scan_axis_positions[-1]
+        ao_scan_axis_positions = np.linspace(
+            scan_axis_min,
+            scan_axis_max,
+            num_scan_positions+2,
+            endpoint=True
+        )[1:-1]
         
-    if len(tile_axis_positions)==1:
-        tile_axis_delta = 0
+    if len(tile_axis_positions)==1 or num_tile_positions==1:
+        ao_tile_axis_positions = np.asarray([np.mean(tile_axis_positions)])
     else:
-        tile_axis_delta = tile_axis_positions[1] - tile_axis_positions[0]
+        if num_tile_positions>len(tile_axis_positions)+1:
+            num_tile_positions=len(tile_axis_positions)+1
         tile_axis_min = tile_axis_positions[0]
-        tile_axis_max = tile_axis_positions[-1] + tile_axis_delta
+        tile_axis_max = tile_axis_positions[-1]
         tile_axis_range = np.abs(tile_axis_max - tile_axis_min)
-        tile_axis_delta = tile_axis_range / num_tile_positions
+        ao_tile_axis_positions = np.linspace(
+            tile_axis_min, 
+            tile_axis_max,
+            num_tile_positions+2, 
+            endpoint=True
+        )[1:-1]
 
-    ao_scan_axis_positions = np.linspace(
-        scan_axis_min,
-        scan_axis_max,
-        num_scan_positions,
-        endpoint=True
-    )[1:-1]
-    ao_tile_axis_positions = np.linspace(
-        tile_axis_min, 
-        tile_axis_max,
-        num_tile_positions, 
-        endpoint=True
-    )[1:-1]
-
-    if verbose:
-        print(
-            "\nAO Grid parameters:\n",
-            f"\n  grid tile min/max: {tile_axis_min} / {tile_axis_max}",
-            f"\n  scan tile min/max: {scan_axis_min} / {scan_axis_max}",
-            f"\n  AO scan axis delta: {scan_axis_delta}",
-            f"\n  AO tile axis delta: {tile_axis_delta}",
-            f"\n  AO scan axis positions:\n{scan_axis_positions}",
-            f"\n  AO tile axis positions:\n{tile_axis_positions}",
-        )
-    
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
     for z_idx in range(num_z_positions):
         for tile_idx in range(num_tile_positions):
             for scan_idx in range(num_scan_positions):
-                # Extract the unique z positions for this scan tile, use the z_idx
+                scan_pos_filter = np.ceil(ao_scan_axis_positions[scan_idx] - stage_positions_array[:, 2])==1
                 z_tile_positions = np.unique(
-                    stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[scan_idx]][:, 0]
+                    stage_positions_array[scan_pos_filter][:, 0]
                 )
                 ao_stage_positions.append(
                     {
-                        "z": z_tile_positions[z_idx],
-                        "y": ao_tile_axis_positions[tile_idx],
-                        "x": ao_scan_axis_positions[scan_idx]
+                        "z": np.round(z_tile_positions[z_idx],2),
+                        "y": np.round(ao_tile_axis_positions[tile_idx],2),
+                        "x": np.round(ao_scan_axis_positions[scan_idx],2)
                     }
                 )
 
@@ -1431,54 +1401,49 @@ def run_ao_grid_mapping(
     position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
     position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
         
-    # Define a threshold for matching AO grid positions
-    AO_POSITION_THRESHOLD = 0
-
     # Convert AO positions and stage positions into structured arrays for efficient lookup
     ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
     stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
 
-    # Find the closest AO match per stage position
     for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
-        # Find AO positions within threshold range of the current stage X
-        to_use = ao_stage_positions_array[:, 2] - stage_x > AO_POSITION_THRESHOLD
-        relevant_ao_positions = ao_stage_positions_array[to_use]
+        # Get matching target ao positions
+        target_z = ao_stage_positions_array[:,0][
+            int(np.argmin(np.abs(stage_z - ao_stage_positions_array[:, 0])))
+            ]
+        target_y = ao_stage_positions_array[:,1][
+            int(np.argmin(np.abs(stage_y - ao_stage_positions_array[:, 1])))
+            ]
+        target_x = ao_stage_positions_array[:,2][
+            int(np.argmin(np.abs(stage_x - ao_stage_positions_array[:, 2])))
+            ]
         
-        if relevant_ao_positions.size == 0:
-            print(f"Warning: No AO match found for stage position {stage_positions[pos_idx]}")
-            continue  # Skip this position if no match
+        # Find AO positions with matching z and y
+        candidates = ao_stage_positions_array[
+            (ao_stage_positions_array[:, 0] == target_z) &
+            (ao_stage_positions_array[:, 1] == target_y) &
+            (ao_stage_positions_array[:, 2] >= target_x)  # AO x must be >= stage x
+        ]
+        
+        # Compute distances
+        distances = np.linalg.norm(candidates - [target_z, stage_y, stage_x], axis=1)
+        best_candidate_idx = np.argmin(distances)
+        ao_grid_idx = np.where(
+            (ao_stage_positions_array[:, 0] == candidates[best_candidate_idx][0]) &
+            (ao_stage_positions_array[:, 1] == candidates[best_candidate_idx][1]) &
+            (ao_stage_positions_array[:, 2] == candidates[best_candidate_idx][2])
+        )[0][0]
 
-        # Compute Euclidean distance only among relevant AO positions
-        distances = np.linalg.norm(relevant_ao_positions - [stage_z, stage_y, stage_x], axis=1)
-        
-        # Get index of closest AO position
-        ao_grid_idx = np.where(to_use)[0][np.argmin(distances)]
-        
-        # Assign the corresponding AO grid data
+        # Assign AO data
         position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
         position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
 
         if verbose:
             print(
-                f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
-                f"Exp. stage position: {stage_positions[pos_idx]}"
+                f"\n\n AO grid position: {ao_stage_positions[ao_grid_idx]}",
+                f"\n Exp. stage position: {stage_positions[pos_idx]}"
             )
-            
-    # # For each stage position, find the closest AO grid position
-    # for pos_idx in range(len(stage_positions)):
-    #     ao_grid_idx = np.argmin(distances[pos_idx])
-    #     position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
-    #     position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
-        
-    #     if verbose:
-    #         print(
-    #             f"AO grid position: {ao_stage_positions[ao_grid_idx]}",
-    #             f"Exp. stage position: {stage_positions[pos_idx]}"
-    #         )
-            
     aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
     aoMirror_local.wfc_positions_array = position_wfc_positions
-    
     return True
 
 #-------------------------------------------------#
