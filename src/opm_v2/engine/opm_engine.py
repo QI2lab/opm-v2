@@ -161,7 +161,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
                     "ScanSettlingTime(ms)",
-                    2000
+                    3000
                 )
                 
                 #--------------------------------------------------------#
@@ -394,7 +394,7 @@ class OPMEngine(MDAEngine):
                             str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
                             float(data_dict["DAQ"]["channel_powers"][chan_idx])
                         )
-                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),0)
+                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),2)
                     else:
                         self._mmc.setProperty(
                             self._config["Lasers"]["name"],
@@ -414,7 +414,7 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         f"Camera Exposure: ",
-                        f"Actual: {self._mmc.getExposure()}",
+                        f"Actual: {np.round(self._mmc.getExposure(),2)}",
                         f"Requested: {exposure_ms}",
                     )
         else:

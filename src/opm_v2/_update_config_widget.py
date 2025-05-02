@@ -158,7 +158,16 @@ class OPMSettings(QWidget):
         self.layout_ao_mode = QHBoxLayout()
         self.layout_ao_mode.addWidget(QLabel('AO mode:'))
         self.layout_ao_mode.addWidget(self.cmbx_ao_mode)
-                
+       
+        self.cmbx_ao_mirror = self.create_combobox(
+            items=self.config['OPM']['ao_mirror_states'],
+            width=125,
+            connect_to_fn=self.update_config
+        )        
+        self.layout_ao_mirror = QHBoxLayout()
+        self.layout_ao_mirror.addWidget(QLabel('AO Mirror State:'))
+        self.layout_ao_mirror.addWidget(self.cmbx_ao_mirror)
+        
         self.cmbx_ao_metric = self.create_combobox(
             items=self.config['OPM']['ao_metrics'],
             width=125,
@@ -234,6 +243,7 @@ class OPMSettings(QWidget):
                 
         self.group_ao_main = QGroupBox('AO optimization settings')
         self.layout_ao_main = QVBoxLayout()
+        self.layout_ao_main.addLayout(self.layout_ao_mirror)
         self.layout_ao_main.addLayout(self.layout_ao_mode)
         self.layout_ao_main.addLayout(self.layout_ao_metric)
         self.layout_ao_main.addLayout(self.layout_ao_daq_mode)
@@ -264,7 +274,8 @@ class OPMSettings(QWidget):
                     'active_channel_id': self.cmbx_ao_active_channel,
                     'active_channel_power': self.spbx_active_channel_power,
                     'exposure_ms': self.spbx_ao_exposure,
-                    'ao_mode': self.cmbx_ao_mode
+                    'ao_mode': self.cmbx_ao_mode,
+                    'mirror_state': self.cmbx_ao_mirror
                     }  
                 }
         )
@@ -777,8 +788,6 @@ class OPMSettings(QWidget):
         with open(self.config_path, 'w') as file:
                 json.dump(self.config, file, indent=4)
         
-
-        
         self.settings_changed.emit()
         
 
@@ -788,7 +797,7 @@ if __name__ ==  '__main__':
     window = OPMSettings(config_path)
     window.show()
     
-    def signal_recieved():
+    def signal_recieved(key, value):
         print('signal triggered')
     window.settings_changed.connect(signal_recieved)
     
