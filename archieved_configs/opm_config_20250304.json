@@ -22,7 +22,7 @@
         "laser_blanking": true,
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
-        "image_mirror_step_size_um": 0.1,
+        "image_mirror_step_um": 0.1,
         "image_mirror_neutral_um": 0.4,
         "projection_mirror_neutral_um": 0.0,
         "verbose": false
@@ -85,7 +85,7 @@
     },
     "Stage": {
         "name": "TigerCommHub",
-        "stage_step_size_um": 0.4,
+        "scan_step_size_um": 0.4,
         "excess_positions": 5,
         "max_z_change_um": 3
     },
