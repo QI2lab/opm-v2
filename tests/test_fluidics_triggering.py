@@ -14,31 +14,31 @@ def main():
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
     
-    # # Start the mirror in the flat_position position.
-    # opmAOmirror = AOMirror(
-    #     wfc_config_file_path = Path(config["AOMirror"]["wfc_config_path"]),
-    #     haso_config_file_path = Path(config["AOMirror"]["haso_config_path"]),
-    #     interaction_matrix_file_path = Path(config["AOMirror"]["wfc_correction_path"]),
-    #     flat_positions_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
-    #     n_modes = 32,
-    #     n_positions=1,
-    #     modes_to_ignore = []
-    # )
+    # Start the mirror in the flat_position position.
+    opmAOmirror = AOMirror(
+        wfc_config_file_path = Path(config["AOMirror"]["wfc_config_path"]),
+        haso_config_file_path = Path(config["AOMirror"]["haso_config_path"]),
+        interaction_matrix_file_path = Path(config["AOMirror"]["wfc_correction_path"]),
+        flat_positions_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
+        n_modes = 32,
+        n_positions=1,
+        modes_to_ignore = []
+    )
     
-    # opmAOmirror.set_mirror_positions_flat()
+    opmAOmirror.set_mirror_positions_flat()
 
-    # # load OPM NIDAQ and OPM AO mirror classes
-    # opmNIDAQ = OPMNIDAQ(
-    #     name = str(config["NIDAQ"]["name"]),
-    #     scan_type = str(config["NIDAQ"]["scan_type"]),
-    #     exposure_ms = float(config["Camera"]["exposure_ms"]),
-    #     laser_blanking = bool(config["NIDAQ"]["laser_blanking"]),
-    #     image_mirror_calibration = float(str(config["NIDAQ"]["image_mirror_calibration"])),
-    #     projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
-    #     image_mirror_step_size_um = float(str(config["NIDAQ"]["image_mirror_step_size_um"])),
-    #     verbose = bool(config["NIDAQ"]["verbose"])
-    # )
-    # opmNIDAQ.reset()
+    # load OPM NIDAQ and OPM AO mirror classes
+    opmNIDAQ = OPMNIDAQ(
+        name = str(config["NIDAQ"]["name"]),
+        scan_type = str(config["NIDAQ"]["scan_type"]),
+        exposure_ms = float(config["Camera"]["exposure_ms"]),
+        laser_blanking = bool(config["NIDAQ"]["laser_blanking"]),
+        image_mirror_calibration = float(str(config["NIDAQ"]["image_mirror_calibration"])),
+        projection_mirror_calibration = float(str(config["NIDAQ"]["projection_mirror_calibration"])),
+        image_mirror_step_um = float(str(config["NIDAQ"]["image_mirror_step_um"])),
+        verbose = bool(config["NIDAQ"]["verbose"])
+    )
+    opmNIDAQ.reset()
     
     # Initialize ElveFlow OB1 Controller
     opmOB1 = OB1Controller(
