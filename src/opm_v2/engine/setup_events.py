@@ -179,6 +179,390 @@ def stage_positions_from_grid(
     
     return stage_positions
 
+def setup_static_timelapse(
+    mmc: CMMCorePlus,
+    config: dict,
+    sequence: MDASequence,
+    output: Path,
+) -> list[MDAEvent]:
+    
+    OPMdaq_setup = OPMNIDAQ.instance()
+    opm_events = [] 
+    
+     #--------------------------------------------------------------------#
+    # Compile acquisition settings from configuration
+    #--------------------------------------------------------------------#
+    # Get the acquisition modes
+    opm_mode = config['acq_config']['opm_mode']
+    ao_mode = config['acq_config']['AO']['ao_mode']
+    o2o3_mode = config['acq_config']['O2O3-autofocus']['o2o3_mode']
+    
+    # Get pixel size and deskew Y-scale factor
+    pixel_size_um = np.round(float(mmc.getPixelSizeUm()),3) # unit: um
+    
+    # Get the scan range, coverslip slope and overlaps
+    OPMdaq_setup.set_acquisition_params(
+        scan_type="2d",
+    )
+    
+    # Get the camera crop values
+    camera_crop_y = int(config['acq_config']['camera_roi']['crop_y'])
+    camera_crop_x = int(config['acq_config']['camera_roi']['crop_x'])
+    camera_center_y = int(config['acq_config']['camera_roi']['center_y'])
+    camera_center_x = int(config['acq_config']['camera_roi']['center_x'])
+    
+    #----------------------------------------------------------------#
+    # Get channel settings
+    # laser_blanking = config['acq_config'][opm_mode+'_scan']['laser_blanking']
+    channel_states = config['acq_config']['static_timelapse']['channel_states']
+    channel_powers = config['acq_config']['static_timelapse']['channel_powers']
+    channel_exposures_ms = config['acq_config']['static_timelapse']['channel_exposures_ms']
+    channel_names = config['OPM']['channel_ids']
+    
+    n_active_channels = sum(channel_states)
+    active_channel_names = [_name for _, _name in zip(channel_states, channel_names) if _]
+    
+    # Interleave only available if all channels have the same exposure.
+    active_channel_exps = []
+    for ii, ch_state in enumerate(channel_states):
+        if ch_state:
+            active_channel_exps.append(channel_exposures_ms[ii])
+        else:
+            # set not used channel powers to 0
+            channel_powers[ii] = 0
+        
+    if len(set(active_channel_exps))==1:
+        interleaved_acq = True
+    else:
+        interleaved_acq = False
+            
+    if sum(channel_powers)==0:
+        print('All lasers set to 0!')
+        return None, None
+        
+    #----------------------------------------------------------------#
+    # try to get camera conversion factor information
+    try:
+        offset = mmc.getProperty(
+            config['Camera']['camera_id'],
+            'CONVERSION FACTOR OFFSET'
+        )
+        e_to_ADU = mmc.getProperty(
+            config['Camera']['camera_id'],
+            'CONVERSION FACTOR COEFF'
+        )
+    except Exception:
+        offset = 0.
+        e_to_ADU = 1.
+
+    #--------------------------------------------------------------------#
+    # Compile mda acquisition settings from active tabs
+    #--------------------------------------------------------------------#
+    
+    # Split apart sequence dictionary
+    sequence_dict = json.loads(sequence.model_dump_json())
+    mda_positions_plan = sequence_dict['stage_positions']
+    mda_time_plan = sequence_dict['time_plan']
+    
+    if (mda_positions_plan is None) or (mda_time_plan is None):
+        print('Must select MDA positions AND time plan for static timelapse')
+        return None, None
+    
+    #----------------------------------------------------------------#
+    # Create custom action data
+    #----------------------------------------------------------------#
+           
+    #----------------------------------------------------------------#
+    # Create DAQ event
+    daq_action_data = {
+        'DAQ' : {
+            'mode' : 'mirror',
+            'channel_states' : channel_states,
+            'channel_powers' : channel_powers,
+            'interleaved' : interleaved_acq,
+        },
+        'Camera' : {
+            'exposure_channels' : channel_exposures_ms,
+            'camera_crop' : [
+                int(camera_center_x - camera_crop_x//2),
+                int(camera_center_y - camera_crop_y//2),
+                int(camera_crop_x),
+                int(camera_crop_y),
+            ]
+        }
+    }
+
+    # Create DAQ event to run before acquiring each 'image'
+    daq_event = MDAEvent(**DAQ_event.model_dump())
+    daq_event.action.data.update(daq_action_data)
+            
+    # #----------------------------------------------------------------#
+    # # Create the o2o3 AF event data
+    # if 'none' not in o2o3_mode:
+    #     o2o3_action_data = {
+    #         'Camera' : {                    
+    #             'exposure_ms' : config['O2O3-autofocus']['exposure_ms'],
+    #             'camera_crop' : [
+    #                 int(camera_center_x - camera_crop_x//2),
+    #                 int(camera_center_y - config['acq_config']['O2O3-autofocus']['roi_crop_y']//2),
+    #                 int(camera_crop_x),
+    #                 int(config['acq_config']['O2O3-autofocus']['roi_crop_y'])
+    #                 ]
+    #             }
+    #         }
+        
+    #     o2o3_event = MDAEvent(**O2O3_af_event.model_dump())
+    #     o2o3_event.action.data.update(o2o3_action_data)
+        
+    #----------------------------------------------------------------#
+    # Compile mda positions from active tabs and config
+    #----------------------------------------------------------------#
+
+    # Get time points
+    n_time_steps = mda_time_plan['loops']
+    time_interval = mda_time_plan['interval']
+        
+    #----------------------------------------------------------------#
+    # # Generate xyz stage positions
+    # stage_position = []
+    # for stage_pos in mda_positions_plan:
+    #     stage_position.append(
+    #         {
+    #             'x': float(stage_pos['x']),
+    #             'y': float(stage_pos['y']),
+    #             'z': float(stage_pos['z'])
+    #         }
+    #     )
+    # n_stage_positions = len(stage_position)
+    # if n_stage_positions > 1:
+    #     stage_position = stage_position[0]
+    #     print(
+    #         f"Multiple stage positions selected, using the first:\n {stage_position}"
+    #     )
+
+    # #----------------------------------------------------------------#
+    # # Create MDA event structure
+    # #----------------------------------------------------------------#
+
+    # opm_events: list[MDAEvent] = []
+
+    # # Flags to help ensure sequence-able events are kept together 
+    # need_to_setup_DAQ = True
+    # need_to_setup_stage = True
+    
+    # # # Check if run AF at start only
+    # # if 'start' in o2o3_mode:
+    # #     opm_events.append(o2o3_event)
+        
+    # # # check if run AO at start only
+    # # if 'start' in ao_mode:
+    # #     opm_events.append(ao_optimization_event)
+    
+    # #----------------------------------------------------------------#
+    # # setup nD mirror-based AO-OPM acquisition event structure
+    
+    # if DEBUGGING: 
+    #         print(
+    #             'Acquisition shape values:'
+    #             f'\n  timepoints: {n_time_steps}',
+    #             f'\n  Stage positions: {n_stage_positions}',
+    #             f'\n  Active channels: {n_active_channels}',
+    #             f'\n  Num scan positions: {n_scan_steps}'
+    #         )
+            
+    # for time_idx in trange(n_time_steps, desc= 'Timepoints:', leave=True):
+    #     if 'none' not in fluidics_mode and time_idx!=0:
+    #         current_FP_event = MDAEvent(**fp_event.model_dump())
+    #         current_FP_event.action.data['Fluidics']['round'] = int(time_idx)
+    #         opm_events.append(current_FP_event)
+            
+    #     if 'time' in o2o3_mode:
+    #         opm_events.append(o2o3_event)
+        
+    #     pos_idx = 0
+    #     for pos_idx in range(n_stage_positions):
+    #         if need_to_setup_stage:      
+    #             stage_event = MDAEvent(
+    #                 action=CustomAction(
+    #                     name= 'Stage-Move',
+    #                     data = {
+    #                         'Stage' : {
+    #                             'x_pos' : stage_positions[pos_idx]['x'],
+    #                             'y_pos' : stage_positions[pos_idx]['y'],
+    #                             'z_pos' : stage_positions[pos_idx]['z'],
+    #                         }
+    #                     }
+    #                 )
+    #             )
+    #             opm_events.append(stage_event)
+                
+    #             if n_stage_positions > 1:
+    #                 need_to_setup_stage = True
+    #             else:
+    #                 need_to_setup_stage = False
+        
+    #         if 'xyz' in o2o3_mode:
+    #             opm_events.append(o2o3_event)
+            
+    #         # Apply the grid mirror state
+    #         if 'grid' in ao_mode:
+    #             apply_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
+    #             apply_ao_grid_event.action.data['AO']['apply_ao_map'] = True
+    #             apply_ao_grid_event.action.data['AO']['pos_idx'] = int(pos_idx)
+    #             opm_events.append(apply_ao_grid_event)
+                
+    #         # Run AO optimization before acquiring current position
+    #         if ('xyz' in ao_mode) and (time_idx == 0):
+    #             need_to_setup_DAQ = True
+    #             current_AO_event = MDAEvent(**ao_optimization_event.model_dump())
+    #             current_AO_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_optimize')
+    #             current_AO_event.action.data['AO']['pos_idx'] = int(pos_idx)
+    #             current_AO_event.action.data['AO']['apply_existing'] = False
+    #             opm_events.append(current_AO_event)
+                
+    #         # Apply mirror correction for this position if time_idx > 0
+    #         elif ('xyz' in ao_mode) and (time_idx > 0):
+    #             need_to_setup_DAQ = True
+    #             current_AO_event = MDAEvent(**ao_optimization_event.model_dump())
+    #             current_AO_event.action.data['AO']['pos_idx'] = int(pos_idx)
+    #             current_AO_event.action.data['AO']['apply_existing'] = True
+    #             opm_events.append(current_AO_event)
+                
+    #         # Finally, handle acquiring images. 
+    #         # These events are passed through to the normal MDAEngine and *should* be sequenced. 
+    #         if interleaved_acq:
+    #             if need_to_setup_DAQ:
+    #                 need_to_setup_DAQ = True
+    #                 opm_events.append(daq_event)
+    #             for scan_idx in range(n_scan_steps):
+    #                 for chan_idx in range(n_active_channels):
+    #                     image_event = MDAEvent(
+    #                         index=mappingproxy(
+    #                             {
+    #                                 't': time_idx, 
+    #                                 'p': pos_idx, 
+    #                                 'c': chan_idx,
+    #                                 'z': scan_idx
+    #                             }
+    #                         ),
+    #                         metadata = {
+    #                             'DAQ' : {
+    #                                 'mode' : 'mirror',
+    #                                 'image_mirror_range_um' : float(scan_range_um),
+    #                                 'image_mirror_step_um': float(scan_step_um),
+    #                                 'active_channels' : channel_states,
+    #                                 'exposure_channels_ms': channel_exposures_ms,
+    #                                 'interleaved' : interleaved_acq,
+    #                                 'laser_powers' : channel_powers,
+    #                                 'blanking' : laser_blanking,
+    #                                 'current_channel' : active_channel_names[chan_idx]
+    #                             },
+    #                             'Camera' : {
+    #                                 'exposure_ms' : float(channel_exposures_ms[chan_idx]),
+    #                                 'camera_center_x' : int(camera_center_x),
+    #                                 'camera_center_y' : int(camera_center_y),
+    #                                 'camera_crop_x' : int(camera_crop_x),
+    #                                 'camera_crop_y' : int(camera_crop_y),
+    #                                 'offset' : float(offset),
+    #                                 'e_to_ADU': float(e_to_ADU)
+    #                             },
+    #                             'OPM' : {
+    #                                 'angle_deg' : float(config['OPM']['angle_deg']),
+    #                                 'camera_Zstage_orientation' : str(config['OPM']['camera_Zstage_orientation']),
+    #                                 'camera_XYstage_orientation' : str(config['OPM']['camera_XYstage_orientation']),
+    #                                 'camera_mirror_orientation' : str(config['OPM']['camera_mirror_orientation'])
+    #                             },
+    #                             'Stage' : {
+    #                                 'x_pos' : float(stage_positions[pos_idx]['x']),
+    #                                 'y_pos' : float(stage_positions[pos_idx]['y']),
+    #                                 'z_pos' : float(stage_positions[pos_idx]['z']),
+    #                             }
+    #                         }
+    #                     )
+    #                     opm_events.append(image_event)
+    #         else:
+    #             # Mirror scan each channel separately
+    #             for chan_idx, chan_bool in enumerate(channel_states):
+    #                 for scan_idx in range(n_scan_steps):
+    #                     temp_channels = [False] * len(channel_states)
+    #                     temp_exposures = [0] * len(channel_exposures_ms)
+    #                     if chan_bool:
+    #                         if need_to_setup_DAQ:
+    #                             need_to_setup_DAQ = True
+    #                             temp_channels[chan_idx] = True
+    #                             temp_exposures[chan_idx] = channel_exposures_ms[chan_idx]
+    #                             current_DAQ_event = MDAEvent(**daq_event.model_dump())
+    #                             current_DAQ_event.action.data['DAQ']['active_channels'] = temp_channels
+    #                             current_DAQ_event.action.data['Camera']['exposure_channels'] = temp_exposures 
+    #                             opm_events.append(current_DAQ_event)
+                            
+    #                         image_event = MDAEvent(
+    #                             index=mappingproxy(
+    #                                 {
+    #                                     't': time_idx, 
+    #                                     'p': pos_idx, 
+    #                                     'c': chan_idx,
+    #                                     'z': scan_idx
+    #                                 }
+    #                             ),
+    #                             metadata = {
+    #                                 'DAQ' : {
+    #                                     'mode' : 'mirror',
+    #                                     'image_mirror_range_um': float(scan_range_um),
+    #                                     'image_mirror_step_um': float(scan_step_um),
+    #                                     'active_channels' : channel_states,
+    #                                     'exposure_channels_ms': channel_exposures_ms,
+    #                                     'interleaved' : interleaved_acq,
+    #                                     'laser_powers' : channel_powers,
+    #                                     'blanking' : laser_blanking,
+    #                                     'current_channel' : active_channel_names[chan_idx]
+    #                                 },
+    #                                 'Camera' : {
+    #                                     'exposure_ms' : float(channel_exposures_ms[chan_idx]),
+    #                                     'camera_center_x' : int(camera_center_x),
+    #                                     'camera_center_y' : int(camera_center_y),
+    #                                     'camera_crop_x' : int(camera_crop_x),
+    #                                     'camera_crop_y' : int(camera_crop_y),
+    #                                     'offset' : float(offset),
+    #                                     'e_to_ADU': float(e_to_ADU)
+    #                                 },
+    #                                 'OPM' : {
+    #                                     'angle_deg' : float(config['OPM']['angle_deg']),
+    #                                     'camera_Zstage_orientation' : str(config['OPM']['camera_Zstage_orientation']),
+    #                                     'camera_XYstage_orientation' : str(config['OPM']['camera_XYstage_orientation']),
+    #                                     'camera_mirror_orientation' : str(config['OPM']['camera_mirror_orientation'])
+    #                                 },
+    #                                 'Stage' : {
+    #                                     'x_pos' : float(stage_positions[pos_idx]['x']),
+    #                                     'y_pos' : float(stage_positions[pos_idx]['y']),
+    #                                     'z_pos' : float(stage_positions[pos_idx]['z']),
+    #                                 }
+    #                             }
+    #                         )
+    #                         opm_events.append(image_event)
+
+    # # Check if path ends if .zarr. If so, use our OutputHandler
+    # if len(Path(output).suffixes) == 1 and Path(output).suffix ==  '.zarr':
+    #     indice_sizes = {
+    #         't' : int(np.maximum(1,n_time_steps)),
+    #         'p' : int(np.maximum(1,n_stage_positions)),
+    #         'c' : int(np.maximum(1,n_active_channels)),
+    #         'z' : int(np.maximum(1,n_scan_steps))
+    #     }
+
+    #     handler = OPMMirrorHandler(
+    #         path=Path(output),
+    #         indice_sizes=indice_sizes,
+    #         delete_existing=True
+    #     )
+            
+    #     print(f'\nUsing Qi2lab handler,\nindices: {indice_sizes}\n')
+            
+    # else:
+    #     print('Using default handler')
+    #     handler = Path(output)
+            
+    # return opm_events, handler
 def setup_optimizenow(
         mmc: CMMCorePlus,
         config: dict,
@@ -403,10 +787,14 @@ def setup_projection(
         ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
         ao_output_dir.mkdir(exist_ok=True)
         
+        AO_daq_mode = str(config['acq_config']['AO']['daq_mode'])
+        if '2d' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['camera_roi']['crop_y'])
+        elif 'projection' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/mmc.getPixelSizeUm())
         AO_channel_states = [False] * len(channel_names) 
         AO_channel_powers = [0.] * len(channel_names)
         AO_active_channel_id = config['acq_config']['AO']['active_channel_id']
-        AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/pixel_size_um)
         AO_save_path = ao_output_dir
         
         # Set the active channel in the daq channel list
@@ -816,13 +1204,33 @@ def setup_mirrorscan(
     scan_step_um = float(config['acq_config']['mirror_scan']['scan_step_size_um'])
     tile_axis_overlap = float(config['acq_config']['mirror_scan']['tile_axis_overlap'])
     z_axis_overlap = float(config['acq_config']['mirror_scan']['z_axis_overlap'])
-    OPMdaq_setup.set_acquisition_params(
-        scan_type="mirror",
-        image_mirror_range_um=scan_range_um,
-        image_mirror_step_um=scan_step_um
-    )
-    n_scan_steps = OPMdaq_setup.n_scan_steps
     
+    if scan_range_um == 0.0:
+        scan_mode = '2d'
+        print("Setting up a 2d scan mode:")
+        OPMdaq_setup.set_acquisition_params(
+            scan_type='2d'
+        )
+        n_scan_steps = 1
+    else:
+        scan_mode = 'mirror'
+        OPMdaq_setup.set_acquisition_params(
+            scan_type="mirror",
+            image_mirror_range_um=scan_range_um,
+            image_mirror_step_um=scan_step_um
+        )
+        
+        n_scan_steps = OPMdaq_setup.n_scan_steps
+    
+    
+    if DEBUGGING:
+        print(
+            '\nMirror scan settings:\n'
+            f'num scan steps: {n_scan_steps}\n',
+            f'scan range (um): {scan_range_um}',
+            f'scan step (um): {scan_step_um}',
+            f'DAQ scan mode: {scan_mode}'
+        )
     # Get the camera crop values
     camera_crop_y = int(config['acq_config']['camera_roi']['crop_y'])
     camera_crop_x = int(config['acq_config']['camera_roi']['crop_x'])
@@ -896,7 +1304,7 @@ def setup_mirrorscan(
     # Create DAQ event
     daq_action_data = {
         'DAQ' : {
-            'mode' : 'mirror',
+            'mode' : scan_mode,
             'channel_states' : channel_states,
             'image_mirror_step_um': scan_step_um,
             'image_mirror_range_um' : scan_range_um,
@@ -926,10 +1334,14 @@ def setup_mirrorscan(
         ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
         ao_output_dir.mkdir(exist_ok=True)
         
+        AO_daq_mode = str(config['acq_config']['AO']['daq_mode'])
+        if '2d' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['camera_roi']['crop_y'])
+        elif 'projection' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/mmc.getPixelSizeUm())
         AO_channel_states = [False] * len(channel_names) 
         AO_channel_powers = [0.] * len(channel_names)
         AO_active_channel_id = config['acq_config']['AO']['active_channel_id']
-        AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/pixel_size_um)
         AO_save_path = ao_output_dir
         
         # Set the active channel in the daq channel list
@@ -1125,7 +1537,7 @@ def setup_mirrorscan(
                 f'\n  Active channels: {n_active_channels}',
                 f'\n  Num scan positions: {n_scan_steps}'
             )
-            
+        
     for time_idx in trange(n_time_steps, desc= 'Timepoints:', leave=True):
         if 'none' not in fluidics_mode and time_idx!=0:
             current_FP_event = MDAEvent(**fp_event.model_dump())
@@ -1162,6 +1574,7 @@ def setup_mirrorscan(
             
             # Apply the grid mirror state
             if 'grid' in ao_mode:
+                need_to_setup_DAQ = True
                 apply_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
                 apply_ao_grid_event.action.data['AO']['apply_ao_map'] = True
                 apply_ao_grid_event.action.data['AO']['pos_idx'] = int(pos_idx)
@@ -1188,8 +1601,8 @@ def setup_mirrorscan(
             # These events are passed through to the normal MDAEngine and *should* be sequenced. 
             if interleaved_acq:
                 if need_to_setup_DAQ:
-                    need_to_setup_DAQ = True
                     opm_events.append(daq_event)
+                    need_to_setup_DAQ = False
                 for scan_idx in range(n_scan_steps):
                     for chan_idx in range(n_active_channels):
                         image_event = MDAEvent(
@@ -1203,7 +1616,7 @@ def setup_mirrorscan(
                             ),
                             metadata = {
                                 'DAQ' : {
-                                    'mode' : 'mirror',
+                                    'mode' : scan_mode,
                                     'image_mirror_range_um' : float(scan_range_um),
                                     'image_mirror_step_um': float(scan_step_um),
                                     'active_channels' : channel_states,
@@ -1461,11 +1874,15 @@ def setup_stagescan(
         # Create a new directory in output.root for saving AO results
         ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
         ao_output_dir.mkdir(exist_ok=True)
-        
+        ao_daq_mode = str(config['acq_config']['AO']['daq_mode'])
+        if "2d" in ao_daq_mode:
+            AO_camera_crop_y = config['acq_config']['camera_roi']['crop_y']
+        else:
+            AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/pixel_size_um)
+            
         AO_channel_states = [False] * len(channel_names) 
         AO_channel_powers = [0.] * len(channel_names)
         AO_active_channel_id = config['acq_config']['AO']['active_channel_id']
-        AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/pixel_size_um)
         AO_save_path = ao_output_dir
         
         # Set the active channel in the daq channel list

@@ -371,6 +371,13 @@ class OPMEngine(MDAEngine):
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
                     )
+                elif str(data_dict["DAQ"]["mode"]) == "2d":
+                    self.opmDAQ.set_acquisition_params(
+                        scan_type = "2d",
+                        channel_states = data_dict["DAQ"]["channel_states"],
+                        laser_blanking = bool(data_dict["DAQ"]["blanking"]),
+                        exposure_ms = exposure_ms
+                    )                
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
                 

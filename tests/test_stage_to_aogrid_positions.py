@@ -1,29 +1,14 @@
 import numpy as np
-num_scan_positions = 3
-num_tile_positions = 3
+num_scan_positions = 1
+num_tile_positions = 1
 verbose=True
 # Example list of stage positions
+
 stage_positions = [
-    {"z": 0.1, "y": 0, "x": 1},
-    {"z": 0.2, "y": 0, "x": 2},
-    {"z": 0.3, "y": 0, "x": 3},
-    {"z": 0.4, "y": 0, "x": 4},
-    {"z": 0.5, "y": 0, "x": 5},
-    {"z": 5.1, "y": 0, "x": 1},
-    {"z": 5.2, "y": 0, "x": 2},
-    {"z": 5.3, "y": 0, "x": 3},
-    {"z": 5.4, "y": 0, "x": 4},
-    {"z": 5.5, "y": 0, "x": 5},
-    {"z": 0.1, "y": 10, "x": 1},
-    {"z": 0.2, "y": 10, "x": 2},
-    {"z": 0.3, "y": 10, "x": 3},
-    {"z": 0.4, "y": 10, "x": 4},
-    {"z": 0.5, "y": 10, "x": 5},
-    {"z": 5.1, "y": 10, "x": 1},
-    {"z": 5.2, "y": 10, "x": 2},
-    {"z": 5.3, "y": 10, "x": 3},
-    {"z": 5.4, "y": 10, "x": 4},
-    {"z": 5.5, "y": 10, "x": 5}
+    {"z": 180, "y": 1350.15, "x": -12990},
+    {"z": 196.67, "y": 1350.15, "x": -12990},
+    {"z": 213.33, "y": 1350.15, "x": -12990},
+    {"z": 230., "y": 1350.15, "x": -12990},
 ]
 
 stage_positions_array = np.array(
@@ -35,21 +20,31 @@ stage_positions_array = np.array(
 tile_axis_positions = np.unique(stage_positions_array[:, 1])
 scan_axis_positions = np.unique(stage_positions_array[:, 2])
 
-num_z_positions = np.unique(
+stage_z_positions = np.unique(
     stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][:, 0]
-).shape[0]
+)
+num_z_positions = stage_z_positions.shape[0]
 
-if len(scan_axis_positions)==1 or num_scan_positions==1:
-    scan_axis_delta = 0
-    ao_scan_axis_positions = np.asarray([np.mean(scan_axis_positions)])
+if num_scan_positions==1:
+    if len(scan_axis_positions)==1:
+        ao_scan_axis_positions = np.asarray(scan_axis_positions+100)
+    else:
+        ao_scan_axis_positions = np.asarray([np.mean(scan_axis_positions)])
+elif len(scan_axis_positions)==1:
+    ao_scan_length = num_scan_positions * 200
+    scan_axis_min = scan_axis_positions[0]
+    scan_axis_max = scan_axis_min + ao_scan_length
+    ao_scan_axis_positions = np.linspace(
+        scan_axis_min,
+        scan_axis_max,
+        num_scan_positions+2,
+        endpoint=True
+    )[1:-1]
 else:
     if num_scan_positions>len(scan_axis_positions)+1:
         num_scan_positions=len(scan_axis_positions)+1
-    scan_tile_delta = scan_axis_positions[1] - scan_axis_positions[0]
     scan_axis_min = scan_axis_positions[0]
     scan_axis_max = scan_axis_positions[-1]
-    scan_axis_range = np.abs(scan_axis_max - scan_axis_min)
-    scan_axis_delta = scan_axis_range / num_scan_positions
     ao_scan_axis_positions = np.linspace(
         scan_axis_min,
         scan_axis_max,
@@ -57,17 +52,17 @@ else:
         endpoint=True
     )[1:-1]
     
-if len(tile_axis_positions)==1 or num_tile_positions==1:
-    tile_axis_delta = 0
+if num_tile_positions==1:
     ao_tile_axis_positions = np.asarray([np.mean(tile_axis_positions)])
+elif len(tile_axis_positions)==1:
+    ao_tile_axis_positions = tile_axis_positions
+    num_tile_positions = 1 
 else:
     if num_tile_positions>len(tile_axis_positions)+1:
         num_tile_positions=len(tile_axis_positions)+1
-    tile_axis_delta = tile_axis_positions[1] - tile_axis_positions[0]
     tile_axis_min = tile_axis_positions[0]
     tile_axis_max = tile_axis_positions[-1]
     tile_axis_range = np.abs(tile_axis_max - tile_axis_min)
-    tile_axis_delta = tile_axis_range / num_tile_positions
     ao_tile_axis_positions = np.linspace(
         tile_axis_min, 
         tile_axis_max,
@@ -81,9 +76,13 @@ for z_idx in range(num_z_positions):
     for tile_idx in range(num_tile_positions):
         for scan_idx in range(num_scan_positions):
             scan_pos_filter = np.ceil(ao_scan_axis_positions[scan_idx] - stage_positions_array[:, 2])==1
-            z_tile_positions = np.unique(
-                stage_positions_array[scan_pos_filter][:, 0]
-            )
+            
+            if not any(scan_pos_filter):
+                z_tile_positions = stage_z_positions
+            else:
+                z_tile_positions = np.unique(
+                    stage_positions_array[scan_pos_filter][:, 0]
+                )
             ao_stage_positions.append(
                 {
                     "z": np.round(z_tile_positions[z_idx],2),
