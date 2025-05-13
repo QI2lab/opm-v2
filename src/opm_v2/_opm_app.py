@@ -37,7 +37,8 @@ from opm_v2.engine.setup_events import (
     setup_stagescan,
     setup_mirrorscan,
     setup_projection,
-    setup_optimizenow
+    setup_optimizenow,
+    setup_static_timelapse
 )
 
 DEBUGGING = True
@@ -137,11 +138,6 @@ def main() -> None:
     dock_widget.setObjectName("OPMConfigurator")
     win.addDockWidget(Qt.LeftDockWidgetArea, dock_widget)  
     dock_widget.setFloating(False)
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_488_state()
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_405_state()
     
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
@@ -187,7 +183,7 @@ def main() -> None:
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
     mda_widget.save_info.save_dir.setText(r"G:/")
     mda_widget.tab_wdg.grid_plan.setMode("bounds")
-    mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()
+    mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()   
     
     if DEBUGGING:
         mmc.enableDebugLog(True)
@@ -430,6 +426,8 @@ def main() -> None:
           
         if ("now" in ao_mode) or ("now" in o2o3_mode):
             optimize_now = True
+            if not output:
+                new_output = None
         else: 
             optimize_now = False        
                     
@@ -481,6 +479,13 @@ def main() -> None:
                 mmc = mmc,
                 config = config
                 )
+        elif ('static' in opm_mode):
+            opm_events, handler = setup_static_timelapse(
+                mmc = mmc,
+                config = config,
+                sequence = mda_widget.value(),
+                output = output
+            )
         elif ("stage" in opm_mode):
             opm_events, handler = setup_stagescan(
                 mmc = mmc,
