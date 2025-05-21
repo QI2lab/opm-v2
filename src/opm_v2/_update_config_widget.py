@@ -28,10 +28,22 @@ class OPMSettings(QWidget):
         with open(self.config_path, 'r') as config_file:
             config = json.load(config_file)
         
+        # Force all channel_states to False
+        n_channels = len(config['acq_config']['stage_scan']['channel_states'])
+        for mode in config['OPM']['imaging_modes']:
+            key = f"{mode}_scan" 
+            try:
+                config['acq_config'][f"{key}"]['channel_states'] = [False] * n_channels
+                config['acq_config'][f"{key}"]['channel_powers'] = [0] * n_channels
+                config['acq_config'][f"{key}"]['channel_exposures_ms'] = [0] * n_channels
+            except KeyError:
+                continue
+        config['acq_config']['timelapse']['channel_states'] = [False] * n_channels
+
         self.config = config
         self.widgets = {}       
         self.create_ui()
-        self.update_config()
+        self.update_config(False)
 
     def create_spinbox(
         self,
@@ -702,9 +714,9 @@ class OPMSettings(QWidget):
             self.config['acq_config'][_mode+'_scan']['channel_powers'][0] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][0] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['static_timelapse']['channel_states'][0] = checked
-        self.config['acq_config']['static_timelapse']['channel_powers'][0] = power
-        self.config['acq_config']['static_timelapse']['channel_exposures_ms'][0] = exposure_ms
+        self.config['acq_config']['timelapse']['channel_states'][0] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][0] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][0] = exposure_ms
         
         self.update_config(update_config=False)
                
@@ -717,9 +729,9 @@ class OPMSettings(QWidget):
             self.config['acq_config'][_mode+'_scan']['channel_powers'][1] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][1] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['static_timelapse']['channel_states'][1] = checked
-        self.config['acq_config']['static_timelapse']['channel_powers'][1] = power
-        self.config['acq_config']['static_timelapse']['channel_exposures_ms'][1] = exposure_ms
+        self.config['acq_config']['timelapse']['channel_states'][1] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][1] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][1] = exposure_ms
         
         self.update_config(update_config=False)
     
@@ -732,9 +744,9 @@ class OPMSettings(QWidget):
             self.config['acq_config'][_mode+'_scan']['channel_powers'][2] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][2] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['static_timelapse']['channel_states'][2] = checked
-        self.config['acq_config']['static_timelapse']['channel_powers'][2] = power
-        self.config['acq_config']['static_timelapse']['channel_exposures_ms'][2] = exposure_ms
+        self.config['acq_config']['timelapse']['channel_states'][2] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][2] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][2] = exposure_ms
         
         self.update_config(update_config=False)
         
@@ -747,9 +759,9 @@ class OPMSettings(QWidget):
             self.config['acq_config'][_mode+'_scan']['channel_powers'][3] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][3] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['static_timelapse']['channel_states'][3] = checked
-        self.config['acq_config']['static_timelapse']['channel_powers'][3] = power
-        self.config['acq_config']['static_timelapse']['channel_exposures_ms'][3] = exposure_ms
+        self.config['acq_config']['timelapse']['channel_states'][3] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][3] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][3] = exposure_ms
         
         self.update_config(update_config=False)
     
@@ -762,9 +774,9 @@ class OPMSettings(QWidget):
             self.config['acq_config'][_mode+'_scan']['channel_powers'][4] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][4] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['static_timelapse']['channel_states'][4] = checked
-        self.config['acq_config']['static_timelapse']['channel_powers'][4] = power
-        self.config['acq_config']['static_timelapse']['channel_exposures_ms'][4] = exposure_ms
+        self.config['acq_config']['timelapse']['channel_states'][4] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][4] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][4] = exposure_ms
         self.update_config(update_config=False)
         
     #--------------------------------------------------------------------#
