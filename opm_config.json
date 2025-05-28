@@ -6,6 +6,7 @@
             "mirror",
             "projection",
             "timelapse"
+            "timelapse"
         ],
         "live_modes": [
             "standard",
@@ -41,6 +42,12 @@
         ],
         "ao_modes": [
             "none",
+            "optimize now",
+            "grid at start",
+            "grid per timepoint",
+            "once at start",
+            "per xyz position",
+            "per timepoint"
             "optimize now",
             "grid at start",
             "grid per timepoint",
@@ -120,7 +127,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
+        "opm_mode": "projection",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1150.0,
@@ -160,16 +167,16 @@
             ],
             "channel_powers": [
                 0.0,
-                7.0,
-                5.0,
-                0.5,
-                7.5
+                20.0,
+                0.0,
+                0.0,
+                0.0
             ],
             "channel_exposures_ms": [
                 0.0,
-                300.0,
-                300.0,
-                300.0,
+                10.0,
+                0.0,
+                0.0,
                 0.0
             ]
         },
@@ -182,6 +189,7 @@
             "tile_axis_overlap": 0.15,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 false,
                 false,
                 false,
@@ -205,6 +213,7 @@
         },
         "stage_scan": {
             "coverslip_slope_x": 0.0,
+            "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
             "coverslip_max_dz": 2.0,
             "scan_step_size_um": 0.4,
@@ -215,6 +224,7 @@
             "excess_end_frames": 0,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 false,
                 false,
                 false,
@@ -243,6 +253,7 @@
             "tile_axis_overlap": 0.15,
             "laser_blanking": false,
             "channel_states": [
+                false,
                 false,
                 false,
                 false,
