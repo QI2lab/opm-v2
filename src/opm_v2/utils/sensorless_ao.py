@@ -76,7 +76,7 @@ def run_ao_optimization(
     save_dir_path: Optional[Path] = None,
     verbose: Optional[bool] = True,
     ):
-    
+    # modes_to_optimize = modes_to_optimize[::-1]
     #---------------------------------------------#
     # Create hardware controller instances
     #---------------------------------------------#

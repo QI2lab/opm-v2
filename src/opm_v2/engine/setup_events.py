@@ -16,7 +16,8 @@ from opm_v2.engine.opm_custom_actions import (
     AO_grid_event,
     FP_event,
     DAQ_event,
-    ASI_setup_event
+    ASI_setup_event,
+    Timelapse_event
 )
 DEBUGGING = True
 MAX_IMAGE_MIRROR_RANGE_UM = 250
@@ -429,7 +430,7 @@ def setup_timelapse(
     n_stage_positions = len(stage_positions)
     if n_stage_positions > 1:
         print(
-            f"Multiple stage positions selected, using the first:\n {stage_position}"
+            f"Multiple stage positions selected, using the first:\n"
         )
     stage_position = stage_positions[0]
     #----------------------------------------------------------------#
@@ -870,7 +871,7 @@ def setup_projection(
             ao_optimization_event = MDAEvent(**AO_optimize_event.model_dump())
             ao_optimization_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
-            
+        
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if 'none' not in o2o3_mode:
@@ -915,11 +916,27 @@ def setup_projection(
     elif mda_time_plan is not None:
         n_time_steps = mda_time_plan['loops']
         time_interval = mda_time_plan['interval']
-    
+
+        if time_interval>0:
+            timelapse_data = {
+                'plan': {
+                   'interval':time_interval,
+                    'time_steps':n_time_steps,
+                    'timepoint':0 
+                }
+            }
+            timelapse_event = MDAEvent(**Timelapse_event.model_dump())
+            timelapse_event.action.data.update(timelapse_data)
     else:
         n_time_steps = 1
         time_interval = 0
-    
+        
+    if DEBUGGING:
+        print(
+            '\nTimelapse parameters:',
+            f'\n  interval: {time_interval}',
+            f'\n  timepoints: {n_time_steps}'
+        )
     #----------------------------------------------------------------#
     # Generate xyz stage positions
 
@@ -991,11 +1008,16 @@ def setup_projection(
             current_FP_event = MDAEvent(**fp_event.model_dump())
             current_FP_event.action.data['Fluidics']['round'] = int(time_idx)
             opm_events.append(current_FP_event)
+        elif mda_time_plan is not None:
+            if time_idx>0:
+                current_timepoint_event = MDAEvent(**timelapse_event.model_dump())
+                opm_events.append(current_timepoint_event)
             
         if 'timepoint' in o2o3_mode:
             opm_events.append(o2o3_event)
         
         if 'timepoint' in ao_mode:
+            need_to_setup_DAQ = True
             if 'grid' in ao_mode:
                 generate_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
                 generate_ao_grid_event.action.data['AO']['stage_positions'] = stage_positions
@@ -1030,30 +1052,35 @@ def setup_projection(
                 
             # Run ao events
             if 'xyz' in ao_mode:
-                need_to_setup_DAQ = True
                 if time_idx==0:
+                    need_to_setup_DAQ = True
                     current_AO_event = MDAEvent(**ao_optimization_event.model_dump())
                     current_AO_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_optimize')
                     current_AO_event.action.data['AO']['pos_idx'] = int(pos_idx)
                     current_AO_event.action.data['AO']['apply_existing'] = False
                     opm_events.append(current_AO_event)
                 elif time_idx > 0:
+                    need_to_setup_DAQ = False
                     current_AO_event = MDAEvent(**ao_optimization_event.model_dump())
                     current_AO_event.action.data['AO']['pos_idx'] = int(pos_idx)
                     current_AO_event.action.data['AO']['apply_existing'] = True
                     opm_events.append(current_AO_event)
-            if 'grid' in ao_mode:
+            elif 'grid' in ao_mode:
                 apply_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
                 apply_ao_grid_event.action.data['AO']['apply_ao_map'] = True
                 apply_ao_grid_event.action.data['AO']['pos_idx'] = int(pos_idx)
                 opm_events.append(apply_ao_grid_event)
-            
+            else:
+                # Not running the AO, so DAQ does not need to be updated
+                # Except at the first timepoint
+                if time_idx>0:
+                    need_to_setup_DAQ = True
             # These events are passed through to the normal MDAEngine and *should* be sequenced. 
             if interleaved_acq:
                 if need_to_setup_DAQ:
                     need_to_setup_DAQ = True
                     opm_events.append(daq_event)
-            
+                
                 for chan_idx in range(n_active_channels):
                     image_event = MDAEvent(
                         index=mappingproxy(
