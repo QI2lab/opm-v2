@@ -245,8 +245,9 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # apply optimized mirror position
                 if data_dict["AO"]["apply_existing"]:
-                    print("AO: Load existing mirror positions\n")
+                    print("\nAO: Applying existing mirror position\n\n")
                     pass
+                
                 #--------------------------------------------------------#
                 # Set hardware state to run adaptive optics
                 else:
@@ -290,7 +291,9 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # apply optimized position
                 if data_dict["AO"]["apply_ao_map"]:
-                    print("AO: Load existing mirror positions\n")
+                    print("\nAO: Applying existing mirror position\n\n")
+                    pass
+                
                 #--------------------------------------------------------#
                 # run adaptive optics over a grid of positions.                            
                 else:
@@ -330,17 +333,17 @@ class OPMEngine(MDAEngine):
                                 0.0
                             )
                     
-                    # Set scan axis speed
+                    # Set ASI stage speed for moves
                     self._mmc.setProperty(
                         self._mmc.getXYStageDevice(),
                         "MotorSpeedX-S(mm/s)",
-                        0.1
+                        0.15
                     )    
                     self._mmc.setProperty(
                         self._mmc.getXYStageDevice(),
                         "MotorSpeedY-S(mm/s)",
-                        0.1
-                    ) 
+                        0.15
+                    )
             
             elif action_name == "DAQ":
                 #--------------------------------------------------------#
@@ -450,27 +453,18 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
-        
-            elif action_name == "AO-grid":               
-                if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
-                else:
-                    run_ao_grid_mapping(
-                        stage_positions = data_dict["AO"]["stage_positions"],
-                        ao_dict = data_dict["AO"]["ao_dict"],
-                        num_tile_positions = data_dict["AO"]["num_tile_positions"],
-                        num_scan_positions = data_dict["AO"]["num_scan_positions"],
-                        save_dir_path = data_dict["AO"]["output_path"],
-                        verbose = True,
-                    )
+                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=DEBUGGING)
                     
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
-                    wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
-                    self.AOMirror.set_mirror_positions(wfc_positions_to_use)
+                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with existing positions:',
+                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
+                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                        )
                 else:
-                    # self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
@@ -481,12 +475,38 @@ class OPMEngine(MDAEngine):
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
                         save_dir_path=data_dict["AO"]["output_path"],
-                        verbose=True
+                        verbose=DEBUGGING
                     )
-                    if data_dict["AO"]["pos_idx"]:
+                    try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                        self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
-
+                        if DEBUGGING:
+                            print(
+                                '\nAO: Saving positions to array:',
+                                f'\n  pos_idx: {int(data_dict["AO"]["pos_idx"])}',
+                                f'\n  mirror positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                            )
+                    except Exception:
+                        print("\nAO: Not setting ao positions array")
+                        
+            elif action_name == "AO-grid":               
+                if data_dict["AO"]["apply_ao_map"]:
+                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with existing positions:',
+                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
+                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                        )
+                else:
+                    run_ao_grid_mapping(
+                        stage_positions = data_dict["AO"]["stage_positions"],
+                        ao_dict = data_dict["AO"]["ao_dict"],
+                        num_tile_positions = data_dict["AO"]["num_tile_positions"],
+                        num_scan_positions = data_dict["AO"]["num_scan_positions"],
+                        save_dir_path = data_dict["AO"]["output_path"],
+                        verbose = DEBUGGING,
+                    )
+                    
             elif "DAQ" in action_name:
                 self.opmDAQ.start_waveform_playback()
                 
