@@ -25,7 +25,7 @@ class PicardShutter():
 
     @classmethod
     def instance(cls) -> 'PicardShutter':
-        """Return the global singleton instance of `AOMirror`.
+        """Return the global singleton instance of `PicardShutter`.
 
         """
         global _instance_shutter
@@ -72,10 +72,10 @@ class PicardShutter():
             new_state = PiUsbNet.ShutterState.Open
             self.shutter.State = new_state
 
-            # Wait until new state is signaled. Timeout after 1 sec
+            # Wait until new state is signaled. Timeout after 10 sec
             start_time = time.time()
             while self.shutter.State != new_state and (time.time()-start_time < 10.0):
-                time.sleep(0.2)
+                time.sleep(1.0)
 
             if self.shutter.State != new_state:
                 if self.verbose: print('Shutter change state timeout')
@@ -84,16 +84,16 @@ class PicardShutter():
         except PiUsbNet.UsbDeviceException as exc:
             if self.verbose: print(f'PiUsbNet exception: {exc}')
     
-    # open shutter
+    # close shutter
     def closeShutter(self):
         try:
             new_state = PiUsbNet.ShutterState.Closed
             self.shutter.State = new_state
 
-            # Wait until new state is signaled. Timeout after 1 sec
+            # Wait until new state is signaled. Timeout after 10 sec
             start_time = time.time()
             while self.shutter.State != new_state and (time.time()-start_time < 10.0):
-                time.sleep(0.2)
+                time.sleep(1.0)
 
             if self.shutter.State != new_state:
                 if self.verbose: print('Shutter change state timeout')

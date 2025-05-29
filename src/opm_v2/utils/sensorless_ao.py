@@ -1333,7 +1333,6 @@ def run_ao_grid_mapping(
             num_tile_positions=len(tile_axis_positions)+1
         tile_axis_min = tile_axis_positions[0]
         tile_axis_max = tile_axis_positions[-1]
-        tile_axis_range = np.abs(tile_axis_max - tile_axis_min)
         ao_tile_axis_positions = np.linspace(
             tile_axis_min, 
             tile_axis_max,

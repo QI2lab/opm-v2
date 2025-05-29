@@ -355,6 +355,7 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_405_spbx
         )   
         self.spbx_405_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
                 self.update_405_slider,
                 self.update_405_state]
@@ -380,8 +381,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_488_spbx
         )   
         self.spbx_488_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_488_slider,
+                # self.update_488_slider,
                 self.update_488_state]
         )
         self.spbx_488_exp = self.create_dbspinbox(
@@ -406,8 +408,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_561_spbx
         )   
         self.spbx_561_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_561_slider,
+                # self.update_561_slider,
                 self.update_561_state]
         )
         self.spbx_561_exp = self.create_dbspinbox(
@@ -432,8 +435,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_638_spbx
         )   
         self.spbx_638_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_638_slider,
+                # self.update_638_slider,
                 self.update_638_state]
         )
         self.spbx_638_exp = self.create_dbspinbox(
@@ -458,8 +462,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_705_spbx
         )   
         self.spbx_705_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_705_slider,
+                # self.update_705_slider,
                 self.update_705_state]
         )
         self.spbx_705_exp = self.create_dbspinbox(
@@ -667,7 +672,8 @@ class OPMSettings(QWidget):
 
     def update_405_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_405_power.setValue(int(self.spbx_405_power.value()))
+        # self.sldr_405_power.setValue(int(self.spbx_405_power.value()))
+        pass
     
     def update_488_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -675,7 +681,8 @@ class OPMSettings(QWidget):
 
     def update_488_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_488_power.setValue(int(self.spbx_488_power.value()))
+        # self.sldr_488_power.setValue(int(self.spbx_488_power.value()))
+        pass
         
     def update_561_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -683,7 +690,8 @@ class OPMSettings(QWidget):
 
     def update_561_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_561_power.setValue(int(self.spbx_561_power.value()))
+        # self.sldr_561_power.setValue(int(self.spbx_561_power.value()))
+        pass
     
     def update_638_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -691,7 +699,8 @@ class OPMSettings(QWidget):
 
     def update_638_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_638_power.setValue(int(self.spbx_638_power.value()))
+        # self.sldr_638_power.setValue(int(self.spbx_638_power.value()))
+        pass
         
     def update_705_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -699,8 +708,8 @@ class OPMSettings(QWidget):
 
     def update_705_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
- 
+        # self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
+        pass
     #--------------------------------------------------------------------#
     # Methods to update acquisition channel states
     #--------------------------------------------------------------------#

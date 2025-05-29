@@ -16,7 +16,8 @@ from opm_v2.engine.opm_custom_actions import (
     AO_grid_event,
     FP_event,
     DAQ_event,
-    ASI_setup_event
+    ASI_setup_event,
+    Timelapse_event
 )
 DEBUGGING = True
 MAX_IMAGE_MIRROR_RANGE_UM = 250
@@ -31,6 +32,7 @@ def stage_positions_from_grid(
     scan_range_um: float,
     tile_axis_overlap: float,
     z_axis_overlap: float = None,
+    coverslip_max_dz: float = None,
     coverslip_slope_x: float = 0,
     coverslip_slope_y: float = 0
     ):
@@ -53,6 +55,8 @@ def stage_positions_from_grid(
     tile_axis_overlap : float
         _description_
     z_axis_overlap : float, optional
+        _description_, by default None
+    coverslip_max_dz : float, optional
         _description_, by default None
     coverslip_slope_x : float, optional
         _description_, by default 0
@@ -135,6 +139,7 @@ def stage_positions_from_grid(
         
     # account for coverslip slopes
     if coverslip_slope_x != 0:
+        
         cs_x_max_pos = cs_min_pos + range_x_um * coverslip_slope_x
         cs_x_range_um = np.round(np.abs(cs_x_max_pos - cs_min_pos),2)
         dz_per_x_tile = np.round(cs_x_range_um/n_x_positions,2)
@@ -429,7 +434,7 @@ def setup_timelapse(
     n_stage_positions = len(stage_positions)
     if n_stage_positions > 1:
         print(
-            f"Multiple stage positions selected, using the first:\n {stage_position}"
+            f"Multiple stage positions selected, using the first:\n"
         )
     stage_position = stage_positions[0]
     #----------------------------------------------------------------#
@@ -873,7 +878,7 @@ def setup_projection(
             ao_optimization_event = MDAEvent(**AO_optimize_event.model_dump())
             ao_optimization_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
-            
+        
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if 'none' not in o2o3_mode:
@@ -918,11 +923,27 @@ def setup_projection(
     elif mda_time_plan is not None:
         n_time_steps = mda_time_plan['loops']
         time_interval = mda_time_plan['interval']
-    
+
+        if time_interval>0:
+            timelapse_data = {
+                'plan': {
+                   'interval':time_interval,
+                    'time_steps':n_time_steps,
+                    'timepoint':0 
+                }
+            }
+            timelapse_event = MDAEvent(**Timelapse_event.model_dump())
+            timelapse_event.action.data.update(timelapse_data)
     else:
         n_time_steps = 1
         time_interval = 0
-    
+        
+    if DEBUGGING:
+        print(
+            '\nTimelapse parameters:',
+            f'\n  interval: {time_interval}',
+            f'\n  timepoints: {n_time_steps}'
+        )
     #----------------------------------------------------------------#
     # Generate xyz stage positions
     # SJS: stage_positions_from_grid does not factor in coverslip slope
@@ -1158,7 +1179,7 @@ def setup_projection(
                                     'interleaved' : interleaved_acq,
                                     'laser_powers' : channel_powers,
                                     'blanking' : laser_blanking,
-                                    'current_channel' : active_channel_names[chan_idx]
+                                    'current_channel' : channel_names[chan_idx]
                                 },
                                 'Camera' : {
                                     'exposure_ms' : float(channel_exposures_ms[chan_idx]),

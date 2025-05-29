@@ -5,6 +5,8 @@ TO DO: Fix init so we only have one instance of OPMNIDAQ, OPMAOMIRROR, and confi
 Change Log:
 2025-02-07: New version that includes all possible modes
 """
+from datetime import datetime
+from PyQt6.QtCore import QThread
 
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent, MDASequence, CustomAction
@@ -22,7 +24,7 @@ from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
 from pathlib import Path
 import numpy as np
-from time import sleep
+from time import sleep, perf_counter
 import logging
 
 logging.getLogger("pymmcore-plus")
@@ -36,7 +38,9 @@ class OPMEngine(MDAEngine):
         self.opmDAQ = OPMNIDAQ.instance()
         self.AOMirror = AOMirror.instance()
         self.execute_stage_scan = False
-
+        self.start_time = None
+        self.elapsed_time = None
+        
         with open(config_path, "r") as config_file:
             self._config = json.load(config_file)
 
@@ -46,7 +50,8 @@ class OPMEngine(MDAEngine):
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
-
+        self.start_time = perf_counter()
+        self.elapsed_time = 0
         self._mmc.setCircularBufferMemoryFootprint(16000)
         super().setup_sequence(sequence)
 
@@ -423,7 +428,7 @@ class OPMEngine(MDAEngine):
                 
                 if DEBUGGING:
                     print(
-                        f"Camera Exposure: ",
+                        "Camera Exposures:",
                         f"Actual: {np.round(self._mmc.getExposure(),2)}",
                         f"Requested: {exposure_ms}",
                     )
@@ -431,7 +436,7 @@ class OPMEngine(MDAEngine):
             super().setup_event(event)
             
     def post_sequence_started(self, event):
-
+        # TODO: catch sequence timpoints
         # execute stage scan if requested
         if self.execute_stage_scan:
             self._mmc.setProperty(
@@ -477,6 +482,7 @@ class OPMEngine(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )
+                    try:
                     try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
                         if DEBUGGING:

@@ -18,6 +18,19 @@ O2O3_af_event = MDAEvent(
     )
 )
 
+Timelapse_event = MDAEvent(
+    action=CustomAction(
+        name='Timelapse',
+        data = {
+            'plan' : {                    
+                'interval' : None,
+                'timepoint' : None,
+                'time_steps': None
+            }
+        }
+    )
+)
+
 # Event for running AO optimization
 AO_optimize_event = MDAEvent(
     exposure = None,
