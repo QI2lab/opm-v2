@@ -170,7 +170,7 @@ def main() -> None:
     
     
     # Initialize and close alignment laser shutter
-    opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
+    opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]),verbose=True)
     opmPicardShutter.closeShutter()
     
     # Load OB1 Controller for fluidics control
