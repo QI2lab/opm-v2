@@ -32,6 +32,7 @@ def stage_positions_from_grid(
     scan_range_um: float,
     tile_axis_overlap: float,
     z_axis_overlap: float = None,
+    coverslip_max_dz: float = None,
     coverslip_slope_x: float = 0,
     coverslip_slope_y: float = 0
     ):
@@ -54,6 +55,8 @@ def stage_positions_from_grid(
     tile_axis_overlap : float
         _description_
     z_axis_overlap : float, optional
+        _description_, by default None
+    coverslip_max_dz : float, optional
         _description_, by default None
     coverslip_slope_x : float, optional
         _description_, by default 0
@@ -136,6 +139,7 @@ def stage_positions_from_grid(
         
     # account for coverslip slopes
     if coverslip_slope_x != 0:
+        
         cs_x_max_pos = cs_min_pos + range_x_um * coverslip_slope_x
         cs_x_range_um = np.round(np.abs(cs_x_max_pos - cs_min_pos),2)
         dz_per_x_tile = np.round(cs_x_range_um/n_x_positions,2)
@@ -1075,7 +1079,6 @@ def setup_projection(
                     opm_events.append(current_AO_event)
             elif ('start' in ao_mode) or ('timepoint' in ao_mode):
                 current_AO_event = MDAEvent(**ao_optimization_event.model_dump())
-                current_AO_event.action.data['AO']['pos_idx'] = int(pos_idx)
                 current_AO_event.action.data['AO']['apply_existing'] = True
                 opm_events.append(current_AO_event)
             
@@ -1161,7 +1164,7 @@ def setup_projection(
                                     'interleaved' : interleaved_acq,
                                     'laser_powers' : channel_powers,
                                     'blanking' : laser_blanking,
-                                    'current_channel' : active_channel_names[chan_idx]
+                                    'current_channel' : channel_names[chan_idx]
                                 },
                                 'Camera' : {
                                     'exposure_ms' : float(channel_exposures_ms[chan_idx]),

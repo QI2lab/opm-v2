@@ -103,10 +103,13 @@ def find_best_O3_focus_metric(
         if verbose: 
             print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
         i = i+1
-
-    # find best rough focus position
-    rough_best_O3_stage_index = np.argmax(focus_metrics)
-    rough_best_O3_stage_pos=O3_stage_positions[rough_best_O3_stage_index]
+    if np.max(focus_metrics)<150:
+        print("AF failed on rough align, check shutter!")
+        rough_best_O3_stage_pos = O3_stage_pos_start
+    else:
+        # find best rough focus position
+        rough_best_O3_stage_index = np.argmax(focus_metrics)
+        rough_best_O3_stage_pos=O3_stage_positions[rough_best_O3_stage_index]
 
     if verbose: 
         print(f'Rough align position: {rough_best_O3_stage_pos} vs starting position: {O3_stage_pos_start}')
@@ -145,10 +148,13 @@ def find_best_O3_focus_metric(
             if verbose: 
                 print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
             i = i+1
-    
-        # find best fine focus position
-        fine_best_O3_stage_index = np.argmax(focus_metrics)
-        fine_best_O3_stage_pos=O3_stage_positions[fine_best_O3_stage_index]
+        if np.max(focus_metrics) < 150:
+            print("AF failed on fine align, check shutter!")
+            fine_best_O3_stage_pos = rough_best_O3_stage_pos
+        else:
+            # find best fine focus position
+            fine_best_O3_stage_index = np.argmax(focus_metrics)
+            fine_best_O3_stage_pos=O3_stage_positions[fine_best_O3_stage_index]
         
         if verbose: 
             print(f'Fine align position: {fine_best_O3_stage_pos} vs starting position: {rough_best_O3_stage_pos}')

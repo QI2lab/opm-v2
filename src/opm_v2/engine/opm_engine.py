@@ -425,7 +425,7 @@ class OPMEngine(MDAEngine):
                 
                 if DEBUGGING:
                     print(
-                        f"Camera Exposure: ",
+                        "Camera Exposures:",
                         f"Actual: {np.round(self._mmc.getExposure(),2)}",
                         f"Requested: {exposure_ms}",
                     )
@@ -473,6 +473,10 @@ class OPMEngine(MDAEngine):
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    if DEBUGGING:
+                        print(
+                            f'\nApplying existing mirror positions: \n{wfc_positions_to_use}'
+                        )
                     self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
                     # self.AOMirror.output_path = data_dict["AO"]["output_path"]
@@ -488,9 +492,14 @@ class OPMEngine(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=True
                     )
-                    if data_dict["AO"]["pos_idx"]:
+                    try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                        self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
+                        print(
+                            f'\nSaving AO mirro positions to array: {int(data_dict["AO"]["pos_idx"])}\n{self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                        )
+                    except Exception:
+                        print("Not setting ao positions in array")
+                    # self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
 
             elif "Timelapse" in action_name:
                 interval = data_dict['plan']['interval']
