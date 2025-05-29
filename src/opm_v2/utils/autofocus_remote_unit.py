@@ -10,16 +10,25 @@ import numpy as np
 from scipy import ndimage
 from pymmcore_plus import CMMCorePlus
 from opm_v2.hardware.PicardShutter import PicardShutter
+from opm_v2.hardware.PicardShutter import PicardShutter
 
 def calculate_focus_metric(image: np.ndarray) -> float:
+def calculate_focus_metric(image: np.ndarray) -> float:
     """
+    Calculate maximum intensity focus metric.
     Calculate maximum intensity focus metric.
 
     Parameters
     ---------- 
     image: ndarray
+    Parameters
+    ---------- 
+    image: ndarray
         image to test
 
+    Returns
+    -------
+    focus_metric: float
     Returns
     -------
     focus_metric: float
@@ -41,7 +50,26 @@ def find_best_O3_focus_metric(
         O3_stage_name: str,
         verbose=False
     ) -> float:
+def find_best_O3_focus_metric(
+        mmc: CMMCorePlus,
+        shutter_controller: PicardShutter,
+        O3_stage_name: str,
+        verbose=False
+    ) -> float:
     """
+    Optimize position of O3 with respect to O2.
+
+    Using a maximum intensity metric, this function first performs a rough search to find 
+    a guess at the best focus, then re-runs with a fine search to determine the best focus.
+
+
+    Parameters
+    ----------
+    mmc: CMMCorePlus
+        core instance
+    shutter_controller: PicardShutter
+        Picard shutter controller instance
+    O3_piezo_stage: str
     Optimize position of O3 with respect to O2.
 
     Using a maximum intensity metric, this function first performs a rough search to find 
@@ -57,8 +85,12 @@ def find_best_O3_focus_metric(
     O3_piezo_stage: str
         name of O3 piezo stage in MM config
     verbose: bool
+    verbose: bool
         print information on autofocus
 
+    Returns
+    -------
+    found_focus_metric: float
     Returns
     -------
     found_focus_metric: float
@@ -68,6 +100,8 @@ def find_best_O3_focus_metric(
     # grab position and name of current MM focus stage
     exp_zstage_pos = np.round(mmc.getPosition(),2)
     exp_zstage_name = mmc.getFocusDevice()
+    if verbose: 
+        print(f'Current z-stage: {exp_zstage_name} with position {exp_zstage_pos}')
     if verbose: 
         print(f'Current z-stage: {exp_zstage_name} with position {exp_zstage_pos}')
 
@@ -80,12 +114,16 @@ def find_best_O3_focus_metric(
     mmc.waitForDevice(O3_stage_name)
     if verbose: 
         print(f'O3 z-stage: {O3_stage_name} with position {O3_stage_pos_start}')
+    if verbose: 
+        print(f'O3 z-stage: {O3_stage_name} with position {O3_stage_pos_start}')
 
     # generate arrays
     n_O3_stage_steps=20.
     O3_stage_step_size = .25
     O3_stage_positions = np.round(np.arange(O3_stage_pos_start-(O3_stage_step_size*np.round(n_O3_stage_steps/2,0)),O3_stage_pos_start+(O3_stage_step_size*np.round(n_O3_stage_steps/2,0)),O3_stage_step_size),2).astype(np.float64)
     focus_metrics = np.zeros(O3_stage_positions.shape[0])
+    if verbose: 
+        print('Starting rough alignment.')
     if verbose: 
         print('Starting rough alignment.')
 
@@ -99,7 +137,11 @@ def find_best_O3_focus_metric(
         mmc.waitForDevice(O3_stage_name)
         test_image = mmc.snap()
         print(f"AF max(img) = {np.max(test_image)}")
+        test_image = mmc.snap()
+        print(f"AF max(img) = {np.max(test_image)}")
         focus_metrics[i] = calculate_focus_metric(test_image)
+        if verbose: 
+            print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
         if verbose: 
             print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
         i = i+1
@@ -113,6 +155,8 @@ def find_best_O3_focus_metric(
 
     if verbose: 
         print(f'Rough align position: {rough_best_O3_stage_pos} vs starting position: {O3_stage_pos_start}')
+    if verbose: 
+        print(f'Rough align position: {rough_best_O3_stage_pos} vs starting position: {O3_stage_pos_start}')
 
     if np.abs(rough_best_O3_stage_pos-O3_stage_pos_start) < 2.:
         mmc.setPosition(rough_best_O3_stage_pos)
@@ -121,6 +165,8 @@ def find_best_O3_focus_metric(
     else:
         mmc.setPosition(O3_stage_pos_start)
         mmc.waitForDevice(O3_stage_name)
+        if verbose: 
+            print('Rough focus failed to find better position.')
         if verbose: 
             print('Rough focus failed to find better position.')
         best_03_stage_pos = O3_stage_pos_start
@@ -136,6 +182,8 @@ def find_best_O3_focus_metric(
         focus_metrics = np.zeros(O3_stage_positions.shape[0])
         if verbose: 
             print('Starting fine alignment.')
+        if verbose: 
+            print('Starting fine alignment.')
 
         i = 0
         for O3_stage_pos in O3_stage_positions:
@@ -144,7 +192,11 @@ def find_best_O3_focus_metric(
             mmc.waitForDevice(O3_stage_name)
             test_image = mmc.snap()
             print(f"AF max(img) = {np.max(test_image)}")
+            test_image = mmc.snap()
+            print(f"AF max(img) = {np.max(test_image)}")
             focus_metrics[i] = calculate_focus_metric(test_image)
+            if verbose: 
+                print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
             if verbose: 
                 print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
             i = i+1
@@ -158,6 +210,8 @@ def find_best_O3_focus_metric(
         
         if verbose: 
             print(f'Fine align position: {fine_best_O3_stage_pos} vs starting position: {rough_best_O3_stage_pos}')
+        if verbose: 
+            print(f'Fine align position: {fine_best_O3_stage_pos} vs starting position: {rough_best_O3_stage_pos}')
         
         if np.abs(fine_best_O3_stage_pos-rough_best_O3_stage_pos) < .5:
             mmc.setPosition(fine_best_O3_stage_pos)
@@ -166,6 +220,8 @@ def find_best_O3_focus_metric(
         else:
             mmc.setPosition(rough_best_O3_stage_pos)
             mmc.waitForDevice(O3_stage_name)
+            if verbose: 
+                print('Fine focus failed to find better position.')
             if verbose: 
                 print('Fine focus failed to find better position.')
             best_03_stage_pos = O3_stage_pos_start
@@ -179,6 +235,8 @@ def find_best_O3_focus_metric(
     exp_zstage_pos = np.round(mmc.getPosition(),2)
     if verbose: 
         print(f'Current z-stage: {exp_zstage_name} with position {exp_zstage_pos}')
+    if verbose: 
+        print(f'Current z-stage: {exp_zstage_name} with position {exp_zstage_pos}')
 
     return best_03_stage_pos
 
@@ -186,7 +244,23 @@ def manage_O3_focus(
         O3_stage_name: str,
         verbose=False
     ) -> float:
+def manage_O3_focus(
+        O3_stage_name: str,
+        verbose=False
+    ) -> float:
     """
+    Manage focus of O3 with respect to fixed O2.
+
+    Parameters
+    ----------
+    O3_stage_name: str
+        name of O3 piezo stage
+    verbose: bool
+        verbose output during autofocus procedure
+
+    Returns
+    -------
+    updated_O3_stage_position: float
     Manage focus of O3 with respect to fixed O2.
 
     Parameters
@@ -205,7 +279,11 @@ def manage_O3_focus(
     # get instances of core and shutter controller. Assumes they are already initialized.
     mmc = CMMCorePlus.instance()
     shutter_controller = PicardShutter.instance()
+    # get instances of core and shutter controller. Assumes they are already initialized.
+    mmc = CMMCorePlus.instance()
+    shutter_controller = PicardShutter.instance()
 
+    # determine optimal O3 stage position
     # determine optimal O3 stage position
     updated_O3_stage_position = find_best_O3_focus_metric(mmc,shutter_controller,O3_stage_name,verbose)
 
