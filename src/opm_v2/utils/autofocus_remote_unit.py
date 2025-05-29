@@ -13,7 +13,6 @@ from opm_v2.hardware.PicardShutter import PicardShutter
 from opm_v2.hardware.PicardShutter import PicardShutter
 
 def calculate_focus_metric(image: np.ndarray) -> float:
-def calculate_focus_metric(image: np.ndarray) -> float:
     """
     Calculate maximum intensity focus metric.
     Calculate maximum intensity focus metric.
@@ -44,12 +43,6 @@ def calculate_focus_metric(image: np.ndarray) -> float:
     # return focus metric
     return focus_metric
  
-def find_best_O3_focus_metric(
-        mmc: CMMCorePlus,
-        shutter_controller: PicardShutter,
-        O3_stage_name: str,
-        verbose=False
-    ) -> float:
 def find_best_O3_focus_metric(
         mmc: CMMCorePlus,
         shutter_controller: PicardShutter,
@@ -240,10 +233,6 @@ def find_best_O3_focus_metric(
 
     return best_03_stage_pos
 
-def manage_O3_focus(
-        O3_stage_name: str,
-        verbose=False
-    ) -> float:
 def manage_O3_focus(
         O3_stage_name: str,
         verbose=False
