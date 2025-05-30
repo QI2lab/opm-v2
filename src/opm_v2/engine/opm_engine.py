@@ -250,7 +250,6 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # apply optimized mirror position
                 if data_dict["AO"]["apply_existing"]:
-                    print("\nAO: Applying existing mirror position\n\n")
                     pass
                 
                 #--------------------------------------------------------#
@@ -353,8 +352,24 @@ class OPMEngine(MDAEngine):
             elif action_name == "DAQ":
                 #--------------------------------------------------------#
                 # Update daq waveform values and setup daq for playback
+                self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
-                exposure_ms = data_dict['Camera']['exposure_channels'][0]
+                
+                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
+                    if chan_bool:
+                        self._mmc.setProperty(
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            float(data_dict["DAQ"]["channel_powers"][chan_idx])
+                        )
+                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),2)
+                    else:
+                        self._mmc.setProperty(
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            0.0
+                        )
+                        
                 if str(data_dict["DAQ"]["mode"]) == "stage":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = "stage",
@@ -365,7 +380,7 @@ class OPMEngine(MDAEngine):
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
                         scan_type =  "projection",
-                        channel_states = data_dict["DAQ"]["channel_states"],
+                        channel_states = data_dict["DAQ"]["active_channels"],
                         image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
@@ -385,7 +400,7 @@ class OPMEngine(MDAEngine):
                         channel_states = data_dict["DAQ"]["channel_states"],
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
-                    )                
+                    )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
                 
@@ -402,20 +417,7 @@ class OPMEngine(MDAEngine):
                         data_dict["Camera"]["camera_crop"][3],
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["channel_states"]):
-                    if chan_bool:
-                        self._mmc.setProperty(
-                            self._config["Lasers"]["name"],
-                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            float(data_dict["DAQ"]["channel_powers"][chan_idx])
-                        )
-                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),2)
-                    else:
-                        self._mmc.setProperty(
-                            self._config["Lasers"]["name"],
-                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            0.0
-                        )
+                
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
@@ -483,7 +485,6 @@ class OPMEngine(MDAEngine):
                         verbose=DEBUGGING
                     )
                     try:
-                    try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
                         if DEBUGGING:
                             print(
@@ -512,14 +513,36 @@ class OPMEngine(MDAEngine):
                         save_dir_path = data_dict["AO"]["output_path"],
                         verbose = DEBUGGING,
                     )
-                    
-            elif "DAQ" in action_name:
+                                       
+            elif action_name == "DAQ":
                 self.opmDAQ.start_waveform_playback()
                 
             elif action_name == "Fluidics":
                 print("\nSending ttl pulse to OB1 to CLEAVE and apply READOUTS")
                 run_fluidic_program(True)
+            
+            elif action_name == "Timelapse":
+                interval = data_dict['plan']['interval']
+                self.elapsed_time = perf_counter() - self.start_time
+                sleep_time = interval - self.elapsed_time
+                if sleep_time<0:
+                    sleep_time = 0
+                    if DEBUGGING:
+                        print(
+                            '\nImaging did not finish before next timepoint!'
+                        )
+                QThread.sleep(int(interval - self.elapsed_time))
+                self.start_time = perf_counter() 
                 
+                if DEBUGGING:
+                    print(
+                        '\nTimelapse:',
+                        f"elapsed: {self.elapsed_time}",
+                        f"start time: {self.start_time}",
+                        f"requested interval: {interval}",
+                        f'sleep time: {sleep_time}'
+                    )
+
         else:
             result = super().exec_event(event)
             return result

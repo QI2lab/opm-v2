@@ -46,12 +46,6 @@
             "grid per timepoint",
             "once at start",
             "per xyz position",
-            "per timepoint",
-            "optimize now",
-            "grid at start",
-            "grid per timepoint",
-            "once at start",
-            "per xyz position",
             "per timepoint"
         ],
         "ao_mirror_states": [
@@ -66,7 +60,7 @@
             "per timepoint",
             "once at start"
         ],
-        "tile_overlap_perc": 15
+        "tile_overlap_perc": 20
     },
     "AOMirror": {
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
@@ -90,7 +84,7 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
         "image_mirror_step_um": 0.4,
-        "image_mirror_neutral_v": -0.0,
+        "image_mirror_neutral_v": 0.1,
         "projection_mirror_neutral_v": 0.0,
         "verbose": false
     },
@@ -126,7 +120,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "projection",
+        "opm_mode": "stage",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1150.0,
@@ -138,44 +132,44 @@
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 128,
-            "o2o3_mode": "per timepoint"
+            "o2o3_mode": "optmize now"
         },
         "AO": {
             "mirror_state": "last optimized",
             "metric": "DCT",
-            "mode_delta": 0.36000000000000004,
+            "mode_delta": 0.25,
             "mode_alpha": 0.6,
-            "num_iterations": 2,
-            "image_mirror_range_um": 175.0,
-            "active_channel_id": "488nm",
-            "active_channel_power": 6.0,
+            "num_iterations": 1,
+            "image_mirror_range_um": 150.0,
+            "active_channel_id": "561nm",
+            "active_channel_power": 10.0,
             "exposure_ms": 300.0,
-            "ao_mode": "grid at start",
-            "num_scan_positions": 2,
-            "num_tile_positions": 2,
+            "ao_mode": "once at start",
+            "num_scan_positions": 1,
+            "num_tile_positions": 1,
             "save_dir_path": "G:/optimize_now",
             "daq_mode": "projection"
         },
         "timelapse": {
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0.0,
-                6.5,
-                4.5,
-                0.5,
+                1.0,
+                1.0,
+                1.0,
                 0.0
             ],
             "channel_exposures_ms": [
                 0.0,
-                280.0,
-                280.0,
-                280.0,
+                500.0,
+                500.0,
+                200.0,
                 0.0
             ]
         },
@@ -189,23 +183,23 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0,
-                6.5,
-                4.5,
-                0.5,
+                0,
+                0,
+                0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                280.0,
-                280.0,
-                280.0,
+                0,
+                0,
+                0,
                 0
             ]
         },
@@ -222,23 +216,23 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0,
-                6.5,
-                4.5,
-                0.5,
+                0,
+                0,
+                0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                280.0,
-                280.0,
-                280.0,
+                0,
+                0,
+                0,
                 0
             ]
         },
@@ -250,23 +244,23 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
-                true,
+                false,
+                false,
+                false,
                 false
             ],
             "channel_powers": [
                 0,
-                6.5,
-                4.5,
-                0.5,
+                0,
+                0,
+                0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                280.0,
-                280.0,
-                280.0,
+                0,
+                0,
+                0,
                 0
             ],
             "image_mirror_range_um": 0.0
