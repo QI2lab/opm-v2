@@ -1666,7 +1666,10 @@ def setup_mirrorscan(
             # These events are passed through to the normal MDAEngine and *should* be sequenced. 
             if interleaved_acq:
                 if need_to_setup_DAQ:
-                    opm_events.append(daq_event)
+                    # Create DAQ event for interleaved sequence
+                    current_daq_event = MDAEvent(**daq_event.model_dump())
+                    current_daq_event.action.data['DAQ']['active_channels'] = channel_states
+                    opm_events.append(current_daq_event)
                     need_to_setup_DAQ = False
                 for scan_idx in range(n_scan_steps):
                     for chan_idx in range(n_active_channels):
