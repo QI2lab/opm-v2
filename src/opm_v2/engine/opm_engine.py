@@ -105,6 +105,7 @@ class OPMEngine(MDAEngine):
                 old_y = current_y
                 self._mmc.setXYPosition(target_x,target_y)
                 counter = 0
+                # Move stage and wait until we are within 1um of the target position.
                 while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
                     sleep(.5)
                     current_x, current_y = self._mmc.getXYPosition()

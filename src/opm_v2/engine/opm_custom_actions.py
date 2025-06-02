@@ -132,6 +132,7 @@ DAQ_event = MDAEvent(
                 'channel_states' : None,
                 'channel_powers' : None,
                 'interleaved' : None,
+                'active_channels': None,
                 'blanking' : None, 
             },
             'Camera' : {
