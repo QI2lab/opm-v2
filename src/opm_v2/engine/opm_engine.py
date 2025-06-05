@@ -93,9 +93,10 @@ class OPMEngine(MDAEngine):
                 
             elif action_name == "Stage-Move":
                 #--------------------------------------------------------#
-                # Move stage to position                  
-                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.1)
-                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.1)
+                # Move stage to position 
+                stage_move_speed = self._config['OPM']['stage_move_speed']
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",stage_move_speed)
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",stage_move_speed)
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 target_x = np.round(float(data_dict["Stage"]["x_pos"]),2) 
@@ -144,7 +145,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
                     "MotorSpeedY-S(mm/s)",
-                    0.1
+                    self._config['OPM']['stage_move_speed']
                 )    
 
                 #--------------------------------------------------------#
@@ -496,7 +497,7 @@ class OPMEngine(MDAEngine):
                     except Exception:
                         print("\nAO: Not setting ao positions array")
                         
-            elif action_name == "AO-grid":               
+            elif action_name == "AO-grid":    
                 if data_dict["AO"]["apply_ao_map"]:
                     self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
                     if DEBUGGING:
