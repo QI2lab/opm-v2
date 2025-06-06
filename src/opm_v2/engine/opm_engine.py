@@ -71,7 +71,9 @@ class OPMEngine(MDAEngine):
                 # Stop DAQ playback
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
-                
+                    # TODO: Does this help with getting flat metrics in the AF?
+                    self.opmDAQ.reset_ao_channels()
+                    
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
                     current_roi = self._mmc.getROI()
@@ -433,9 +435,28 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         "Camera Exposures:",
-                        f"Actual: {np.round(self._mmc.getExposure(),2)}",
-                        f"Requested: {exposure_ms}",
+                        f"\n  Actual: {np.round(self._mmc.getExposure(),2)}",
+                        f"\n  Requested: {exposure_ms}",
                     )
+        
+            elif action_name == "Mirror-Move":
+                #--------------------------------------------------------#
+                # Update daq waveform values and setup daq for playback
+                self.opmDAQ.stop_waveform_playback()
+                self.opmDAQ.clear_tasks()
+                
+                # Modify the image neutral position
+                self.opmDAQ._ao_neutral_positions[0] = data_dict['DAQ']['image_mirror_v']
+                
+                self.opmDAQ.set_acquisition_params(
+                        scan_type = "2d"
+                )
+                if DEBUGGING:
+                    print(
+                        f"\nMoving image mirror: {data_dict['DAQ']['image_mirror_v']}"
+                    )
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.program_daq_waveforms()
         else:
             super().setup_event(event)
             
@@ -539,12 +560,12 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         '\nTimelapse:',
-                        f"elapsed: {self.elapsed_time}",
-                        f"start time: {self.start_time}",
-                        f"requested interval: {interval}",
-                        f'sleep time: {sleep_time}'
+                        f"\n  elapsed: {self.elapsed_time}",
+                        f"\n  start time: {self.start_time}",
+                        f"\n  requested interval: {interval}",
+                        f'\n  sleep time: {sleep_time}'
                     )
-
+            
         else:
             result = super().exec_event(event)
             return result
@@ -561,7 +582,7 @@ class OPMEngine(MDAEngine):
         # Shut down DAQ
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
-
+        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
         if DEBUGGING:
             print("Daq reset")
 
@@ -585,5 +606,5 @@ class OPMEngine(MDAEngine):
         # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()
-
+        
         super().teardown_sequence(sequence)
