@@ -32,7 +32,7 @@ classifiers = [
 dependencies = ["pymmcore-plus", "pymmcore-widgets", "matplotlib",
                 "pydaqmx", "pyserial", "scipy", "numba",
                 "pycparser==2.21","pythonnet==3.0.3",
-                "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@main"]
+                "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@f0eb39a"]
 
 [tool.hatch.metadata]
 allow-direct-references = true
