@@ -436,6 +436,25 @@ class OPMEngine(MDAEngine):
                         f"Actual: {np.round(self._mmc.getExposure(),2)}",
                         f"Requested: {exposure_ms}",
                     )
+        
+            elif action_name == "DAQ-Move":
+                #--------------------------------------------------------#
+                # Update daq waveform values and setup daq for playback
+                self.opmDAQ.stop_waveform_playback()
+                self.opmDAQ.clear_tasks()
+                
+                # Modify the image neutral position
+                self.opmDAQ._ao_neutral_positions[0] = data_dict['DAQ']['image_mirror_v']
+                
+                self.opmDAQ.set_acquisition_params(
+                        scan_type = "2d"
+                )
+                if DEBUGGING:
+                    print(
+                        f"\nMoving image mirror: {data_dict['DAQ']['image_mirror_v']}"
+                    )
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.program_daq_waveforms()
         else:
             super().setup_event(event)
             
@@ -544,7 +563,7 @@ class OPMEngine(MDAEngine):
                         f"requested interval: {interval}",
                         f'sleep time: {sleep_time}'
                     )
-
+            
         else:
             result = super().exec_event(event)
             return result
@@ -586,4 +605,7 @@ class OPMEngine(MDAEngine):
         self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()
 
+        # reset mirror neutral position
+        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
+        
         super().teardown_sequence(sequence)
