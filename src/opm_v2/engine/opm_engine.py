@@ -5,6 +5,8 @@ TO DO: Fix init so we only have one instance of OPMNIDAQ, OPMAOMIRROR, and confi
 Change Log:
 2025-02-07: New version that includes all possible modes
 """
+from datetime import datetime
+from PyQt6.QtCore import QThread
 
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent, MDASequence, CustomAction
@@ -22,7 +24,7 @@ from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
 from pathlib import Path
 import numpy as np
-from time import sleep
+from time import sleep, perf_counter
 import logging
 
 logging.getLogger("pymmcore-plus")
@@ -36,7 +38,9 @@ class OPMEngine(MDAEngine):
         self.opmDAQ = OPMNIDAQ.instance()
         self.AOMirror = AOMirror.instance()
         self.execute_stage_scan = False
-
+        self.start_time = None
+        self.elapsed_time = None
+        
         with open(config_path, "r") as config_file:
             self._config = json.load(config_file)
 
@@ -46,7 +50,8 @@ class OPMEngine(MDAEngine):
         This method is called once at the beginning of a sequence.
         (The sequence object needn't be used here if not necessary)
         """
-
+        self.start_time = perf_counter()
+        self.elapsed_time = 0
         self._mmc.setCircularBufferMemoryFootprint(16000)
         super().setup_sequence(sequence)
 
@@ -371,6 +376,13 @@ class OPMEngine(MDAEngine):
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
                     )
+                elif str(data_dict["DAQ"]["mode"]) == "2d":
+                    self.opmDAQ.set_acquisition_params(
+                        scan_type = "2d",
+                        channel_states = data_dict["DAQ"]["channel_states"],
+                        laser_blanking = bool(data_dict["DAQ"]["blanking"]),
+                        exposure_ms = exposure_ms
+                    )                
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
                 
@@ -413,7 +425,7 @@ class OPMEngine(MDAEngine):
                 
                 if DEBUGGING:
                     print(
-                        f"Camera Exposure: ",
+                        "Camera Exposures:",
                         f"Actual: {np.round(self._mmc.getExposure(),2)}",
                         f"Requested: {exposure_ms}",
                     )
@@ -421,7 +433,7 @@ class OPMEngine(MDAEngine):
             super().setup_event(event)
             
     def post_sequence_started(self, event):
-
+        # TODO: catch sequence timpoints
         # execute stage scan if requested
         if self.execute_stage_scan:
             self._mmc.setProperty(
@@ -461,6 +473,10 @@ class OPMEngine(MDAEngine):
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
                     wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    if DEBUGGING:
+                        print(
+                            f'\nApplying existing mirror positions: \n{wfc_positions_to_use}'
+                        )
                     self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
                     # self.AOMirror.output_path = data_dict["AO"]["output_path"]
@@ -476,10 +492,32 @@ class OPMEngine(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=True
                     )
-                    if data_dict["AO"]["pos_idx"]:
+                    try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                        self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
+                        print(
+                            f'\nSaving AO mirro positions to array: {int(data_dict["AO"]["pos_idx"])}\n{self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                        )
+                    except Exception:
+                        print("Not setting ao positions in array")
+                    # self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
 
+            elif "Timelapse" in action_name:
+                interval = data_dict['plan']['interval']
+                self.elapsed_time = perf_counter() - self.start_time
+                sleep_time = interval - self.elapsed_time
+                QThread.sleep(int(interval - self.elapsed_time))
+                # sleep(interval - self.elapsed_time)
+                self.start_time = perf_counter() 
+                
+                if DEBUGGING:
+                    print(
+                        '\nTimelapse:',
+                        f"elapsed: {self.elapsed_time}",
+                        f"start time: {self.start_time}",
+                        f"requested interval: {interval}",
+                        f'sleep time: {sleep_time}'
+                    )
+            
             elif "DAQ" in action_name:
                 self.opmDAQ.start_waveform_playback()
                 

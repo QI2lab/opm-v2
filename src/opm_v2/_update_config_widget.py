@@ -28,10 +28,22 @@ class OPMSettings(QWidget):
         with open(self.config_path, 'r') as config_file:
             config = json.load(config_file)
         
+        # Force all channel_states to False
+        n_channels = len(config['acq_config']['stage_scan']['channel_states'])
+        for mode in config['OPM']['imaging_modes']:
+            key = f"{mode}_scan" 
+            try:
+                config['acq_config'][f"{key}"]['channel_states'] = [False] * n_channels
+                config['acq_config'][f"{key}"]['channel_powers'] = [0] * n_channels
+                config['acq_config'][f"{key}"]['channel_exposures_ms'] = [0] * n_channels
+            except KeyError:
+                continue
+        config['acq_config']['timelapse']['channel_states'] = [False] * n_channels
+
         self.config = config
         self.widgets = {}       
         self.create_ui()
-        self.update_config()
+        self.update_config(False)
 
     def create_spinbox(
         self,
@@ -343,6 +355,7 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_405_spbx
         )   
         self.spbx_405_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
                 self.update_405_slider,
                 self.update_405_state]
@@ -368,8 +381,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_488_spbx
         )   
         self.spbx_488_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_488_slider,
+                # self.update_488_slider,
                 self.update_488_state]
         )
         self.spbx_488_exp = self.create_dbspinbox(
@@ -394,8 +408,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_561_spbx
         )   
         self.spbx_561_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_561_slider,
+                # self.update_561_slider,
                 self.update_561_state]
         )
         self.spbx_561_exp = self.create_dbspinbox(
@@ -420,8 +435,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_638_spbx
         )   
         self.spbx_638_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_638_slider,
+                # self.update_638_slider,
                 self.update_638_state]
         )
         self.spbx_638_exp = self.create_dbspinbox(
@@ -446,8 +462,9 @@ class OPMSettings(QWidget):
             connect_to_fn=self.update_705_spbx
         )   
         self.spbx_705_power = self.create_dbspinbox(
+            precision=2,
             connect_to_fn=[
-                self.update_705_slider,
+                # self.update_705_slider,
                 self.update_705_state]
         )
         self.spbx_705_exp = self.create_dbspinbox(
@@ -487,6 +504,8 @@ class OPMSettings(QWidget):
         self.spbx_mirror_image_range = self.create_dbspinbox(
             value=self.config['acq_config']['mirror_scan']['scan_range_um'],
             max=250,
+            precision=2,
+            interval=0.1,
             connect_to_fn=self.update_config
         )        
         self.layout_mirror_image_range = QHBoxLayout()
@@ -653,7 +672,8 @@ class OPMSettings(QWidget):
 
     def update_405_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_405_power.setValue(int(self.spbx_405_power.value()))
+        # self.sldr_405_power.setValue(int(self.spbx_405_power.value()))
+        pass
     
     def update_488_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -661,7 +681,8 @@ class OPMSettings(QWidget):
 
     def update_488_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_488_power.setValue(int(self.spbx_488_power.value()))
+        # self.sldr_488_power.setValue(int(self.spbx_488_power.value()))
+        pass
         
     def update_561_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -669,7 +690,8 @@ class OPMSettings(QWidget):
 
     def update_561_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_561_power.setValue(int(self.spbx_561_power.value()))
+        # self.sldr_561_power.setValue(int(self.spbx_561_power.value()))
+        pass
     
     def update_638_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -677,7 +699,8 @@ class OPMSettings(QWidget):
 
     def update_638_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_638_power.setValue(int(self.spbx_638_power.value()))
+        # self.sldr_638_power.setValue(int(self.spbx_638_power.value()))
+        pass
         
     def update_705_spbx(self):
         # Update the spinbox value when the slider value changes
@@ -685,8 +708,8 @@ class OPMSettings(QWidget):
 
     def update_705_slider(self):
         # Update the slider value when the spinbox value changes
-        self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
- 
+        # self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
+        pass
     #--------------------------------------------------------------------#
     # Methods to update acquisition channel states
     #--------------------------------------------------------------------#
@@ -695,55 +718,74 @@ class OPMSettings(QWidget):
         checked = self.chx_405_state.isChecked()
         power = self.spbx_405_power.value()
         exposure_ms = self.spbx_405_exp.value()
-        for _mode in self.config['OPM']['imaging_modes']:
+        for _mode in self.config['OPM']['imaging_modes'][:-1]:
             self.config['acq_config'][_mode+'_scan']['channel_states'][0] = checked
             self.config['acq_config'][_mode+'_scan']['channel_powers'][0] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][0] = exposure_ms
-            
+        # update static time lapse separately
+        self.config['acq_config']['timelapse']['channel_states'][0] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][0] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][0] = exposure_ms
+        
         self.update_config(update_config=False)
                
     def update_488_state(self):
         checked = self.chx_488_state.isChecked()
         power = self.spbx_488_power.value()
         exposure_ms = self.spbx_488_exp.value()
-        for _mode in self.config['OPM']['imaging_modes']:
+        for _mode in self.config['OPM']['imaging_modes'][:-1]:
             self.config['acq_config'][_mode+'_scan']['channel_states'][1] = checked
             self.config['acq_config'][_mode+'_scan']['channel_powers'][1] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][1] = exposure_ms
-            
+        # update static time lapse separately
+        self.config['acq_config']['timelapse']['channel_states'][1] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][1] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][1] = exposure_ms
+        
         self.update_config(update_config=False)
     
     def update_561_state(self):
         checked = self.chx_561_state.isChecked()
         power = self.spbx_561_power.value()
         exposure_ms = self.spbx_561_exp.value()
-        for _mode in self.config['OPM']['imaging_modes']:
+        for _mode in self.config['OPM']['imaging_modes'][:-1]:
             self.config['acq_config'][_mode+'_scan']['channel_states'][2] = checked
             self.config['acq_config'][_mode+'_scan']['channel_powers'][2] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][2] = exposure_ms
-            
+        # update static time lapse separately
+        self.config['acq_config']['timelapse']['channel_states'][2] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][2] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][2] = exposure_ms
+        
         self.update_config(update_config=False)
         
     def update_638_state(self):
         checked = self.chx_638_state.isChecked()
         power = self.spbx_638_power.value()
         exposure_ms = self.spbx_638_exp.value()
-        for _mode in self.config['OPM']['imaging_modes']:
+        for _mode in self.config['OPM']['imaging_modes'][:-1]:
             self.config['acq_config'][_mode+'_scan']['channel_states'][3] = checked
             self.config['acq_config'][_mode+'_scan']['channel_powers'][3] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][3] = exposure_ms
-
+        # update static time lapse separately
+        self.config['acq_config']['timelapse']['channel_states'][3] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][3] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][3] = exposure_ms
+        
         self.update_config(update_config=False)
     
     def update_705_state(self):
         checked = self.chx_705_state.isChecked()
         power = self.spbx_705_power.value()
         exposure_ms = self.spbx_705_exp.value()
-        for _mode in self.config['OPM']['imaging_modes']:
+        for _mode in self.config['OPM']['imaging_modes'][:-1]:
             self.config['acq_config'][_mode+'_scan']['channel_states'][4] = checked
             self.config['acq_config'][_mode+'_scan']['channel_powers'][4] = power
             self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][4] = exposure_ms
-       
+        # update static time lapse separately
+        self.config['acq_config']['timelapse']['channel_states'][4] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][4] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][4] = exposure_ms
         self.update_config(update_config=False)
         
     #--------------------------------------------------------------------#
@@ -780,7 +822,7 @@ class OPMSettings(QWidget):
             laser_blanking = True
         else:
             laser_blanking = False
-        for _mode in config['OPM']['imaging_modes']:
+        for _mode in config['OPM']['imaging_modes'][:-1]:
             config['acq_config'][_mode+'_scan']['laser_blanking'] = laser_blanking
 
         self.config = config
@@ -797,7 +839,7 @@ if __name__ ==  '__main__':
     window = OPMSettings(config_path)
     window.show()
     
-    def signal_recieved(key, value):
+    def signal_recieved(key=None, value=None):
         print('signal triggered')
     window.settings_changed.connect(signal_recieved)
     

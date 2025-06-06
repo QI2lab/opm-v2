@@ -7,7 +7,7 @@ Change Log:
 """
 from __future__ import annotations
 
-# TODO AO getting values from gui instead of json.
+
 import json
 from datetime import datetime
 from pathlib import Path
@@ -25,6 +25,8 @@ from opm_v2.engine.setup_events import (
     setup_optimizenow,
     setup_projection,
     setup_stagescan,
+    setup_optimizenow,
+    setup_timelapse
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
@@ -63,11 +65,6 @@ def main() -> None:
     dock_widget.setObjectName("OPMConfigurator")
     win.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock_widget)  
     dock_widget.setFloating(False)
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_488_state()
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_405_state()
-    opmSettings_widget.update_405_state()
     
     # Start the mirror in the flat_position position.
     opmAOmirror = AOMirror(
@@ -99,7 +96,7 @@ def main() -> None:
     
     
     # Initialize and close alignment laser shutter
-    opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]))
+    opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]),verbose=True)
     opmPicardShutter.closeShutter()
     
     # Load OB1 Controller for fluidics control
@@ -107,13 +104,11 @@ def main() -> None:
     
     # grab mmc instance and load OPM config file
     mmc = win.mmcore
-    mmc.loadSystemConfiguration(Path(config["OPM"]["mm_config_path"]))
-    
-    
+    mmc.loadSystemConfiguration(Path(config["OPM"]["mm_config_path"]))   
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
     mda_widget.save_info.save_dir.setText(r"G:/")
     mda_widget.tab_wdg.grid_plan.setMode("bounds")
-    mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()
+    mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()   
     
     if DEBUGGING:
         mmc.enableDebugLog(True)
@@ -190,6 +185,11 @@ def main() -> None:
         # Enforce camera ROI
         if _scan_type=="projection":
             crop_y =  int(_image_mirror_range_um / mmc.getPixelSizeUm())
+            
+            # catch case where exposure is not updated
+            if _exposure_ms<50:
+                print("\nExposure is to low for projection mode!")
+                _exposure_ms = 250
         else:
             crop_y = int(mmc.getProperty("ImageCameraCrop","Label"))
         
@@ -209,12 +209,7 @@ def main() -> None:
                 print(f"\n  Camera crop updated: {crop_y}")
                 
         #--------------------------------------------------------------------#
-        # Enforce the camera exposure
-        if ("projection" in opm_mode) and (_exposure_ms<50):
-            print("Exposure too low for projection mode! \n reverting to 500ms")
-            # Set the camera exposure
-            _exposure_ms = 500
-        
+        # Enforce the camera exposure        
         if mmc.getExposure()!=_exposure_ms:
             mmc.setProperty(str(config["Camera"]["camera_id"]),"Exposure",_exposure_ms)
             mmc.waitForDevice(str(config["Camera"]["camera_id"]))
@@ -237,41 +232,11 @@ def main() -> None:
                 f"\n    image_mirror_range_um: {_image_mirror_range_um}",
                 f"\n    exposure_ms: {_exposure_ms}",
             )
-        #--------------------------------------------------------------------#
-        # Update mirror positions
-        if device_name is not None and "AO" in device_name:
-        # if "AO" in device_name:
-            ao_mirror_state = mmc.getProperty("AO-mode", "Label")
-            AOMirror_update_state = opmAOmirror.instance()
-            if DEBUGGING:
-                starting_positions = AOMirror_update_state.current_positions
-                print(
-                    f"\n  Update AO_mode recieved, stage: {ao_mirror_state}",
-                    f"\n     Prior wfc positions: \n{starting_positions}"
-                )
-            
-            AOMirror_update_state = AOMirror.instance()
-            if "system" in ao_mirror_state:
-                mirror_key = "system_flat"
-            elif "optimized" in ao_mirror_state:
-                mirror_key = "last_optimized"
-            elif "mirror" in ao_mirror_state:
-                mirror_key = "mirror_flat"
-            AOMirror_update_state.set_mirror_positions(
-                AOMirror_update_state.wfc_positions[mirror_key]
-            )
-            
-            if DEBUGGING:
-                end_positions = AOMirror_update_state.current_positions
-                print( 
-                    f"\n    Post mirror update positions: \n{end_positions}",
-                    f"\n    Did it change: {starting_positions==end_positions}"
-                )
-                    
+        
         if restart_sequence:
             mmc.startContinuousSequenceAcquisition()
        
-    # Connect changes in gui fields to the update_live_state method.            
+    # Connect changes in gui config fields to the update_live_state method.            
     mmc.events.configSet.connect(update_live_state)
     update_live_state()
     
@@ -287,12 +252,12 @@ def main() -> None:
         elif 'optimized' in ao_mirror_state:
             position_key = 'last_optimized'
         else:
-            position_key = 'system_flat'
-            
+            position_key = 'mirror_flat'
+
         AOMirror_update.set_mirror_positions( AOMirror_update.wfc_positions[position_key])
         
         if DEBUGGING:
-            print(f'Mirror state updated to: {position_key}')
+            print(f'\nMirror state updated to: {position_key}')
         
     opmSettings_widget.settings_changed.connect(update_ao_mirror_state)
         
@@ -356,6 +321,8 @@ def main() -> None:
           
         if ("now" in ao_mode) or ("now" in o2o3_mode):
             optimize_now = True
+            if not output:
+                new_output = None
         else: 
             optimize_now = False        
                     
@@ -371,7 +338,7 @@ def main() -> None:
             new_output = new_dir / Path(output.name)
             output = new_output
         
-        if "none" not in fluidics_mode:
+        if ("none" not in fluidics_mode) and not(optimize_now):
             # load dialog to have user verify ESI is running.
             # TODO: ad an entry for the number of rounds.
             from PyQt6.QtWidgets import QMessageBox
@@ -407,6 +374,13 @@ def main() -> None:
                 mmc = mmc,
                 config = config
                 )
+        elif ('timelapse' in opm_mode):
+            opm_events, handler = setup_timelapse(
+                mmc = mmc,
+                config = config,
+                sequence = mda_widget.value(),
+                output = output
+            )
         elif ("stage" in opm_mode):
             opm_events, handler = setup_stagescan(
                 mmc = mmc,
@@ -432,12 +406,6 @@ def main() -> None:
             # tell AO mirror class where to save mirror information
             opmAOmirror_local = AOMirror.instance()
             opmAOmirror_local.output_path = output.parents[0]
-            
-            if DEBUGGING:
-                print(
-                    "\n Mirror coeff. amplitudes before calling run_mda:",
-                    f"{opmAOmirror_local.current_coeffs}\n\n"
-                )
 
         if opm_events is None:
             print("OPM events empty, acquisition not started!")

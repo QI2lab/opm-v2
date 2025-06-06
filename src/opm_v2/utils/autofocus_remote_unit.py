@@ -47,17 +47,14 @@ def find_best_O3_focus_metric(
     Using a maximum intensity metric, this function first performs a rough search to find 
     a guess at the best focus, then re-runs with a fine search to determine the best focus.
 
-
     Parameters
     ----------
     mmc: CMMCorePlus
         core instance
     shutter_controller: PicardShutter
         Picard shutter controller instance
-    O3_piezo_stage: str
-        name of O3 piezo stage in MM config
-    verbose: bool
-        print information on autofocus
+    O3_stage_name: str
+        O3 stage name
 
     Returns
     -------
@@ -98,15 +95,17 @@ def find_best_O3_focus_metric(
         mmc.setPosition(O3_stage_pos)
         mmc.waitForDevice(O3_stage_name)
         test_image = mmc.snap()
-        print(f"AF max(img) = {np.max(test_image)}")
         focus_metrics[i] = calculate_focus_metric(test_image)
         if verbose: 
             print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
         i = i+1
-
-    # find best rough focus position
-    rough_best_O3_stage_index = np.argmax(focus_metrics)
-    rough_best_O3_stage_pos=O3_stage_positions[rough_best_O3_stage_index]
+    if np.max(focus_metrics)<150:
+        print("AF failed on rough align, check shutter!")
+        rough_best_O3_stage_pos = O3_stage_pos_start
+    else:
+        # find best rough focus position
+        rough_best_O3_stage_index = np.argmax(focus_metrics)
+        rough_best_O3_stage_pos=O3_stage_positions[rough_best_O3_stage_index]
 
     if verbose: 
         print(f'Rough align position: {rough_best_O3_stage_pos} vs starting position: {O3_stage_pos_start}')
@@ -140,15 +139,17 @@ def find_best_O3_focus_metric(
             mmc.setPosition(O3_stage_pos)
             mmc.waitForDevice(O3_stage_name)
             test_image = mmc.snap()
-            print(f"AF max(img) = {np.max(test_image)}")
             focus_metrics[i] = calculate_focus_metric(test_image)
             if verbose: 
                 print(f'Current position: {O3_stage_pos}; Focus metric: {focus_metrics[i]}')
             i = i+1
-    
-        # find best fine focus position
-        fine_best_O3_stage_index = np.argmax(focus_metrics)
-        fine_best_O3_stage_pos=O3_stage_positions[fine_best_O3_stage_index]
+        if np.max(focus_metrics) < 150:
+            print("AF failed on fine align, check shutter!")
+            fine_best_O3_stage_pos = rough_best_O3_stage_pos
+        else:
+            # find best fine focus position
+            fine_best_O3_stage_index = np.argmax(focus_metrics)
+            fine_best_O3_stage_pos=O3_stage_positions[fine_best_O3_stage_index]
         
         if verbose: 
             print(f'Fine align position: {fine_best_O3_stage_pos} vs starting position: {rough_best_O3_stage_pos}')
@@ -193,7 +194,7 @@ def manage_O3_focus(
     Returns
     -------
     updated_O3_stage_position: float
-        automatically determined focus metric. Defaults to original position if not found
+        automatically determined best focus position. Defaults to original position if not found
     """
 
     # get instances of core and shutter controller. Assumes they are already initialized.
