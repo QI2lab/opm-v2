@@ -71,7 +71,9 @@ class OPMEngine(MDAEngine):
                 # Stop DAQ playback
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
-                
+                    # TODO: Does this help with getting flat metrics in the AF?
+                    self.opmDAQ.reset_ao_channels()
+                    
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
                     current_roi = self._mmc.getROI()
@@ -433,8 +435,8 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         "Camera Exposures:",
-                        f"Actual: {np.round(self._mmc.getExposure(),2)}",
-                        f"Requested: {exposure_ms}",
+                        f"\n  Actual: {np.round(self._mmc.getExposure(),2)}",
+                        f"\n  Requested: {exposure_ms}",
                     )
         
             elif action_name == "DAQ-Move":
@@ -558,10 +560,10 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         '\nTimelapse:',
-                        f"elapsed: {self.elapsed_time}",
-                        f"start time: {self.start_time}",
-                        f"requested interval: {interval}",
-                        f'sleep time: {sleep_time}'
+                        f"\n  elapsed: {self.elapsed_time}",
+                        f"\n  start time: {self.start_time}",
+                        f"\n  requested interval: {interval}",
+                        f'\n  sleep time: {sleep_time}'
                     )
             
         else:
@@ -580,7 +582,7 @@ class OPMEngine(MDAEngine):
         # Shut down DAQ
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
-
+        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
         if DEBUGGING:
             print("Daq reset")
 
@@ -604,8 +606,5 @@ class OPMEngine(MDAEngine):
         # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()
-
-        # reset mirror neutral position
-        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
         
         super().teardown_sequence(sequence)
