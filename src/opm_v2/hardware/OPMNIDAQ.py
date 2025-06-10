@@ -745,7 +745,6 @@ class OPMNIDAQ:
                     daqmx.DAQmx_Val_ContSamps, 
                     self.samples_per_do_ch
                 )
-            
 
             # Write the output waveform
             samples_per_ch_ct_digital = ct.c_int32()
@@ -828,6 +827,7 @@ class OPMNIDAQ:
                         self.samples_per_do_ch
                     )
                 elif self.scan_type=="projection":
+                    # NOTE: 'projection' mode can be interweaved as the AO channels are triggered by the change in DO lines!
                     # Configure to run on internal clock, _ao_waveform has shape dictated by camera exposure
                     self._task_ao.CfgSampClkTiming(
                         "",

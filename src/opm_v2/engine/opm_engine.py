@@ -71,7 +71,9 @@ class OPMEngine(MDAEngine):
                 # Stop DAQ playback
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
-                
+                    # TODO: Does this help with getting flat metrics in the AF?
+                    self.opmDAQ.reset_ao_channels()
+                    
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
                     current_roi = self._mmc.getROI()
@@ -93,9 +95,10 @@ class OPMEngine(MDAEngine):
                 
             elif action_name == "Stage-Move":
                 #--------------------------------------------------------#
-                # Move stage to position                  
-                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",0.1)
-                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",0.1)
+                # Move stage to position 
+                stage_move_speed = self._config['OPM']['stage_move_speed']
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedX-S(mm/s)",stage_move_speed)
+                self._mmc.setProperty(self._mmc.getXYStageDevice(),"MotorSpeedY-S(mm/s)",stage_move_speed)
                 self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]),2))
                 self._mmc.waitForDevice(self._mmc.getFocusDevice())
                 target_x = np.round(float(data_dict["Stage"]["x_pos"]),2) 
@@ -105,6 +108,7 @@ class OPMEngine(MDAEngine):
                 old_y = current_y
                 self._mmc.setXYPosition(target_x,target_y)
                 counter = 0
+                # Move stage and wait until we are within 1um of the target position.
                 while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
                     sleep(.5)
                     current_x, current_y = self._mmc.getXYPosition()
@@ -143,7 +147,7 @@ class OPMEngine(MDAEngine):
                 self._mmc.setProperty(
                     self._mmc.getXYStageDevice(),
                     "MotorSpeedY-S(mm/s)",
-                    0.1
+                    self._config['OPM']['stage_move_speed']
                 )    
 
                 #--------------------------------------------------------#
@@ -250,8 +254,8 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # apply optimized mirror position
                 if data_dict["AO"]["apply_existing"]:
-                    print("AO: Load existing mirror positions\n")
                     pass
+                
                 #--------------------------------------------------------#
                 # Set hardware state to run adaptive optics
                 else:
@@ -295,7 +299,9 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # apply optimized position
                 if data_dict["AO"]["apply_ao_map"]:
-                    print("AO: Load existing mirror positions\n")
+                    print("\nAO: Applying existing mirror position\n\n")
+                    pass
+                
                 #--------------------------------------------------------#
                 # run adaptive optics over a grid of positions.                            
                 else:
@@ -335,23 +341,39 @@ class OPMEngine(MDAEngine):
                                 0.0
                             )
                     
-                    # Set scan axis speed
+                    # Set ASI stage speed for moves
                     self._mmc.setProperty(
                         self._mmc.getXYStageDevice(),
                         "MotorSpeedX-S(mm/s)",
-                        0.1
+                        0.15
                     )    
                     self._mmc.setProperty(
                         self._mmc.getXYStageDevice(),
                         "MotorSpeedY-S(mm/s)",
-                        0.1
-                    ) 
+                        0.15
+                    )
             
             elif action_name == "DAQ":
                 #--------------------------------------------------------#
                 # Update daq waveform values and setup daq for playback
+                self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
-                exposure_ms = data_dict['Camera']['exposure_channels'][0]
+                
+                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
+                    if chan_bool:
+                        self._mmc.setProperty(
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            float(data_dict["DAQ"]["channel_powers"][chan_idx])
+                        )
+                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),2)
+                    else:
+                        self._mmc.setProperty(
+                            self._config["Lasers"]["name"],
+                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
+                            0.0
+                        )
+                        
                 if str(data_dict["DAQ"]["mode"]) == "stage":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = "stage",
@@ -362,7 +384,7 @@ class OPMEngine(MDAEngine):
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
                         scan_type =  "projection",
-                        channel_states = data_dict["DAQ"]["channel_states"],
+                        channel_states = data_dict["DAQ"]["active_channels"],
                         image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
@@ -382,37 +404,26 @@ class OPMEngine(MDAEngine):
                         channel_states = data_dict["DAQ"]["channel_states"],
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
-                    )                
+                    )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
                 
                 #--------------------------------------------------------#
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
-                    current_roi = self._mmc.getROI()
-                    self._mmc.clearROI()
-                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                    self._mmc.setROI(
-                        data_dict["Camera"]["camera_crop"][0],
-                        data_dict["Camera"]["camera_crop"][1],
-                        data_dict["Camera"]["camera_crop"][2],
-                        data_dict["Camera"]["camera_crop"][3],
-                    )
-                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["channel_states"]):
-                    if chan_bool:
-                        self._mmc.setProperty(
-                            self._config["Lasers"]["name"],
-                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            float(data_dict["DAQ"]["channel_powers"][chan_idx])
+                    if not(int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[-2]):
+                        current_roi = self._mmc.getROI()
+                        self._mmc.clearROI()
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        self._mmc.setROI(
+                            data_dict["Camera"]["camera_crop"][0],
+                            data_dict["Camera"]["camera_crop"][1],
+                            data_dict["Camera"]["camera_crop"][2],
+                            data_dict["Camera"]["camera_crop"][3],
                         )
-                        exposure_ms = np.round(float(data_dict["Camera"]["exposure_channels"][chan_idx]),2)
-                    else:
-                        self._mmc.setProperty(
-                            self._config["Lasers"]["name"],
-                            str(self._config["Lasers"]["laser_names"][chan_idx]) + " - PowerSetpoint (%)",
-                            0.0
-                        )
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        print(current_roi)
+                    
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
@@ -426,9 +437,28 @@ class OPMEngine(MDAEngine):
                 if DEBUGGING:
                     print(
                         "Camera Exposures:",
-                        f"Actual: {np.round(self._mmc.getExposure(),2)}",
-                        f"Requested: {exposure_ms}",
+                        f"\n  Actual: {np.round(self._mmc.getExposure(),2)}",
+                        f"\n  Requested: {exposure_ms}",
                     )
+        
+            elif action_name == "Mirror-Move":
+                #--------------------------------------------------------#
+                # Update daq waveform values and setup daq for playback
+                self.opmDAQ.stop_waveform_playback()
+                self.opmDAQ.clear_tasks()
+                
+                # Modify the image neutral position
+                self.opmDAQ._ao_neutral_positions[0] = data_dict['DAQ']['image_mirror_v']
+                
+                self.opmDAQ.set_acquisition_params(
+                        scan_type = "2d"
+                )
+                if DEBUGGING:
+                    print(
+                        f"\nMoving image mirror: {data_dict['DAQ']['image_mirror_v']}"
+                    )
+                self.opmDAQ.generate_waveforms()
+                self.opmDAQ.program_daq_waveforms()
         else:
             super().setup_event(event)
             
@@ -455,31 +485,18 @@ class OPMEngine(MDAEngine):
             data_dict = event.action.data
 
             if action_name == "O2O3-autofocus":
-                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=True)
-        
-            elif action_name == "AO-grid":               
-                if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
-                else:
-                    run_ao_grid_mapping(
-                        stage_positions = data_dict["AO"]["stage_positions"],
-                        ao_dict = data_dict["AO"]["ao_dict"],
-                        num_tile_positions = data_dict["AO"]["num_tile_positions"],
-                        num_scan_positions = data_dict["AO"]["num_scan_positions"],
-                        save_dir_path = data_dict["AO"]["output_path"],
-                        verbose = True,
-                    )
+                manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=DEBUGGING)
                     
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
-                    wfc_positions_to_use = self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]
+                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
                     if DEBUGGING:
                         print(
-                            f'\nApplying existing mirror positions: \n{wfc_positions_to_use}'
+                            '\nAO: updating mirror with existing positions:',
+                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
+                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
                         )
-                    self.AOMirror.set_mirror_positions(wfc_positions_to_use)
                 else:
-                    # self.AOMirror.output_path = data_dict["AO"]["output_path"]
                     run_ao_optimization(
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
@@ -490,41 +507,67 @@ class OPMEngine(MDAEngine):
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
                         save_dir_path=data_dict["AO"]["output_path"],
-                        verbose=True
+                        verbose=DEBUGGING
                     )
                     try:
                         self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                        print(
-                            f'\nSaving AO mirro positions to array: {int(data_dict["AO"]["pos_idx"])}\n{self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
-                        )
+                        if DEBUGGING:
+                            print(
+                                '\nAO: Saving positions to array:',
+                                f'\n  pos_idx: {int(data_dict["AO"]["pos_idx"])}',
+                                f'\n  mirror positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                            )
                     except Exception:
-                        print("Not setting ao positions in array")
-                    # self.AOMirror.wfc_coeffs_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_coeffs.copy()
-
-            elif "Timelapse" in action_name:
-                interval = data_dict['plan']['interval']
-                self.elapsed_time = perf_counter() - self.start_time
-                sleep_time = interval - self.elapsed_time
-                QThread.sleep(int(interval - self.elapsed_time))
-                # sleep(interval - self.elapsed_time)
-                self.start_time = perf_counter() 
-                
-                if DEBUGGING:
-                    print(
-                        '\nTimelapse:',
-                        f"elapsed: {self.elapsed_time}",
-                        f"start time: {self.start_time}",
-                        f"requested interval: {interval}",
-                        f'sleep time: {sleep_time}'
+                        print("\nAO: Not setting ao positions array")
+                        
+            elif action_name == "AO-grid":    
+                if data_dict["AO"]["apply_ao_map"]:
+                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with existing positions:',
+                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
+                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                        )
+                else:
+                    run_ao_grid_mapping(
+                        stage_positions = data_dict["AO"]["stage_positions"],
+                        ao_dict = data_dict["AO"]["ao_dict"],
+                        num_tile_positions = data_dict["AO"]["num_tile_positions"],
+                        num_scan_positions = data_dict["AO"]["num_scan_positions"],
+                        save_dir_path = data_dict["AO"]["output_path"],
+                        verbose = DEBUGGING,
                     )
-            
-            elif "DAQ" in action_name:
+                                       
+            elif action_name == "DAQ":
                 self.opmDAQ.start_waveform_playback()
                 
             elif action_name == "Fluidics":
                 print("\nSending ttl pulse to OB1 to CLEAVE and apply READOUTS")
                 run_fluidic_program(True)
+            
+            elif action_name == "Timelapse":
+                interval = data_dict['plan']['interval']
+                self.elapsed_time = perf_counter() - self.start_time
+                sleep_time = interval - self.elapsed_time
+                if sleep_time<0:
+                    sleep_time = 0
+                    if DEBUGGING:
+                        print(
+                            '\nImaging did not finish before next timepoint!'
+                        )
+                QThread.sleep(int(interval - self.elapsed_time))
+                self.start_time = perf_counter() 
                 
+                if DEBUGGING:
+                    print(
+                        '\nTimelapse:',
+                        f"\n  elapsed: {self.elapsed_time}",
+                        f"\n  start time: {self.start_time}",
+                        f"\n  requested interval: {interval}",
+                        f'\n  sleep time: {sleep_time}'
+                    )
+            
         else:
             result = super().exec_event(event)
             return result
@@ -541,7 +584,7 @@ class OPMEngine(MDAEngine):
         # Shut down DAQ
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
-
+        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
         if DEBUGGING:
             print("Daq reset")
 
@@ -565,5 +608,5 @@ class OPMEngine(MDAEngine):
         # save mirror positions array
         self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()
-
+        
         super().teardown_sequence(sequence)
