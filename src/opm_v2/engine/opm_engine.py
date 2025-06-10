@@ -411,17 +411,19 @@ class OPMEngine(MDAEngine):
                 #--------------------------------------------------------#
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
-                    current_roi = self._mmc.getROI()
-                    self._mmc.clearROI()
-                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                    self._mmc.setROI(
-                        data_dict["Camera"]["camera_crop"][0],
-                        data_dict["Camera"]["camera_crop"][1],
-                        data_dict["Camera"]["camera_crop"][2],
-                        data_dict["Camera"]["camera_crop"][3],
-                    )
-                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                
+                    if not(int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[-2]):
+                        current_roi = self._mmc.getROI()
+                        self._mmc.clearROI()
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        self._mmc.setROI(
+                            data_dict["Camera"]["camera_crop"][0],
+                            data_dict["Camera"]["camera_crop"][1],
+                            data_dict["Camera"]["camera_crop"][2],
+                            data_dict["Camera"]["camera_crop"][3],
+                        )
+                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                        print(current_roi)
+                    
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
