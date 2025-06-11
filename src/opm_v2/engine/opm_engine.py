@@ -40,10 +40,16 @@ class OPMEngine(MDAEngine):
         self.execute_stage_scan = False
         self.start_time = None
         self.elapsed_time = None
+        self._config_path = config_path
+        self._config = None
+        self.update_config()
         
-        with open(config_path, "r") as config_file:
+    def update_config(self):
+        """Update the class config dict. from file
+        """
+        with open(self._config_path, "r") as config_file:
             self._config = json.load(config_file)
-
+            
     def setup_sequence(self, sequence: MDASequence) -> SummaryMetaV1 | None:
         """Setup state of system (hardware, etc.) before an MDA is run.
 
@@ -71,8 +77,8 @@ class OPMEngine(MDAEngine):
                 # Stop DAQ playback
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
-                    # TODO: Does this help with getting flat metrics in the AF?
-                    self.opmDAQ.reset_ao_channels()
+                # TODO: does this belong in the daq running?
+                self.opmDAQ.reset_ao_channels()
                     
                 # Setup camera properties
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
@@ -94,6 +100,9 @@ class OPMEngine(MDAEngine):
                 self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
                 
             elif action_name == "Stage-Move":
+                # update config from file for up to date stage move speed 
+                self.update_config()
+                
                 #--------------------------------------------------------#
                 # Move stage to position 
                 stage_move_speed = self._config['OPM']['stage_move_speed']
@@ -585,8 +594,6 @@ class OPMEngine(MDAEngine):
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
         self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"]["image_mirror_neutral_v"]
-        if DEBUGGING:
-            print("Daq reset")
 
         # Put camera back into internal mode
         self._mmc.setProperty(self._config["Camera"]["camera_id"],"TriggerPolarity","POSITIVE")
@@ -606,7 +613,8 @@ class OPMEngine(MDAEngine):
             )
         
         # save mirror positions array
-        self.AOMirror.save_wfc_positions_array()
+        if self.AOMirror.output_path:
+            self.AOMirror.save_wfc_positions_array()
         self._mmc.clearCircularBuffer()
         
         super().teardown_sequence(sequence)

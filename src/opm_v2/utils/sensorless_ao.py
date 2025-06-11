@@ -21,6 +21,8 @@ from time import sleep
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 
+DEBUGGING = False
+METRIC_PRECISION = 4
 
 mode_names = [
     "Vert. Tilt",
@@ -143,6 +145,7 @@ def run_ao_optimization(
             psf_radius_px=psf_radius_px,
             crop_size=None
             )
+    # TODO: test other information based metrics  
     elif "fourier_ratio" in metric_to_use:
         starting_metric = metric_shannon_dct(
             image=starting_image,
@@ -165,7 +168,7 @@ def run_ao_optimization(
         images_per_iteration.append(starting_image)
 
     # initialize delta range
-    delta_range=init_delta_range
+    delta_range = init_delta_range
         
     # Start AO iterations 
     for k in range(num_iterations): 
@@ -182,8 +185,8 @@ def run_ao_optimization(
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f"\nAO iteration: {k+1} / {num_iterations}",
-                    f"  Perturbing mirror mode: {mode+1} / {modes_to_optimize[-1]+1}"
+                    f'\nAO iteration: {k+1} / {num_iterations}',
+                    f'    Perturbing mirror with Zernike mode: {mode+1}'
                     )
                 
             # Grab the current starting mode coeff for this iteration
@@ -200,20 +203,17 @@ def run_ao_optimization(
                 success = aoMirror_local.set_modal_coefficients(active_zern_modes)
                 
                 if not(success):
-                    print("    Setting mirror coefficients failed!")
-                    # Force metric and image to zero
+                    print('\n---- Setting mirror coefficients failed! ----')
+                    # Force metric and image to zeros
                     metric = 0
                     image = np.zeros_like(starting_image)
                                             
                 else:
-                    """acquire projection image"""
+                    # Acquire image and calculate metric
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
                     image = mmc.snap()
                     
-                    imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
-
-                    """Calculate metric."""
                     if "DCT" in metric_to_use:
                         metric = metric_shannon_dct(
                             image=image,
@@ -226,102 +226,126 @@ def run_ao_optimization(
                             )
 
                     if metric==np.nan:
-                        print("Metric is NAN, setting to 0")
+                        if verbose:
+                            print('\n---- Metric failed == NAN ----')
+                        success = False
                         metric = float(np.nan_to_num(metric))
-                    if verbose:
-                        print(f"      Metric = {metric:.4f}")
                     
-                metrics.append(metric)
+                    if verbose:
+                        print(f'      Delta={delta:.3f}, Metric = {np.round(metric, METRIC_PRECISION)}, Success = {success}')
+
+                    if DEBUGGING:
+                        imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
+                    
+                metrics.append(np.round(metric, METRIC_PRECISION))
+                
                 if save_dir_path:
                     mode_images.append(image)
-                    # TODO: update iter_modes
-                    
-            """After looping through all mirror perturbations for this mode, decide if mirror is updated"""
 
             #---------------------------------------------#
             # Fit metrics to determine optimal metric
             #---------------------------------------------#   
-            if 0 in metrics:
-                optimal_delta = 0
-            else:
+            # Do not accept any changes if not success
+            if success:
                 try:
                     popt = quadratic_fit(deltas, metrics)
                     a, b, c = popt
                     
-                    # Test if metric samples have a peak to fit, reject if not.
+                    # Test if metric samples have a peak to fit
                     is_increasing = all(x < y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
                     is_decreasing = all(x > y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
                     if is_increasing or is_decreasing:
-                        print("      Test metrics are monotonic and linear, fit rejected. ")
-                        raise Exception
+                        raise Exception(f'Test metrics are monotonic and linear: {metrics}')
                     elif a >=0:
-                        print("      Test metrics have a positive curvature, fit rejected.")
-                        raise Exception
+                        raise Exception(f'Test metrics have a positive curvature: {metrics}')
                     
                     # Optimal metric is at the peak of quadratic 
                     optimal_delta = -b / (2 * a)
+                    
+                    # compare to booth opt_delta
+                    booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
+                    
                     if verbose:
-                        print(f"    Quadratic fit result for optimal delta: {optimal_delta:.4f}")
-                        
+                        print(f'------ our delta: {optimal_delta} ------',
+                              f'------ Booth delta {booth_delta} ------')
+                    
                     # Reject metric if it is outside the test range.
                     if (optimal_delta>delta_range) or (optimal_delta<-delta_range):
-                        print(f"      Optimal delta is outside of delta_range: {-b / (2 * a):.3f}")
-                        raise Exception
-                            
-                except Exception:
+                        raise Exception(f'Result outside of range: opt_delta = {optimal_delta:.4f}')
+                    
+                    if verbose:
+                        print(f'    Metric maximum at delta = {optimal_delta:4f}')
+                                
+                except Exception as e:
                     optimal_delta = 0
                     if verbose:
-                        print(f"        Exception in fit occurred, optimal delta = {optimal_delta:.4f}")
-
+                        print(f'    Exception in fit occurred, no changes accepted!\n      {e}')
+            else:
+                optimal_delta = 0
+                if verbose:
+                    print('    Error occurred in metric, no changes accepted!')
+            
             #---------------------------------------------#
             # Test the new optimal mode coeff. to verify the metric improves
             #---------------------------------------------#   
-            coeff_opt = init_iter_zern_modes[mode] + optimal_delta
-            active_zern_modes[mode] = coeff_opt
-
-            # verify mirror successfully loads requested state
-            success = aoMirror_local.set_modal_coefficients(active_zern_modes)
-            if not(success):
-                if verbose:
-                    print("    Setting mirror positions failed, using current mode coefficient.")
+            if optimal_delta == 0:
+                # Move on to next mode without changing Zernike coeff.
                 coeff_to_keep = init_iter_zern_modes[mode]
             else:
-                """acquire projection image"""
-                if not opmNIDAQ_local.running():
-                    opmNIDAQ_local.start_waveform_playback()
-                image = mmc.snap()
-                    
-                """Calculate metric."""
-                if "DCT" in metric_to_use:
-                    metric = metric_shannon_dct(
-                        image=image,
-                        psf_radius_px=psf_radius_px,
-                        crop_size=None
-                        )  
-                elif "localize_gauss_2d" in metric_to_use:        
-                    metric = metric_localize_gauss2d(
-                        image=image
-                        )
-                    
-                if metric==np.nan:
-                    print("    Metric is NAN, setting to 0")
-                    metric = float(np.nan_to_num(metric))
-                
-                if round(metric,4)>=round(optimal_metric,4):
-                    coeff_to_keep = coeff_opt
-                    optimal_metric = metric
-                    if verbose:
-                        print(f"      Updating mirror with new optmimal mode coeff.: {coeff_to_keep:.4f} with metric: {metric:.4f}")
-                else:
-                    # if not keep the current mode coeff
-                    if verbose:
-                        print(
-                            "    Metric not improved using previous iteration's mode coeff.",
-                            f"\n     optimal metric: {optimal_metric:.6f}",
-                            f"\n     rejected metric: {metric:.6f}"
-                            )
+                coeff_opt = init_iter_zern_modes[mode] + optimal_delta
+                active_zern_modes[mode] = coeff_opt
+
+                # verify the new coefficient increases the metric
+                success = aoMirror_local.set_modal_coefficients(active_zern_modes)
+                if not(success):
                     coeff_to_keep = init_iter_zern_modes[mode]
-            
+                    if verbose:
+                        print('    Setting mirror positions with optimal coeff failed, no changes accepted!')
+                else:
+                    try:
+                        # TODO: Is this part of the logic needed? This is not part of the 3N+1 alg.
+                        if not opmNIDAQ_local.running():
+                            opmNIDAQ_local.start_waveform_playback()
+                        image = mmc.snap()
+                            
+                        """Calculate metric."""
+                        if "DCT" in metric_to_use:
+                            metric = metric_shannon_dct(
+                                image=image,
+                                psf_radius_px=psf_radius_px,
+                                crop_size=None
+                                )  
+                        elif "localize_gauss_2d" in metric_to_use:        
+                            metric = metric_localize_gauss2d(
+                                image=image
+                                )
+                            
+                        if metric==np.nan:
+                            
+                            print("    Metric is NAN, setting to 0")
+                            metric = float(np.nan_to_num(metric))
+                        
+                        if round(metric, METRIC_PRECISION)>=round(optimal_metric, METRIC_PRECISION):
+                            coeff_to_keep = coeff_opt
+                            optimal_metric = metric
+                            if verbose:
+                                print(f'      Keeping new mode coeff!',
+                                      f'        new mode coeff: {coeff_to_keep:.4f}',
+                                      f'        metric: {metric:.4f}')
+                        else:
+                            # if not keep the current mode coeff
+                            if verbose:
+                                print(
+                                    "----- Metric not improved! -----",
+                                    f"\n       Current best metric: {optimal_metric:.6f}",
+                                    f"\n       rejected metric: {metric:.6f}"
+                                    )
+                            coeff_to_keep = init_iter_zern_modes[mode]
+                    except Exception as e:
+                        coeff_to_keep = init_iter_zern_modes[mode]
+                        if verbose:
+                            print(f'    Exception in new coefficient validation, no changes accepted!\n      {e}')
+                            
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
             #---------------------------------------------# 

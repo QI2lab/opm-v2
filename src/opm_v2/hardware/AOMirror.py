@@ -6,6 +6,8 @@ import wavekit_py as wkpy
 import time
 import json
 
+MIRROR_SETTLE_MS = 50
+
 _instance_mirror = None
 
 class AOMirror:
@@ -95,7 +97,7 @@ class AOMirror:
         self.corr_data_manager.set_command_matrix_prefs(self._n_modes,True)
         self.corr_data_manager.compute_command_matrix()
            
-        self.wfc.set_temporization(20)
+        self.wfc.set_temporization(MIRROR_SETTLE_MS)
 
         # create the configuration object
         self.haso_config, self.haso_specs, _ = wkpy.HasoConfig.get_config(config_file_path=str(self._haso_config_file_path))
@@ -344,7 +346,7 @@ class AOMirror:
         """
         if self._validate_positions(positions):
             self.wfc.move_to_absolute_positions(positions)
-            time.sleep(0.01)
+            time.sleep(MIRROR_SETTLE_MS*10**-3)
             self.get_mirror_positions()
             return True
         else:
@@ -379,7 +381,7 @@ class AOMirror:
                 
         if self._validate_positions(new_positions):
             self.wfc.move_to_absolute_positions(new_positions)
-            time.sleep(0.01)
+            time.sleep(MIRROR_SETTLE_MS*10**-3)
             self.get_mirror_positions()
             return True
         else:

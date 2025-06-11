@@ -730,11 +730,10 @@ def setup_projection(
     
     # Compile active channel settings, has length of n_active_channels
     n_active_channels = sum(channel_states)
-    active_channel_names = [_name for _, _name in zip(channel_states, channel_names) if _]
     active_channel_exps = []
     for ii, ch_state in enumerate(channel_states):
         if ch_state:
-            active_channel_exps.append(channel_exposures_ms[ii])
+            active_channel_exps.append(np.round(channel_exposures_ms[ii],2))
         else:
             # set not used channel powers to 0
             channel_powers[ii] = 0
@@ -944,7 +943,6 @@ def setup_projection(
     if 'none' not in fluidics_mode:
         n_time_steps = fluidics_rounds
         time_interval = 0
-
     elif mda_time_plan is not None:
         n_time_steps = mda_time_plan['loops']
         time_interval = mda_time_plan['interval']
@@ -969,7 +967,6 @@ def setup_projection(
         n_time_steps = 1
         time_interval = 0
         
-
     #----------------------------------------------------------------#
     # Generate xyz stage positions
     if mda_grid_plan is not None:
@@ -1291,7 +1288,7 @@ def setup_mirrorscan(
     active_channel_exps = []
     for ii, ch_state in enumerate(channel_states):
         if ch_state:
-            active_channel_exps.append(channel_exposures_ms[ii])
+            active_channel_exps.append(np.round(channel_exposures_ms[ii],2))
         else:
             # set not used channel powers to 0
             channel_powers[ii] = 0
@@ -1843,7 +1840,7 @@ def setup_stagescan(
     scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(config['acq_config']['stage_scan']['scan_axis_overlap_um'])
     scan_tile_overlap_mm = scan_tile_overlap_um/1000.
     
-    # create camera events
+    # Get the excess start / end
     excess_starting_images = int(config['acq_config']['stage_scan']['excess_start_frames'])
     excess_ending_images = int(config['acq_config']['stage_scan']['excess_end_frames'])
     
@@ -1857,8 +1854,6 @@ def setup_stagescan(
     
     n_active_channels = sum(channel_states)
     active_channel_names = [_name for _, _name in zip(channel_states, channel_names) if _]
-    
-    # Interleave only available if all channels have the same exposure.
     active_channel_exps = []
     for ii, ch_state in enumerate(channel_states):
         if ch_state:
@@ -1867,6 +1862,7 @@ def setup_stagescan(
             # set not used channel powers to 0
             channel_powers[ii] = 0
         
+    # Interleave only available if all channels have the same exposure.
     if len(set(active_channel_exps))==1:
         interleaved_acq = True
     else:
@@ -1902,11 +1898,12 @@ def setup_stagescan(
     # Split apart sequence dictionary
     sequence_dict = json.loads(sequence.model_dump_json())
     mda_grid_plan = sequence_dict['grid_plan']
+    mda_positions_plan = sequence_dict['stage_positions']
     mda_time_plan = sequence_dict['time_plan']
     mda_z_plan = sequence_dict['z_plan']
     
-    if mda_grid_plan is None:
-        print('Must select MDA grid plan for stage scanning')
+    if (mda_grid_plan is None) and (mda_positions_plan is None):
+        print('Must select MDA grid or positions plan for stage scanning')
         return None, None
 
     #----------------------------------------------------------------#
@@ -1946,18 +1943,19 @@ def setup_stagescan(
         # Create a new directory in output.root for saving AO results
         ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
         ao_output_dir.mkdir(exist_ok=True)
-        ao_daq_mode = str(config['acq_config']['AO']['daq_mode'])
-        if "2d" in ao_daq_mode:
-            AO_camera_crop_y = config['acq_config']['camera_roi']['crop_y']
-        else:
-            AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/pixel_size_um)
+        AO_save_path = ao_output_dir
+
+        # Check the daq mode and set the camera properties
+        AO_daq_mode = str(config['acq_config']['AO']['daq_mode'])
+        if '2d' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['camera_roi']['crop_y'])
+        elif 'projection' in AO_daq_mode:
+            AO_camera_crop_y = int(config['acq_config']['AO']['image_mirror_range_um']/mmc.getPixelSizeUm())
             
+        # Set the active channel in the daq channel list
         AO_channel_states = [False] * len(channel_names) 
         AO_channel_powers = [0.] * len(channel_names)
         AO_active_channel_id = config['acq_config']['AO']['active_channel_id']
-        AO_save_path = ao_output_dir
-        
-        # Set the active channel in the daq channel list
         for chan_idx, chan_str in enumerate(config['OPM']['channel_ids']):
             if AO_active_channel_id==chan_str:
                 AO_channel_states[chan_idx] = True
@@ -1965,16 +1963,19 @@ def setup_stagescan(
                 
         # check to make sure there exist a laser power > 0
         if sum(AO_channel_powers)==0:
-            print('All AO laser powers are set to 0!')
+            print('All A.O. laser powers are set to 0!')
             return None, None
         
+        # Define AO Grid generation action data
         if 'grid' in ao_mode:
-            # Define AO Grid generation action data
             ao_action_data = {
                 'AO' : {
                     'stage_positions': None,
                     'num_scan_positions':int(config['acq_config']['AO']['num_scan_positions']),
                     'num_tile_positions':int(config['acq_config']['AO']['num_tile_positions']),
+                    'apply_ao_map': bool(False),
+                    'pos_idx': int(0),
+                    'output_path':AO_save_path,
                     'ao_dict': {
                         'daq_mode': str(config['acq_config']['AO']['daq_mode']),
                         'channel_states': AO_channel_states,
@@ -1985,10 +1986,7 @@ def setup_stagescan(
                         'iterations': int(config['acq_config']['AO']['num_iterations']),
                         'metric': str(config['acq_config']['AO']['metric']),
                         'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],
-                    },
-                    'apply_ao_map': bool(False),
-                    'pos_idx': int(0),
-                    'output_path':AO_save_path
+                    }
                 },
                 'Camera' : {
                     'exposure_ms': config['acq_config']['AO']['exposure_ms'],
@@ -2003,8 +2001,9 @@ def setup_stagescan(
             ao_grid_event = MDAEvent(**AO_grid_event.model_dump())
             ao_grid_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
+            
+        # Define AO optimization action data
         else:
-            # Define AO optimization action data   
             ao_action_data = {
                 'AO' : {
                     'channel_states': AO_channel_states,
@@ -2071,14 +2070,30 @@ def setup_stagescan(
     # Compile mda positions from active tabs, and config
     #----------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
-    # Generate time points
+    # Define the time indexing
     if 'none' not in fluidics_mode:
-        n_time_steps = int(fluidics_rounds)
+        n_time_steps = fluidics_rounds
         time_interval = 0
     elif mda_time_plan is not None:
         n_time_steps = mda_time_plan['loops']
         time_interval = mda_time_plan['interval']
+        if time_interval>0:
+            timelapse_data = {
+                'plan': {
+                   'interval':time_interval,
+                    'time_steps':n_time_steps,
+                    'timepoint':0 
+                }
+            }
+            timelapse_event = MDAEvent(**Timelapse_event.model_dump())
+            timelapse_event.action.data.update(timelapse_data)
+        
+        if DEBUGGING:
+            print(
+                '\nTimelapse parameters:',
+                f'\n  interval: {time_interval}',
+                f'\n  timepoints: {n_time_steps}'
+            )
     else:
         n_time_steps = 1
         time_interval = 0
@@ -2086,7 +2101,7 @@ def setup_stagescan(
     #----------------------------------------------------------------#
     # Generate xyz stage positions
     stage_positions = []
-                        
+    
     # grab grid plan extents
     min_y_pos = mda_grid_plan['bottom']
     max_y_pos = mda_grid_plan['top']
@@ -2127,8 +2142,10 @@ def setup_stagescan(
     if coverslip_slope != 0:
         # Set the max scan range using coverslip slope
         scan_axis_max_range = np.abs(coverslip_max_dz / coverslip_slope)
-        # if scan_axis_max_range > float(config['acq_config']['stage_scan']['stage_scan_range_um']):
-        #     scan_axis_max_range = float(config['acq_config']['stage_scan']['stage_scan_range_um'])
+        
+        # Use the config value as a global maximum
+        if scan_axis_max_range > float(config['acq_config']['stage_scan']['stage_scan_range_um']):
+            scan_axis_max_range = float(config['acq_config']['stage_scan']['stage_scan_range_um'])
     else:
         scan_axis_max_range = float(config['acq_config']['stage_scan']['stage_scan_range_um'])
 
@@ -2284,7 +2301,6 @@ def setup_stagescan(
         AOmirror_setup.n_positions = n_stage_positions
         
     # Flags to help ensure sequence-able events are kept together 
-    need_to_setup_DAQ = True
     need_to_setup_stage = True
     
     # Check if run AF at start only
@@ -2311,14 +2327,22 @@ def setup_stagescan(
                 f'\n  Stage positions: {n_stage_positions}',
                 f'\n  Scan positions: {scan_axis_positions+int(excess_starting_images)+int(excess_ending_images)}',
                 f'\n  Active channels: {n_active_channels}',
-                f'\n  Excess frame values (start/end): {excess_starting_images} / {excess_ending_images}'
+                f'\n  Excess frame values (start/end): {excess_starting_images} / {excess_ending_images}',
+                f'\n  AO frequency: {ao_mode}',
+                f'\n  o2o3 focus frequency: {o2o3_mode}'
             )
             
     for time_idx in trange(n_time_steps, desc= 'Timepoints:', leave=True):
+        # Run fluidics starting at the second timepoint if present
         if 'none' not in fluidics_mode and time_idx!=0:
             current_FP_event = MDAEvent(**fp_event.model_dump())
             current_FP_event.action.data['Fluidics']['round'] = int(time_idx)
             opm_events.append(current_FP_event)
+        # Create pause events starting at the second timepoint for timelapse acq.
+        elif (mda_time_plan is not None) and (time_idx>0):
+            current_timepoint_event = MDAEvent(**timelapse_event.model_dump())
+            current_timepoint_event.action.data['plan']['timepoint'] = time_idx
+            opm_events.append(current_timepoint_event)
             
         if 'time' in o2o3_mode:
             opm_events.append(o2o3_event)
@@ -2347,38 +2371,81 @@ def setup_stagescan(
                         else:
                             need_to_setup_stage = False
                 
+                    #----------------------------------------------------------------#
+                    # Create 'start' and 'time-point' optimization events
+                    if pos_idx==0:
+                        # Create o2o3 optimization events for running at start only
+                        if ('start' in o2o3_mode) and (time_idx==0):
+                            opm_events.append(o2o3_event)
+                        
+                        # Create o2o3 optimization events for running every time-point
+                        elif 'timepoint' in o2o3_mode:
+                            opm_events.append(o2o3_event)
+
+                        # Create AO optimization events for running at the 'start'
+                        if 'start' in ao_mode:
+                            if time_idx == 0:
+                                # Run AO at t=0
+                                if 'grid' in ao_mode:
+                                    current_ao_event = MDAEvent(**ao_grid_event.model_dump())
+                                    current_ao_event.action.data['AO']['stage_positions'] = stage_positions
+                                else:
+                                    current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
+                                opm_events.append(current_ao_event)
+                        
+                        # Create AO optimization events for running each 'timepoint'
+                        elif 'timepoint' in ao_mode:
+                            if 'grid' in ao_mode:
+                                current_ao_event = MDAEvent(**ao_grid_event.model_dump())
+                                current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'time_{time_idx}_ao_grid')
+                                current_ao_event.action.data['AO']['stage_positions'] = stage_positions
+                            else:
+                                # NOTE: for single AO optimization, force pos_idx=0
+                                current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
+                                current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'time_{time_idx}_ao_optimize')
+                                current_ao_event.action.data['AO']['pos_idx'] = 0
+                                current_ao_event.action.data['AO']['apply_existing'] = False
+                            opm_events.append(current_ao_event)
+                    
+                    # Create mirror update events for 'start' and 'time-point' AO events
+                    # NOTE: Update mirror every time-point and stage-position
+                    # NOTE: for single position optimization, only refer to pos_idx==0, 
+                    #       Currently not filling the entire position array!
+                    if ('start' in ao_mode) or ('timepoint' in ao_mode):
+                        if 'grid' in ao_mode:
+                            current_ao_update_event = MDAEvent(**ao_grid_event.model_dump())
+                            current_ao_update_event.action.data['AO']['apply_ao_map'] = True
+                            current_ao_update_event.action.data['AO']['pos_idx'] = pos_idx
+                        else:
+                            current_ao_update_event = MDAEvent(**ao_optimization_event.model_dump())
+                            current_ao_update_event.action.data['AO']['apply_existing'] = True
+                            current_ao_update_event.action.data['AO']['pos_idx'] = 0
+                        opm_events.append(current_ao_update_event)
+                    
+                    #----------------------------------------------------------------#
+                    # Create 'xyz' optimization events 
                     if 'xyz' in o2o3_mode:
                         opm_events.append(o2o3_event)
-                    
-                    # Apply the grid mirror state
-                    if 'grid' in ao_mode:
-                        current_ao_update_event = MDAEvent(**ao_grid_event.model_dump())
-                        current_ao_update_event.action.data['AO']['apply_ao_map'] = True
+                        
+                    if 'xyz' in ao_mode:
+                        # NOTE: AO-grid does not have an xyz option
+                        # Run the AO at the first time-point for each position
+                        if time_idx==0:
+                            current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
+                            current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_optimize')
+                            current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
+                            current_ao_event.action.data['AO']['apply_existing'] = False
+                            opm_events.append(current_ao_event)
+                
+                        # Update the mirror state for at each position for all time-points
+                        current_ao_update_event = MDAEvent(**ao_optimization_event.model_dump())
                         current_ao_update_event.action.data['AO']['pos_idx'] = int(pos_idx)
+                        current_ao_update_event.action.data['AO']['apply_existing'] = True
                         opm_events.append(current_ao_update_event)
                         
-                    # Run AO optimization before acquiring current position
-                    if ('xyz' in ao_mode) and (time_idx == 0):
-                        need_to_setup_DAQ = True
-                        current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
-                        current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_optimize')
-                        current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
-                        current_ao_event.action.data['AO']['apply_existing'] = False
-                        opm_events.append(current_ao_event)
-                        
-                    # Apply mirror correction for this position if time_idx > 0
-                    elif ('xyz' in ao_mode) and (time_idx > 0):
-                        need_to_setup_DAQ = True
-                        current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
-                        current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
-                        current_ao_event.action.data['AO']['apply_existing'] = True
-                        opm_events.append(current_ao_event)
-                    
                     # Finally, handle acquiring images. 
-                    # These events are passed through to the normal MDAEngine and *should* be sequenced. 
-                    if need_to_setup_DAQ:
-                        need_to_setup_DAQ = True
-                        opm_events.append(daq_event)
+                    # By defualt, update the daq before each scan
+                    opm_events.append(daq_event)
                     
                     # Setup ASI controller for stage scanning and Camera for external START trigger
                     current_ASI_setup_event = MDAEvent(**ASI_setup_event.model_dump())
@@ -2387,6 +2454,7 @@ def setup_stagescan(
                     current_ASI_setup_event.action.data['ASI']['scan_axis_speed_mm_s'] = float(scan_axis_speed)
                     opm_events.append(current_ASI_setup_event)
                                             
+                    # Create image events
                     for scan_axis_idx in range(scan_axis_positions+int(excess_starting_images) + int(excess_ending_images)):
                         for chan_idx in range(n_active_channels):
                             if (scan_axis_idx < excess_starting_images) or (scan_axis_idx > (scan_axis_positions + excess_starting_images)):
@@ -2427,7 +2495,9 @@ def setup_stagescan(
                                         'camera_Zstage_orientation' : str(config['OPM']['camera_Zstage_orientation']),
                                         'camera_XYstage_orientation' : str(config['OPM']['camera_XYstage_orientation']),
                                         'camera_mirror_orientation' : str(config['OPM']['camera_mirror_orientation']),
-                                        'excess_scan_positions' : int(excess_starting_images)
+                                        'excess_scan_positions' : int(excess_starting_images),
+                                        'excess_scan_end_positions' : int(excess_ending_images), 
+                                        'excess_scan_start_positions' : int(excess_starting_images)
                                     },
                                     'Stage' : {
                                         'x_pos' : stage_positions[pos_idx]['x'] + (scan_axis_idx * scan_axis_step_um),
@@ -2438,6 +2508,7 @@ def setup_stagescan(
                                 }
                             )
                             opm_events.append(image_event)
+                            # TODO: Update processing code to account for start and end excess frames for stage scan.
                     pos_idx = pos_idx + 1
                         
     # Check if path ends if .zarr. If so, use our OutputHandler
@@ -2448,15 +2519,12 @@ def setup_stagescan(
             'c' : int(np.maximum(1,n_active_channels)),
             'z' : int(np.maximum(1,scan_axis_positions+int(excess_starting_images)+int(excess_ending_images)))
         }
-
         handler = OPMMirrorHandler(
             path=Path(output),
             indice_sizes=indice_sizes,
             delete_existing=True
         )
-            
         print(f'\nUsing Qi2lab handler,\nindices: {indice_sizes}\n')
-            
     else:
         print('Using default handler')
         handler = Path(output)
