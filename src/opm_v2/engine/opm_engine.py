@@ -72,7 +72,6 @@ class OPMEngine(MDAEngine):
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
-
             if action_name == "O2O3-autofocus":
                 # Stop DAQ playback
                 if self.opmDAQ.running():
@@ -318,7 +317,7 @@ class OPMEngine(MDAEngine):
                     self.opmDAQ.clear_tasks()
                     
                     # Setup camera properties
-                    if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
+                    if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[3]):
                         current_roi = self._mmc.getROI()
                         self._mmc.clearROI()
                         self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
@@ -419,20 +418,18 @@ class OPMEngine(MDAEngine):
                 
                 #--------------------------------------------------------#
                 # Setup camera properties
-                if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
-                    if not(int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[-2]):
-                        current_roi = self._mmc.getROI()
-                        self._mmc.clearROI()
-                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                        self._mmc.setROI(
-                            data_dict["Camera"]["camera_crop"][0],
-                            data_dict["Camera"]["camera_crop"][1],
-                            data_dict["Camera"]["camera_crop"][2],
-                            data_dict["Camera"]["camera_crop"][3],
-                        )
-                        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-                        print(current_roi)
-                    
+                print(self._mmc.getROI())
+                if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[3]) or not (int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[2]):                   
+                    self._mmc.clearROI()
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                    self._mmc.setROI(
+                        data_dict["Camera"]["camera_crop"][0],
+                        data_dict["Camera"]["camera_crop"][1],
+                        data_dict["Camera"]["camera_crop"][2],
+                        data_dict["Camera"]["camera_crop"][3],
+                    )
+                    self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
@@ -560,12 +557,13 @@ class OPMEngine(MDAEngine):
                 self.elapsed_time = perf_counter() - self.start_time
                 sleep_time = interval - self.elapsed_time
                 if sleep_time<0:
-                    sleep_time = 0
+                    sleep_time = 10
                     if DEBUGGING:
                         print(
-                            '\nImaging did not finish before next timepoint!'
+                            '\nImaging did not finish before interval time, running now!'
                         )
-                QThread.sleep(int(interval - self.elapsed_time))
+                
+                QThread.sleep(int(sleep_time))
                 self.start_time = perf_counter() 
                 
                 if DEBUGGING:

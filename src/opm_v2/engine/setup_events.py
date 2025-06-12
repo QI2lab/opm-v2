@@ -803,8 +803,8 @@ def setup_projection(
             ]
         }
     }
-    daq_event = MDAEvent(**DAQ_event.model_dump())
-    daq_event.action.data.update(daq_action_data)
+    daq_update_event = MDAEvent(**DAQ_event.model_dump())
+    daq_update_event.action.data.update(daq_action_data)
             
     #----------------------------------------------------------------#
     # Create the AO event data    
@@ -1104,7 +1104,7 @@ def setup_projection(
                     current_ao_update_event.action.data['AO']['apply_existing'] = True
                     current_ao_update_event.action.data['AO']['pos_idx'] = 0
                 opm_events.append(current_ao_update_event)
-            
+                
             #----------------------------------------------------------------#
             # Create 'xyz' optimization events 
             if 'xyz' in o2o3_mode:
@@ -1130,7 +1130,7 @@ def setup_projection(
             # Handle acquiring images
             if interleaved_acq:
                 # Update daq state to sequence all channels
-                current_daq_event = MDAEvent(**daq_event.model_dump())
+                current_daq_event = MDAEvent(**daq_update_event.model_dump())
                 current_daq_event.action.data['DAQ']['active_channels'] = channel_states
                 current_daq_event.action.data['DAQ']['channel_powers'] = channel_powers
                 current_daq_event.action.data['Camera']['exposure_channels'] = channel_exposures_ms
@@ -1151,7 +1151,7 @@ def setup_projection(
                         temp_powers[chan_idx] = channel_powers[chan_idx]
                         
                         # create daq event for a single channel                    
-                        current_daq_event = MDAEvent(**daq_event.model_dump())
+                        current_daq_event = MDAEvent(**daq_update_event.model_dump())
                         current_daq_event.action.data['DAQ']['active_channels'] = temp_channels
                         current_daq_event.action.data['DAQ']['channel_powers'] = temp_powers
                         current_daq_event.action.data['Camera']['exposure_channels'] = temp_exposures
@@ -2302,21 +2302,7 @@ def setup_stagescan(
         
     # Flags to help ensure sequence-able events are kept together 
     need_to_setup_stage = True
-    
-    # Check if run AF at start only
-    if 'start' in o2o3_mode:
-        opm_events.append(o2o3_event)
-        
-    # check if run AO at start only
-    if 'start' in ao_mode:
-        opm_events.append(ao_optimization_event)
-    
-    # check if generating AO grid        
-    if 'grid' in ao_mode:
-        current_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-        current_ao_grid_event.action.data['AO']['stage_positions'] = stage_positions
-        opm_events.append(current_ao_grid_event)
-        
+            
     #----------------------------------------------------------------#
     # setup nD mirror-based AO-OPM acquisition event structure
     

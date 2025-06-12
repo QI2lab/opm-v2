@@ -186,7 +186,7 @@ def run_ao_optimization(
             if verbose:
                 print(
                     f'\nAO iteration: {k+1} / {num_iterations}',
-                    f'    Perturbing mirror with Zernike mode: {mode+1}'
+                    f'\n    Perturbing mirror with Zernike mode: {mode+1}'
                     )
                 
             # Grab the current starting mode coeff for this iteration
@@ -203,7 +203,7 @@ def run_ao_optimization(
                 success = aoMirror_local.set_modal_coefficients(active_zern_modes)
                 
                 if not(success):
-                    print('\n---- Setting mirror coefficients failed! ----')
+                    print('\n    ---- Setting mirror coefficients failed! ----')
                     # Force metric and image to zeros
                     metric = 0
                     image = np.zeros_like(starting_image)
@@ -227,17 +227,19 @@ def run_ao_optimization(
 
                     if metric==np.nan:
                         if verbose:
-                            print('\n---- Metric failed == NAN ----')
+                            print('\n    ---- Metric failed == NAN ----')
                         success = False
                         metric = float(np.nan_to_num(metric))
                     
+                    metric = np.round(metric, METRIC_PRECISION)
+                    
                     if verbose:
-                        print(f'      Delta={delta:.3f}, Metric = {np.round(metric, METRIC_PRECISION)}, Success = {success}')
+                        print(f'      Delta={delta:.3f}, Metric = {metric}, Success = {success}')
 
                     if DEBUGGING:
                         imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
                     
-                metrics.append(np.round(metric, METRIC_PRECISION))
+                metrics.append(metric)
                 
                 if save_dir_path:
                     mode_images.append(image)
@@ -263,27 +265,27 @@ def run_ao_optimization(
                     optimal_delta = -b / (2 * a)
                     
                     # compare to booth opt_delta
-                    booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
-                    
-                    if verbose:
-                        print(f'------ our delta: {optimal_delta} ------',
-                              f'------ Booth delta {booth_delta} ------')
+                    # booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
+                    # optimal_delta = booth_delta
+                    # if verbose:
+                    #     print(f'\n    ------ our delta: {optimal_delta} ------',
+                    #           f'\n    ------ Booth delta {booth_delta} ------')
                     
                     # Reject metric if it is outside the test range.
                     if (optimal_delta>delta_range) or (optimal_delta<-delta_range):
                         raise Exception(f'Result outside of range: opt_delta = {optimal_delta:.4f}')
                     
                     if verbose:
-                        print(f'    Metric maximum at delta = {optimal_delta:4f}')
+                        print(f'\n    Metric maximum at delta = {optimal_delta:4f}')
                                 
                 except Exception as e:
                     optimal_delta = 0
                     if verbose:
-                        print(f'    Exception in fit occurred, no changes accepted!\n      {e}')
+                        print(f'\n    ---- Exception in fit occurred, no changes accepted! ----\n      e:{e}')
             else:
                 optimal_delta = 0
                 if verbose:
-                    print('    Error occurred in metric, no changes accepted!')
+                    print('\n    ---- Error occurred in metric, no changes accepted! ----')
             
             #---------------------------------------------#
             # Test the new optimal mode coeff. to verify the metric improves
@@ -294,16 +296,16 @@ def run_ao_optimization(
             else:
                 coeff_opt = init_iter_zern_modes[mode] + optimal_delta
                 active_zern_modes[mode] = coeff_opt
-
+                coeff_to_keep = coeff_opt
+                
                 # verify the new coefficient increases the metric
                 success = aoMirror_local.set_modal_coefficients(active_zern_modes)
                 if not(success):
                     coeff_to_keep = init_iter_zern_modes[mode]
                     if verbose:
-                        print('    Setting mirror positions with optimal coeff failed, no changes accepted!')
+                        print('\n    ---- Setting mirror positions with optimal coeff failed, no changes accepted! ----')
                 else:
                     try:
-                        # TODO: Is this part of the logic needed? This is not part of the 3N+1 alg.
                         if not opmNIDAQ_local.running():
                             opmNIDAQ_local.start_waveform_playback()
                         image = mmc.snap()
@@ -321,30 +323,25 @@ def run_ao_optimization(
                                 )
                             
                         if metric==np.nan:
-                            
-                            print("    Metric is NAN, setting to 0")
-                            metric = float(np.nan_to_num(metric))
+                            raise Exception('Optimal coefficient returned a NAN metric!')
                         
-                        if round(metric, METRIC_PRECISION)>=round(optimal_metric, METRIC_PRECISION):
+                        metric = np.round(metric, METRIC_PRECISION)
+                        
+                        if metric>=optimal_metric:
+                        # if metric>=metrics[1]:
                             coeff_to_keep = coeff_opt
                             optimal_metric = metric
                             if verbose:
-                                print(f'      Keeping new mode coeff!',
-                                      f'        new mode coeff: {coeff_to_keep:.4f}',
-                                      f'        metric: {metric:.4f}')
+                                print(f'\n    Keeping new mode coeff!',
+                                      f'\n       new mode coeff: {coeff_to_keep:.4f}',
+                                      f'\n       metric: {metric}')
                         else:
-                            # if not keep the current mode coeff
-                            if verbose:
-                                print(
-                                    "----- Metric not improved! -----",
-                                    f"\n       Current best metric: {optimal_metric:.6f}",
-                                    f"\n       rejected metric: {metric:.6f}"
-                                    )
-                            coeff_to_keep = init_iter_zern_modes[mode]
+                            raise Exception(f'Metric not improved with new optimal coefficient!\n       Rejected Metric = {metric}\n       Current opt. metric = {optimal_metric}')
+
                     except Exception as e:
                         coeff_to_keep = init_iter_zern_modes[mode]
                         if verbose:
-                            print(f'    Exception in new coefficient validation, no changes accepted!\n      {e}')
+                            print(f'\n    ---- Exception in new coefficient validation, no changes accepted! ----\n       {e}')
                             
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs

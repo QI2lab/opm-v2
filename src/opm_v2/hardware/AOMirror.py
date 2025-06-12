@@ -6,7 +6,7 @@ import wavekit_py as wkpy
 import time
 import json
 
-MIRROR_SETTLE_MS = 50
+MIRROR_SETTLE_MS = 100
 
 _instance_mirror = None
 
