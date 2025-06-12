@@ -265,11 +265,13 @@ def run_ao_optimization(
                     optimal_delta = -b / (2 * a)
                     
                     # compare to booth opt_delta
-                    # booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
-                    # optimal_delta = booth_delta
-                    # if verbose:
-                    #     print(f'\n    ------ our delta: {optimal_delta} ------',
-                    #           f'\n    ------ Booth delta {booth_delta} ------')
+                    booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
+                    optimal_delta = booth_delta
+                    if verbose:
+                        print(
+                            f'\n    ++++ our delta: {optimal_delta} ++++'
+                            f'\n    ++++ Booth delta {booth_delta} ++++'
+                        )
                     
                     # Reject metric if it is outside the test range.
                     if (optimal_delta>delta_range) or (optimal_delta<-delta_range):
@@ -286,94 +288,32 @@ def run_ao_optimization(
                 optimal_delta = 0
                 if verbose:
                     print('\n    ---- Error occurred in metric, no changes accepted! ----')
-            
-            #---------------------------------------------#
-            # Test the new optimal mode coeff. to verify the metric improves
-            #---------------------------------------------#   
-            if optimal_delta == 0:
-                # Move on to next mode without changing Zernike coeff.
-                coeff_to_keep = init_iter_zern_modes[mode]
-            else:
-                coeff_opt = init_iter_zern_modes[mode] + optimal_delta
-                active_zern_modes[mode] = coeff_opt
-                coeff_to_keep = coeff_opt
-                
-                # verify the new coefficient increases the metric
-                success = aoMirror_local.set_modal_coefficients(active_zern_modes)
-                if not(success):
-                    coeff_to_keep = init_iter_zern_modes[mode]
-                    if verbose:
-                        print('\n    ---- Setting mirror positions with optimal coeff failed, no changes accepted! ----')
-                else:
-                    try:
-                        if not opmNIDAQ_local.running():
-                            opmNIDAQ_local.start_waveform_playback()
-                        image = mmc.snap()
-                            
-                        """Calculate metric."""
-                        if "DCT" in metric_to_use:
-                            metric = metric_shannon_dct(
-                                image=image,
-                                psf_radius_px=psf_radius_px,
-                                crop_size=None
-                                )  
-                        elif "localize_gauss_2d" in metric_to_use:        
-                            metric = metric_localize_gauss2d(
-                                image=image
-                                )
-                            
-                        if metric==np.nan:
-                            raise Exception('Optimal coefficient returned a NAN metric!')
-                        
-                        metric = np.round(metric, METRIC_PRECISION)
-                        
-                        if metric>=optimal_metric:
-                        # if metric>=metrics[1]:
-                            coeff_to_keep = coeff_opt
-                            optimal_metric = metric
-                            if verbose:
-                                print(f'\n    Keeping new mode coeff!',
-                                      f'\n       new mode coeff: {coeff_to_keep:.4f}',
-                                      f'\n       metric: {metric}')
-                        else:
-                            raise Exception(f'Metric not improved with new optimal coefficient!\n       Rejected Metric = {metric}\n       Current opt. metric = {optimal_metric}')
-
-                    except Exception as e:
-                        coeff_to_keep = init_iter_zern_modes[mode]
-                        if verbose:
-                            print(f'\n    ---- Exception in new coefficient validation, no changes accepted! ----\n       {e}')
-                            
+           
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
-            #---------------------------------------------# 
-            active_zern_modes[mode] = coeff_to_keep
+            #---------------------------------------------#  
+            # apply the opt coefficient to the mirror
+            coeff_opt = init_iter_zern_modes[mode] + optimal_delta
+            active_zern_modes[mode] = coeff_opt
+        
             _ = aoMirror_local.set_modal_coefficients(active_zern_modes)
             
-            if save_dir_path:
-                """acquire projection image"""
-                if not opmNIDAQ_local.running():
-                    opmNIDAQ_local.start_waveform_playback()
-                image = mmc.snap()
-                
-                metrics_per_mode.append(optimal_metric)
-                images_per_mode.append(image)
-
-            
             """Loop back to top and do the next mode until all modes are done"""
+        
         #---------------------------------------------#
         # After all modes, reduce the delta range for the next iteration
         #---------------------------------------------# 
         delta_range *= delta_range_alpha_per_iter
         if verbose:
             print(
-                f"  Reduced sweep range to {delta_range:.4f}",
-                f"  Current metric: {metric:.4f}"
+                f"   Reduced sweep range to {delta_range:.4f}",
+                f"   Current metric: {metric:.4f}"
                 )
         
         if save_dir_path:
             metrics_per_iteration.append(iter_metrics)
             coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
-            images_per_iteration.append(image)
+            # images_per_iteration.append(image)
 
         """Loop back to top and do the next iteration"""
         

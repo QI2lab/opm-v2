@@ -500,7 +500,7 @@ class OPMEngine(MDAEngine):
                         print(
                             '\nAO: updating mirror with existing positions:',
                             f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
-                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                            f'\n  positions: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
                     run_ao_optimization(
@@ -533,7 +533,7 @@ class OPMEngine(MDAEngine):
                         print(
                             '\nAO: updating mirror with existing positions:',
                             f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
-                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                            f'\n  positions: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
                     run_ao_grid_mapping(
