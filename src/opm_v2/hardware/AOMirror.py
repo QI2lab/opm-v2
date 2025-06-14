@@ -113,7 +113,6 @@ class AOMirror:
             dimensions=pupil_dimensions,
             serial_number = self.haso_config.serial_number
         )
-        
         # initiate an empty pupil
         self.pupil = wkpy.Pupil(dimensions=pupil_dimensions, value=False)
         pupil_buffer = self.corr_data_manager.get_greatest_common_pupil()
@@ -125,7 +124,6 @@ class AOMirror:
             wkpy.E_PUPIL_COVERING.CIRCUMSCRIBED,
             False
         )
-
         # create modal coeff object
         self.modal_coeff = wkpy.ModalCoef(modal_type=wkpy.E_MODAL.ZERNIKE)
         self.modal_coeff.set_zernike_prefs(
@@ -161,7 +159,7 @@ class AOMirror:
             )
         else:
             self.mirror_flat_voltage = np.zeros(self.wfc.nb_actuators)
-    
+
         # For tracking the current mirror state
         self._current_coeffs = np.zeros(n_modes,dtype=np.float32)
         self._current_voltage = np.asarray(self.system_flat_voltage)
@@ -173,6 +171,8 @@ class AOMirror:
         self.positions_voltage_array = np.zeros((n_positions,self.wfc.nb_actuators))
         self.positions_modal_array = np.zeros((n_positions,31)) # shape matches mode names length
         
+        # Set mirror in system flat by defualt
+        self.apply_system_flat_voltage()
         # Set mirror in system flat by defualt
         self.apply_system_flat_voltage()
 
@@ -278,13 +278,13 @@ class AOMirror:
             self._n_positions = value
         else:
             self._n_positions = value
-            
         self.positions_voltage_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
         self.positions_modal_array = np.zeros((self._n_positions,len(self.mode_names)))
 
     @property
     def current_voltage(self) -> np.ndarray:
         """Get current mirror positions."""
+        return self._current_voltage
         return self._current_voltage
 
     @current_voltage.setter
@@ -328,7 +328,6 @@ class AOMirror:
 
     def _validate_voltage(self, volts: NDArray) -> bool:
         """Ensure mirror positions are within safe voltage limits."""
-        
         if volts.shape[0] != self.wfc.nb_actuators:
             print(f"Volts array must have shape = {self.wfc.nb_actuators}")
             return False
@@ -346,7 +345,6 @@ class AOMirror:
         # Only track modal coeffs if committed
         if self.control_mode == 'modal':
             self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
-        
         # Always track positions
         self.current_voltage = np.array(self.wfc.get_current_voltage())   
 
@@ -385,7 +383,6 @@ class AOMirror:
         """
         if self.control_mode == 'modal':
             self.set_modal_coefficients(self.last_opt_modal_array)
-            self.last_opt_modal_array
         else:
             self.set_mirror_voltage(self.last_opt_volt_array)
         self._update_current_state()
@@ -408,6 +405,7 @@ class AOMirror:
             self._update_current_state()
         except Exception as e:
             print(f'\nSetting mirror positions from POS array failed!/n  e:{e}\n')
+            
             
     def set_mirror_voltage(self, positions: NDArray):
         """Set mirror positions.
@@ -460,6 +458,7 @@ class AOMirror:
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
         new_positions = np.asarray(self.system_flat_voltage) + np.asarray(deltas)
+        new_positions = np.asarray(self.system_flat_voltage) + np.asarray(deltas)
             
         if self._validate_voltage(new_positions):
             # Move mirror actuators
@@ -477,6 +476,7 @@ class AOMirror:
 
         Parameters
         ----------
+        prefix : str
         prefix : str
             _description_
         """
