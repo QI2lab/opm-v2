@@ -493,14 +493,15 @@ class OPMEngine(MDAEngine):
             if action_name == "O2O3-autofocus":
                 manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=DEBUGGING)
                     
-            elif action_name == "AO-optimize":               
+            elif action_name == "AO-optimize":
+                pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_existing"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_positions_array(int(pos_idx))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
-                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
-                            f'\n  positions: {self.AOMirror.current_coeffs.copy()}'
+                            f'\n  pos: {int(pos_idx)}',
+                            f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
                     run_ao_optimization(
@@ -516,23 +517,24 @@ class OPMEngine(MDAEngine):
                         verbose=DEBUGGING
                     )
                     try:
-                        self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
+                        self.AOMirror.update_positions_array[int(pos_idx)]
                         if DEBUGGING:
                             print(
                                 '\nAO: Saving positions to array:',
-                                f'\n  pos_idx: {int(data_dict["AO"]["pos_idx"])}',
-                                f'\n  mirror positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                                f'\n  pos: {int(pos_idx)}',
+                                f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
                             )
-                    except Exception:
-                        print("\nAO: Not setting ao positions array")
+                    except Exception as e:
+                        print(f"\nAO: Not setting ao positions array \n  e:{e}")
                         
             elif action_name == "AO-grid":    
+                pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_positions_array(int(pos_idx))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
-                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
+                            f'\n  pos: {int(pos_idx)}',
                             f'\n  positions: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
@@ -612,7 +614,7 @@ class OPMEngine(MDAEngine):
         
         # save mirror positions array
         if self.AOMirror.output_path:
-            self.AOMirror.save_wfc_positions_array()
+            self.AOMirror.save_positions_array()
         self._mmc.clearCircularBuffer()
         
         super().teardown_sequence(sequence)

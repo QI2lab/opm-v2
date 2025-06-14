@@ -148,10 +148,11 @@ def main() -> None:
         system_flat_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
         n_modes = 32,
         n_positions=1,
-        modes_to_ignore = []
+        modes_to_ignore = [],
+        control_mode='modal'
     )
     
-    opmAOmirror.set_mirror_positions_flat()
+    opmAOmirror.apply_system_flat_voltage()
     
     # load OPM NIDAQ
     opmNIDAQ = OPMNIDAQ(
@@ -315,23 +316,18 @@ def main() -> None:
     update_live_state()
     
     def update_ao_mirror_state():
-            
+        """Update the mirror positions to reflect GUI settings
+        """
         AOMirror_update = AOMirror.instance()
         update_config()
         ao_mirror_state = config["acq_config"]["AO"]["mirror_state"]
-        if 'mirror' in ao_mirror_state:
-            position_key = 'mirror_flat'
-        elif 'system' in ao_mirror_state:
-            position_key = 'system_flat'
+        if 'system' in ao_mirror_state:
+            AOMirror_update.apply_system_flat_voltage()
         elif 'optimized' in ao_mirror_state:
-            position_key = 'last_optimized'
-        else:
-            position_key = 'mirror_flat'
-
-        AOMirror_update.set_mirror_positions( AOMirror_update.wfc_positions[position_key])
+            AOMirror_update.apply_last_optimized()
         
         if DEBUGGING:
-            print(f'\nMirror state updated to: {position_key}')
+            print(f'\n++++ Mirror state updated to: {ao_mirror_state} ++++')
         
     opmSettings_widget.settings_changed.connect(update_ao_mirror_state)
         

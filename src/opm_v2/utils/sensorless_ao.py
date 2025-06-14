@@ -24,6 +24,10 @@ from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 DEBUGGING = False
 METRIC_PRECISION = 4
 
+spherical_modes = [7,14,23]
+spherical_modes_first =  [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31]
+all_modes = [3,4,5,6,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+
 mode_names = [
     "Vert. Tilt",
     "Horz. Tilt",
@@ -74,7 +78,7 @@ def run_ao_optimization(
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.35,
     delta_range_alpha_per_iter: Optional[float] = 0.60,
-    modes_to_optimize: Optional[List[int]] = [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31],
+    modes_to_optimize: Optional[List[int]] = all_modes,
     save_dir_path: Optional[Path] = None,
     verbose: Optional[bool] = True,
     ):
@@ -93,23 +97,29 @@ def run_ao_optimization(
     #---------------------------------------------#
     # Setup Zernike modal coeff arrays
     #---------------------------------------------#
-    initial_zern_modes = aoMirror_local.current_coeffs.copy() # coeff before optimization
-    init_iter_zern_modes = initial_zern_modes.copy() # mirror coeffs at the start of optimizing a mode 
-    active_zern_modes = initial_zern_modes.copy() # modified coeffs to be or are applied to mirror
-    optimized_zern_modes = initial_zern_modes.copy() # mode coeffs after running all iterations
+    # TODO: Do we start from system flat or current mirror state?
+    # aoMirror_local.apply_system_flat_voltage()
+    starting_modal_coeffs = aoMirror_local.current_coeffs.copy() # coeff before optimizationmode 
+    active_zern_modes = starting_modal_coeffs.copy() # modified coeffs to be or are applied to mirror
+    optimized_modal_coeffs = starting_modal_coeffs.copy() # mode coeffs after running all iterations
 
+    if verbose:
+        print(
+            f'\n AO optimization starting mirror modal amplitudes:\n{aoMirror_local.current_zernikes}'
+        )
+        
     #----------------------------------------------
-    # Setup saving of AO results
+    # Setup for saving AO results
     #----------------------------------------------
     if save_dir_path:
         if verbose:
             print(f"Saving AO results at:\n  {save_dir_path}\n")
-        metrics_per_mode = [] # starting metric + optimal metric at the end of each mode
-        images_per_mode = [] # starting image + image at the end of each mode
-        mode_images = [] # all images acquired testing mode deltas
-        metrics_per_iteration = [] # n_iters nested list containing that iterations optimal metrics
-        coefficients_per_iteration = [] # starting coeffs + coeffs at the end of each iteration
-        images_per_iteration = [] # lit of n_iters + 1 images
+        all_images = []
+        all_metrics = []
+        all_mode_coeffs = []
+        images_per_iteration = []
+        metrics_per_iteration = [] 
+        coeffs_per_iteration = []
     
     #---------------------------------------------#
     # setup the daq for selected mode
@@ -162,25 +172,25 @@ def run_ao_optimization(
     
     # update saved results
     if save_dir_path:
-        metrics_per_mode.append(starting_metric)
-        images_per_mode.append(starting_image)
-        coefficients_per_iteration.append(initial_zern_modes)
-        images_per_iteration.append(starting_image)
-
+        all_images.append(starting_image)
+        all_metrics.append(starting_metric)
+        all_mode_coeffs.append(starting_modal_coeffs)
+        
     # initialize delta range
     delta_range = init_delta_range
         
     # Start AO iterations 
     for k in range(num_iterations): 
         if k==0:       
-            # initialize the optimal metric, only gets updated when a better metric is obtained.
-            optimal_metric = starting_metric
-            image = starting_image
+            current_metric = starting_metric
+            current_image = starting_image
+            current_modal_coeffs = starting_modal_coeffs
             
         if save_dir_path:
-            # initiate list of metrics for this iteration
-            iter_metrics = [optimal_metric]
-            
+            images_per_iteration.append(current_image)
+            metrics_per_iteration.append(current_metric) 
+            coeffs_per_iteration.append(current_modal_coeffs)
+
         # Iterate over modes to optimize
         for mode in modes_to_optimize:
             if verbose:
@@ -189,22 +199,18 @@ def run_ao_optimization(
                     f'\n    Perturbing mirror with Zernike mode: {mode+1}'
                     )
                 
-            # Grab the current starting mode coeff for this iteration
-            init_iter_zern_modes = aoMirror_local.current_coeffs.copy()
-            deltas = np.linspace(-delta_range, delta_range, num_mode_steps)
-            
             metrics = []
+            deltas = np.linspace(-delta_range, delta_range, num_mode_steps)
             for delta in deltas:
-                # Create an array to modify the mode coeff. and write to the mirror
-                active_zern_modes = init_iter_zern_modes.copy()
-                active_zern_modes[mode] += delta
+                # Create an array for applying deltas and sending to the mirror
+                active_modal_coeffs = current_modal_coeffs.copy()
+                active_modal_coeffs[mode] += delta
                 
-                # Write zernike modes to the mirror
-                success = aoMirror_local.set_modal_coefficients(active_zern_modes)
+                # Apply Zernike pertubation mode to the mirror
+                success = aoMirror_local.set_modal_coefficients(active_modal_coeffs)
                 
                 if not(success):
                     print('\n    ---- Setting mirror coefficients failed! ----')
-                    # Force metric and image to zeros
                     metric = 0
                     image = np.zeros_like(starting_image)
                                             
@@ -234,25 +240,23 @@ def run_ao_optimization(
                     metric = np.round(metric, METRIC_PRECISION)
                     
                     if verbose:
-                        print(f'      Delta={delta:.3f}, Metric = {metric}, Success = {success}')
+                        print(f'      Delta={delta:.3f}, Metric = {metric:.6}, Success = {success}')
 
                     if DEBUGGING:
                         imwrite(Path(f"g:/ao/ao_{mode}_{delta}.tiff"),image)
                     
                 metrics.append(metric)
-                
                 if save_dir_path:
-                    mode_images.append(image)
+                    all_images.append(image)
+                    all_metrics.append(metric)
+                    all_mode_coeffs.append(active_modal_coeffs)
 
             #---------------------------------------------#
             # Fit metrics to determine optimal metric
             #---------------------------------------------#   
             # Do not accept any changes if not success
             if success:
-                try:
-                    popt = quadratic_fit(deltas, metrics)
-                    a, b, c = popt
-                    
+                try:                  
                     # Test if metric samples have a peak to fit
                     is_increasing = all(x < y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
                     is_decreasing = all(x > y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
@@ -261,17 +265,18 @@ def run_ao_optimization(
                     elif a >=0:
                         raise Exception(f'Test metrics have a positive curvature: {metrics}')
                     
-                    # Optimal metric is at the peak of quadratic 
-                    optimal_delta = -b / (2 * a)
-                    
                     # compare to booth opt_delta
-                    booth_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
-                    optimal_delta = booth_delta
-                    if verbose:
-                        print(
-                            f'\n    ++++ our delta: {optimal_delta} ++++'
-                            f'\n    ++++ Booth delta {booth_delta} ++++'
-                        )
+                    optimal_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
+                    
+                    # Optimal metric is at the peak of quadratic 
+                    # popt = quadratic_fit(deltas, metrics)
+                    # a, b, c = popt
+                    # optimal_delta = -b / (2 * a)
+                    # if verbose:
+                    #     print(
+                    #         f'\n    ++++ our delta: {optimal_delta} ++++'
+                    #         f'\n    ++++ Booth delta {booth_delta} ++++'
+                    #     )
                     
                     # Reject metric if it is outside the test range.
                     if (optimal_delta>delta_range) or (optimal_delta<-delta_range):
@@ -292,74 +297,61 @@ def run_ao_optimization(
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
             #---------------------------------------------#  
-            # apply the opt coefficient to the mirror
-            coeff_opt = init_iter_zern_modes[mode] + optimal_delta
-            active_zern_modes[mode] = coeff_opt
-        
-            _ = aoMirror_local.set_modal_coefficients(active_zern_modes)
+            # apply the new modal coefficient to the mirror and update current coefficients
+            current_modal_coeffs[mode] = current_modal_coeffs[mode] + optimal_delta
+            _ = aoMirror_local.set_modal_coefficients(current_modal_coeffs)
             
             """Loop back to top and do the next mode until all modes are done"""
         
         #---------------------------------------------#
         # After all modes, reduce the delta range for the next iteration
         #---------------------------------------------# 
-        delta_range *= delta_range_alpha_per_iter
-        if verbose:
-            print(
-                f"   Reduced sweep range to {delta_range:.4f}",
-                f"   Current metric: {metric:.4f}"
-                )
-        
-        if save_dir_path:
-            metrics_per_iteration.append(iter_metrics)
-            coefficients_per_iteration.append(aoMirror_local.current_coeffs.copy())
-            # images_per_iteration.append(image)
-
+        if num_iterations > 1:
+            delta_range *= delta_range_alpha_per_iter
+            if verbose:
+                print(f"   Reduced sweep range to {delta_range:.4f}")
+            
         """Loop back to top and do the next iteration"""
         
     #---------------------------------------------#
     # After all the iterations the mirror state will be optimized
     #---------------------------------------------# 
-    optimized_zern_modes = aoMirror_local.current_coeffs.copy()          
+    aoMirror_local.update_optimized_array()
     if verbose:
         print(
-            f"Starting Zernike mode amplitude:\n{initial_zern_modes}",
-            f"\nFinal optimized Zernike mode amplitude:\n{optimized_zern_modes}"
+            f"\n++++ Starting Zernike mode amplitude: ++++ \n{starting_modal_coeffs}",
+            f"\n++++ Final optimized Zernike mode amplitude: ++++ \n{current_modal_coeffs}"
             )
     
-    # apply optimized Zernike mode coefficients to the mirror
-    _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
-    
-    # update mirror dict with current positions
-    aoMirror_local.wfc_positions["last_optimized"] = aoMirror_local.current_positions
-    
+    # Cleare the DAQ programming
     opmNIDAQ_local.stop_waveform_playback()
+    opmNIDAQ_local.clear_tasks()
     
     if save_dir_path:
-        images_per_mode = np.asarray(images_per_mode)
-        metrics_per_mode = np.asarray(metrics_per_mode)
+        all_images = np.asarray(all_images)
+        all_metrics = np.asarray(all_metrics)
+        all_mode_coeffs = np.asarray(all_mode_coeffs)
         images_per_iteration = np.asarray(images_per_iteration)
         metrics_per_iteration = np.asarray(metrics_per_iteration)
-        coefficients_per_iteration = np.asarray(coefficients_per_iteration)
-        mode_images = np.asarray(mode_images)
+        coeffs_per_iteration = np.asarray(coeffs_per_iteration)
         
         # save and produce
         save_optimization_results(
-            images_per_mode,
-            metrics_per_mode,
+            all_images,
+            all_metrics,
             images_per_iteration,
             metrics_per_iteration,
-            coefficients_per_iteration,
+            coeffs_per_iteration,
             modes_to_optimize,
             save_dir_path
         )        
         plot_zernike_coeffs(
-            coefficients_per_iteration,
+            coeffs_per_iteration,
             mode_names,
             save_dir_path=save_dir_path
         )        
         plot_metric_progress(
-            metrics_per_mode,
+            all_metrics,
             num_iterations,
             modes_to_optimize,
             mode_names,
@@ -1303,7 +1295,7 @@ def run_ao_grid_mapping(
 
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
-    starting_mirror_positions = aoMirror_local.current_positions.copy()
+    starting_mirror_positions = aoMirror_local.current_voltage.copy()
     for z_idx in range(num_z_positions):
         for tile_idx in range(num_tile_positions):
             for scan_idx in range(num_scan_positions):
@@ -1325,14 +1317,12 @@ def run_ao_grid_mapping(
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
-    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.wfc_coeffs_array.shape[1]))
-    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.wfc_positions_array.shape[1]))
+    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.positions_modal_array.shape[1]))
+    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.positions_voltage_array.shape[1]))
     
     # Run AO optimization for each stage position
     if verbose:
-        print(
-            f"\nGenerating AO map, number positions = {num_ao_pos}:"
-        )
+        print(f"\nGenerating AO map, number positions = {num_ao_pos}:")
     
     # Visit AO stage positions and measure best WFC positions
     for ao_pos_idx in range(num_ao_pos):
@@ -1369,9 +1359,8 @@ def run_ao_grid_mapping(
             save_dir_path=current_save_dir,
             verbose=verbose
         )
-        
         ao_grid_wfc_coeffs[ao_pos_idx] = aoMirror_local.current_coeffs.copy()
-        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_positions.copy()
+        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_voltage.copy()
 
     if verbose:
         print(
@@ -1380,8 +1369,8 @@ def run_ao_grid_mapping(
         )
         
     # Map ao_grid_wfc_coeffs to experiment stage positions.
-    position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
-    position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
+    position_wfc_coeffs = np.zeros(aoMirror_local.positions_modal_array.shape)
+    position_wfc_positions = np.zeros(aoMirror_local.positions_voltage_array.shape)
         
     # Convert AO positions and stage positions into structured arrays for efficient lookup
     ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
@@ -1415,6 +1404,7 @@ def run_ao_grid_mapping(
             (ao_stage_positions_array[:, 2] == candidates[best_candidate_idx][2])
         )[0][0]
 
+        
         # Assign AO data
         position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
         position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
@@ -1424,8 +1414,8 @@ def run_ao_grid_mapping(
                 f"\n\n AO grid position: {ao_stage_positions[ao_grid_idx]}",
                 f"\n Exp. stage position: {stage_positions[pos_idx]}"
             )
-    aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
-    aoMirror_local.wfc_positions_array = position_wfc_positions
+    aoMirror_local.positions_modal_array = position_wfc_coeffs
+    aoMirror_local.positions_voltage_array = position_wfc_positions
     return True
 
 #-------------------------------------------------#

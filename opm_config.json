@@ -50,7 +50,6 @@
         ],
         "ao_mirror_states": [
             "system correction",
-            "mirror flat",
             "last optimized"
         ],
         "autofocus_frequencies": [
