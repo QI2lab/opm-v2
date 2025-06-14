@@ -346,7 +346,7 @@ class AOMirror:
         if self.control_mode == 'modal':
             self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
         # Always track positions
-        self.current_voltage = np.array(self.wfc.get_current_voltage())   
+        self.current_voltage = np.array(self.wfc.get_current_positions())   
 
     def update_positions_array(self, idx):
         """Update stage position arrays with the current voltage or modal coeffs.
