@@ -151,7 +151,7 @@ def main() -> None:
         modes_to_ignore = []
     )
     
-    opmAOmirror.set_mirror_positions_flat()
+    opmAOmirror.apply_system_flat_voltage()
     
     # load OPM NIDAQ
     opmNIDAQ = OPMNIDAQ(
@@ -328,7 +328,7 @@ def main() -> None:
         else:
             position_key = 'mirror_flat'
 
-        AOMirror_update.set_mirror_positions( AOMirror_update.wfc_positions[position_key])
+        AOMirror_update.set_mirror_voltage( AOMirror_update.wfc_positions[position_key])
         
         if DEBUGGING:
             print(f'\nMirror state updated to: {position_key}')

@@ -331,7 +331,7 @@ def run_ao_optimization(
     _ = aoMirror_local.set_modal_coefficients(optimized_zern_modes)
     
     # update mirror dict with current positions
-    aoMirror_local.wfc_positions["last_optimized"] = aoMirror_local.current_positions
+    aoMirror_local.wfc_positions["last_optimized"] = aoMirror_local.current_voltage
     
     opmNIDAQ_local.stop_waveform_playback()
     
@@ -1303,7 +1303,7 @@ def run_ao_grid_mapping(
 
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
-    starting_mirror_positions = aoMirror_local.current_positions.copy()
+    starting_mirror_positions = aoMirror_local.current_voltage.copy()
     for z_idx in range(num_z_positions):
         for tile_idx in range(num_tile_positions):
             for scan_idx in range(num_scan_positions):
@@ -1325,8 +1325,8 @@ def run_ao_grid_mapping(
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
-    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.wfc_coeffs_array.shape[1]))
-    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.wfc_positions_array.shape[1]))
+    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.positions_modal_array.shape[1]))
+    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.positions_voltage_array.shape[1]))
     
     # Run AO optimization for each stage position
     if verbose:
@@ -1371,7 +1371,7 @@ def run_ao_grid_mapping(
         )
         
         ao_grid_wfc_coeffs[ao_pos_idx] = aoMirror_local.current_coeffs.copy()
-        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_positions.copy()
+        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_voltage.copy()
 
     if verbose:
         print(
@@ -1380,8 +1380,8 @@ def run_ao_grid_mapping(
         )
         
     # Map ao_grid_wfc_coeffs to experiment stage positions.
-    position_wfc_coeffs = np.zeros(aoMirror_local.wfc_coeffs_array.shape)
-    position_wfc_positions = np.zeros(aoMirror_local.wfc_positions_array.shape)
+    position_wfc_coeffs = np.zeros(aoMirror_local.positions_modal_array.shape)
+    position_wfc_positions = np.zeros(aoMirror_local.positions_voltage_array.shape)
         
     # Convert AO positions and stage positions into structured arrays for efficient lookup
     ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
@@ -1424,8 +1424,8 @@ def run_ao_grid_mapping(
                 f"\n\n AO grid position: {ao_stage_positions[ao_grid_idx]}",
                 f"\n Exp. stage position: {stage_positions[pos_idx]}"
             )
-    aoMirror_local.wfc_coeffs_array = position_wfc_coeffs
-    aoMirror_local.wfc_positions_array = position_wfc_positions
+    aoMirror_local.positions_modal_array = position_wfc_coeffs
+    aoMirror_local.positions_voltage_array = position_wfc_positions
     return True
 
 #-------------------------------------------------#

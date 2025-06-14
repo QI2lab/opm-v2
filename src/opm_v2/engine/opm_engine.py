@@ -495,7 +495,7 @@ class OPMEngine(MDAEngine):
                     
             elif action_name == "AO-optimize":               
                 if data_dict["AO"]["apply_existing"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
@@ -516,19 +516,19 @@ class OPMEngine(MDAEngine):
                         verbose=DEBUGGING
                     )
                     try:
-                        self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
+                        self.AOMirror.positions_voltage_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_voltage.copy()
                         if DEBUGGING:
                             print(
                                 '\nAO: Saving positions to array:',
                                 f'\n  pos_idx: {int(data_dict["AO"]["pos_idx"])}',
-                                f'\n  mirror positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
+                                f'\n  mirror positions: {self.AOMirror.positions_voltage_array[int(data_dict["AO"]["pos_idx"]),:]}'
                             )
                     except Exception:
                         print("\nAO: Not setting ao positions array")
                         
             elif action_name == "AO-grid":    
                 if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
@@ -612,7 +612,7 @@ class OPMEngine(MDAEngine):
         
         # save mirror positions array
         if self.AOMirror.output_path:
-            self.AOMirror.save_wfc_positions_array()
+            self.AOMirror.save_positions_array()
         self._mmc.clearCircularBuffer()
         
         super().teardown_sequence(sequence)
