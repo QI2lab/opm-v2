@@ -840,6 +840,7 @@ def setup_projection(
             ao_action_data = {
                 'AO' : {
                     'stage_positions': None,
+                    # 'starting_mirror_state':str(config['acq_config']['AO']['starting_mirror_state']),
                     'num_scan_positions':int(config['acq_config']['AO']['num_scan_positions']),
                     'num_tile_positions':int(config['acq_config']['AO']['num_tile_positions']),
                     'apply_ao_map': bool(False),
@@ -877,6 +878,7 @@ def setup_projection(
                 'AO' : {
                     'channel_states': AO_channel_states,
                     'channel_powers' : AO_channel_powers,
+                    # 'starting_mirror_state':str(config['acq_config']['AO']['starting_mirror_state']),
                     'daq_mode': str(config['acq_config']['AO']['daq_mode']),
                     'exposure_ms': float(config['acq_config']['AO']['exposure_ms']),
                     'modal_delta': float(config['acq_config']['AO']['mode_delta']),

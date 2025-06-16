@@ -184,6 +184,10 @@ def main() -> None:
     mda_widget.save_info.save_dir.setText(r"G:/")
     mda_widget.tab_wdg.grid_plan.setMode("bounds")
     mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()   
+    # add the stage and config widget
+    stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
+    config_widget = win.get_widget(WidgetAction.CONFIG_GROUPS)
+    
     
     if DEBUGGING:
         mmc.enableDebugLog(True)
@@ -329,8 +333,8 @@ def main() -> None:
         if DEBUGGING:
             print(f'\n++++ Mirror state updated to: {ao_mirror_state} ++++')
         
-    opmSettings_widget.settings_changed.connect(update_ao_mirror_state)
-        
+    opmSettings_widget.widgets['AO']['mirror_state'].currentIndexChanged.connect(update_ao_mirror_state)
+    
     def setup_preview_mode_callback():
         """Callback to intercept preview mode and setup the OPM.
         

@@ -516,17 +516,18 @@ class OPMEngine(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )
-                    try:
-                        self.AOMirror.update_positions_array[int(pos_idx)]
-                        if DEBUGGING:
-                            print(
-                                '\nAO: Saving positions to array:',
-                                f'\n  pos: {int(pos_idx)}',
-                                f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
-                            )
-                    except Exception as e:
-                        print(f"\nAO: Not setting ao positions array \n  e:{e}")
-                        
+                    if pos_idx is not None:
+                        try:
+                            self.AOMirror.update_positions_array[int(pos_idx)]
+                            if DEBUGGING:
+                                print(
+                                    '\nAO: Saving positions to array:',
+                                    f'\n  pos: {int(pos_idx)}',
+                                    f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
+                                )
+                        except Exception as e:
+                            print(f"\nAO: Not setting ao positions array \n  e:{e}")
+                            
             elif action_name == "AO-grid":    
                 pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_ao_map"]:

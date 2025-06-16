@@ -120,55 +120,55 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
+        "opm_mode": "projection",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1150.0,
             "center_y": 1151.0,
-            "crop_x": 1800.0,
+            "crop_x": 1400.0,
             "crop_y": 512.0
         },
         "O2O3-autofocus": {
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 128,
-            "o2o3_mode": "none"
+            "o2o3_mode": "per timepoint"
         },
         "AO": {
             "mirror_state": "system correction",
             "metric": "DCT",
-            "mode_delta": 0.15,
-            "mode_alpha": 0.7,
+            "mode_delta": 0.1,
+            "mode_alpha": 0.5,
             "num_iterations": 1,
-            "image_mirror_range_um": 20.0,
+            "image_mirror_range_um": 150.0,
             "active_channel_id": "488nm",
-            "active_channel_power": 100.0,
-            "exposure_ms": 150.0,
-            "ao_mode": "optimize now",
-            "num_scan_positions": 1,
-            "num_tile_positions": 1,
+            "active_channel_power": 30.0,
+            "exposure_ms": 400.0,
+            "ao_mode": "grid at start",
+            "num_scan_positions": 2,
+            "num_tile_positions": 2,
             "save_dir_path": "G:/optimize_now",
-            "daq_mode": "2d"
+            "daq_mode": "projection"
         },
         "timelapse": {
             "channel_states": [
                 false,
-                false,
-                false,
+                true,
+                true,
                 false,
                 false
             ],
             "channel_powers": [
                 0.0,
-                100.0,
-                10.0,
+                20.0,
+                20.0,
                 0.0,
                 0.0
             ],
             "channel_exposures_ms": [
                 0.0,
-                60.0,
-                250.0,
+                400.0,
+                300.0,
                 0.0,
                 0.0
             ]
@@ -183,22 +183,22 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                false,
-                false,
+                true,
+                true,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
-                0,
+                20.0,
+                20.0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
-                0,
+                400.0,
+                300.0,
                 0,
                 0
             ]
@@ -216,22 +216,22 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                false,
-                false,
+                true,
+                true,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
-                0,
+                20.0,
+                20.0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
-                0,
+                400.0,
+                300.0,
                 0,
                 0
             ]
@@ -239,27 +239,27 @@
         "projection_scan": {
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
-            "scan_range_um": 160.0,
+            "scan_range_um": 150.0,
             "tile_axis_overlap": 0.2,
             "laser_blanking": false,
             "channel_states": [
                 false,
-                false,
-                false,
+                true,
+                true,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
-                0,
+                20.0,
+                20.0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
-                0,
+                400.0,
+                300.0,
                 0,
                 0
             ],

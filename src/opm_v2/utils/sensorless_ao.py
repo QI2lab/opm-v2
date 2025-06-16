@@ -125,8 +125,7 @@ def run_ao_optimization(
     # setup the daq for selected mode
     #---------------------------------------------#
     if "projection" not in daq_mode:
-        image_mirror_range_um = None
-        
+        image_mirror_range_um = None    
     opmNIDAQ_local.stop_waveform_playback()
     opmNIDAQ_local.clear_tasks()
     opmNIDAQ_local.set_acquisition_params(
@@ -172,9 +171,9 @@ def run_ao_optimization(
     
     # update saved results
     if save_dir_path:
-        all_images.append(starting_image)
+        all_images.append(starting_image.copy())
         all_metrics.append(starting_metric)
-        all_mode_coeffs.append(starting_modal_coeffs)
+        all_mode_coeffs.append(starting_modal_coeffs.copy())
         
     # initialize delta range
     delta_range = init_delta_range
@@ -183,8 +182,8 @@ def run_ao_optimization(
     for k in range(num_iterations): 
         if k==0:       
             current_metric = starting_metric
-            current_image = starting_image
-            current_modal_coeffs = starting_modal_coeffs
+            current_image = starting_image.copy()
+            current_modal_coeffs = starting_modal_coeffs.copy()
             
         if save_dir_path:
             images_per_iteration.append(current_image)
@@ -262,8 +261,9 @@ def run_ao_optimization(
                     is_decreasing = all(x > y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
                     if is_increasing or is_decreasing:
                         raise Exception(f'Test metrics are monotonic and linear: {metrics}')
-                    elif a >=0:
-                        raise Exception(f'Test metrics have a positive curvature: {metrics}')
+                    
+                    # elif a >=0:
+                    #     raise Exception(f'Test metrics have a positive curvature: {metrics}')
                     
                     # compare to booth opt_delta
                     optimal_delta = -delta_range * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
@@ -323,9 +323,8 @@ def run_ao_optimization(
             f"\n++++ Final optimized Zernike mode amplitude: ++++ \n{current_modal_coeffs}"
             )
     
-    # Cleare the DAQ programming
+    # Stop the DAQ programming
     opmNIDAQ_local.stop_waveform_playback()
-    opmNIDAQ_local.clear_tasks()
     
     if save_dir_path:
         all_images = np.asarray(all_images)
@@ -345,18 +344,18 @@ def run_ao_optimization(
             modes_to_optimize,
             save_dir_path
         )        
-        plot_zernike_coeffs(
-            coeffs_per_iteration,
-            mode_names,
-            save_dir_path=save_dir_path
-        )        
-        plot_metric_progress(
-            all_metrics,
-            num_iterations,
-            modes_to_optimize,
-            mode_names,
-            save_dir_path
-        )
+        # plot_zernike_coeffs(
+        #     coeffs_per_iteration,
+        #     mode_names,
+        #     save_dir_path=save_dir_path
+        # )        
+        # plot_metric_progress(
+        #     all_metrics,
+        #     num_iterations,
+        #     modes_to_optimize,
+        #     mode_names,
+        #     save_dir_path
+        # )
 
 #-------------------------------------------------#
 # Plotting functions
@@ -429,7 +428,7 @@ def plot_zernike_coeffs(
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
 def plot_metric_progress(
-    metrics_per_mode: ArrayLike,
+    all_metrics: ArrayLike,
     num_iterations: ArrayLike,
     modes_to_optimize: List[int],
     zernike_mode_names: List[str],
@@ -457,7 +456,7 @@ def plot_metric_progress(
         matplotlib.use('Agg')
     
     metrics_per_mode = np.reshape(
-        metrics_per_mode[1:], # ignore the starting metric 
+        all_metrics[1::1], # Only show the  
         (num_iterations, len(modes_to_optimize))
     )
 
@@ -1422,8 +1421,8 @@ def run_ao_grid_mapping(
 # Helper functions for saving optmization results
 #-------------------------------------------------#
 
-def save_optimization_results(images_per_mode: ArrayLike,
-                              metrics_per_mode: ArrayLike,
+def save_optimization_results(all_images: ArrayLike,
+                              all_metrics: ArrayLike,
                               images_per_iteration: ArrayLike,
                               metrics_per_iteration: ArrayLike,
                               coefficients_per_iteration: ArrayLike,
@@ -1454,8 +1453,8 @@ def save_optimization_results(images_per_mode: ArrayLike,
     root = zarr.group(store=store)
 
     # Create datasets in the Zarr store
-    root.create_dataset("images_per_mode", data=images_per_mode, overwrite=True)
-    root.create_dataset("metrics_per_mode", data=metrics_per_mode, overwrite=True)
+    root.create_dataset("all_images", data=all_metrics, overwrite=True)
+    root.create_dataset("all_metrics", data=all_metrics, overwrite=True)
     root.create_dataset("images_per_iteration", data=images_per_iteration, overwrite=True)
     root.create_dataset("metrics_per_iteration", data=metrics_per_iteration, overwrite=True)
     root.create_dataset("coefficients_per_iteration", data=coefficients_per_iteration, overwrite=True)
