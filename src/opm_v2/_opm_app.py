@@ -169,7 +169,6 @@ def main() -> None:
     )
     opmNIDAQ.reset()
     
-    
     # Initialize and close alignment laser shutter
     opmPicardShutter = PicardShutter(int(config["O2O3-autofocus"]["shutter_id"]),verbose=True)
     opmPicardShutter.closeShutter()
@@ -184,10 +183,8 @@ def main() -> None:
     mda_widget.save_info.save_dir.setText(r"G:/")
     mda_widget.tab_wdg.grid_plan.setMode("bounds")
     mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()   
-    # add the stage and config widget
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)
     config_widget = win.get_widget(WidgetAction.CONFIG_GROUPS)
-    
     
     if DEBUGGING:
         mmc.enableDebugLog(True)
@@ -243,8 +240,10 @@ def main() -> None:
             # Useful for calibration / debugging
             _projection_calibration = config["NIDAQ"]["projection_mirror_calibration"]
             _image_mirror_neutral_v = config["NIDAQ"]["image_mirror_neutral_v"]
+            _projection_mirror_nuetral = config["NIDAQ"]["projection_mirror_neutral_v"]
             opmNIDAQ_update_state.projection_mirror_calibration = _projection_calibration
             opmNIDAQ_update_state._ao_neutral_positions[0] = _image_mirror_neutral_v
+            opmNIDAQ_update_state._ao_neutral_positions[1] = _projection_mirror_nuetral
 
             print(f"  Was sequence acquisition running: {restart_sequence}")
             
