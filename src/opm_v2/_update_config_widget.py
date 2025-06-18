@@ -15,6 +15,9 @@ MIN_AO_POSITIONS = 1
 MAX_AO_POSITIONS = 20
 MAX_AO_ITERATIONS = 10
 MAX_STAGE_RANGE = 1000
+MIN_READOUT_US = 4.867647
+MAX_READOUT_US = 963.8
+ 
 class OPMSettings(QWidget):
     
     settings_changed = pyqtSignal()
@@ -248,7 +251,23 @@ class OPMSettings(QWidget):
         self.layout_num_tile_positions = QHBoxLayout()
         self.layout_num_tile_positions.addWidget(QLabel('AO grid tile axis positions:'))
         self.layout_num_tile_positions.addWidget(self.spbx_num_tile_positions)
-                
+        
+        self.cmbx_ao_camera_mode = self.create_combobox(['on', 'off'], connect_to_fn=None)
+        self.layout_camera_mode = QHBoxLayout()
+        self.layout_camera_mode.addWidget(QLabel('LS camera mode:'))
+        self.layout_camera_mode.addWidget(self.cmbx_ao_camera_mode)
+        
+        self.spbx_readout_time = self.create_dbspinbox(
+            value=MIN_READOUT_US,
+            min=MIN_READOUT_US,
+            max=MAX_READOUT_US,
+            precision=3,
+            interval=1
+        )
+        self.layout_readout_time = QHBoxLayout()
+        self.layout_readout_time.addWidget(QLabel('LS camera readout time (us):'))
+        self.layout_readout_time.addWidget(self.spbx_readout_time)
+        
         #--------------------------------------------------------------------#
         # Populate AO group 
         #--------------------------------------------------------------------#
@@ -268,6 +287,8 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
         self.layout_ao_main.addLayout(self.layout_num_scan_positions)
         self.layout_ao_main.addLayout(self.layout_num_tile_positions)
+        self.layout_ao_main.addLayout(self.layout_camera_mode)
+        self.layout_ao_main.addLayout(self.layout_readout_time)
         self.group_ao_main.setLayout(self.layout_ao_main)
 
         #--------------------------------------------------------------------#
@@ -287,7 +308,9 @@ class OPMSettings(QWidget):
                     'active_channel_power': self.spbx_active_channel_power,
                     'exposure_ms': self.spbx_ao_exposure,
                     'ao_mode': self.cmbx_ao_mode,
-                    'mirror_state': self.cmbx_ao_mirror
+                    'mirror_state': self.cmbx_ao_mirror,
+                    'camera_ls_mode': self.cmbx_ao_camera_mode,
+                    'camera_readout_ms': self.spbx_readout_time
                     }  
                 }
         )

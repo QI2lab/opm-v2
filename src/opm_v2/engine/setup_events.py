@@ -517,7 +517,7 @@ def setup_timelapse(
             current_ao_event.action.data['AO']['apply_existing'] = False
             current_ao_event.action.data['AO']['pos_idx'] = int(scan_idx)
             opm_events.append(current_ao_event)
-        
+                            
         # Move the image mirror to position, and set to 2d scan
         opm_events.append(daq_event)
         
@@ -809,11 +809,6 @@ def setup_projection(
     #----------------------------------------------------------------#
     # Create the AO event data    
     if 'none' not in ao_mode:
-        # Create a new directory in output.root for saving AO results
-        ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
-        ao_output_dir.mkdir(exist_ok=True)
-        AO_save_path = ao_output_dir
-
         # Check the daq mode and set the camera properties
         AO_daq_mode = str(config['acq_config']['AO']['daq_mode'])
         if '2d' in AO_daq_mode:
@@ -837,6 +832,10 @@ def setup_projection(
         
         # Define AO Grid generation action data
         if 'grid' in ao_mode:
+            # Create a new directory in output.root for saving AO results
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_grid_results')
+            ao_output_dir.mkdir(exist_ok=True)
+            AO_save_path = ao_output_dir
             ao_action_data = {
                 'AO' : {
                     'stage_positions': None,
@@ -874,6 +873,10 @@ def setup_projection(
             
         # Define AO optimization action data
         else:
+            # Create a new directory in output.root for saving AO results
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
+            ao_output_dir.mkdir(exist_ok=True)
+            AO_save_path = ao_output_dir
             ao_action_data = {
                 'AO' : {
                     'channel_states': AO_channel_states,
@@ -1117,7 +1120,7 @@ def setup_projection(
                 # Run the AO at the first time-point for each position
                 if time_idx==0:
                     current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
-                    current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_optimize')
+                    current_ao_event.action.data['AO']['output_path'] = ao_output_dir / Path(f'pos_{pos_idx}_ao_results')
                     current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
                     current_ao_event.action.data['AO']['apply_existing'] = False
                     opm_events.append(current_ao_event)
@@ -1381,7 +1384,6 @@ def setup_mirrorscan(
         AO_channel_states = [False] * len(channel_names) 
         AO_channel_powers = [0.] * len(channel_names)
         AO_active_channel_id = config['acq_config']['AO']['active_channel_id']
-        AO_save_path = ao_output_dir
         
         # Set the active channel in the daq channel list
         for chan_idx, chan_str in enumerate(config['OPM']['channel_ids']):
@@ -1395,6 +1397,10 @@ def setup_mirrorscan(
             return None, None
         
         if 'grid' in ao_mode:
+            # Create a new directory in output.root for saving AO results
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_grid_results')
+            ao_output_dir.mkdir(exist_ok=True)
+            AO_save_path = ao_output_dir
             # Define AO Grid generation action data
             ao_action_data = {
                 'AO' : {
@@ -1430,6 +1436,11 @@ def setup_mirrorscan(
             ao_grid_event.action.data.update(ao_action_data)
             AOmirror_setup.output_path = AO_save_path
         else:
+            # Create a new directory in output.root for saving AO results
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
+            ao_output_dir.mkdir(exist_ok=True)
+            AO_save_path = ao_output_dir
+            
             # Define AO optimization action data   
             ao_action_data = {
                 'AO' : {
@@ -1605,7 +1616,7 @@ def setup_mirrorscan(
             current_FP_event.action.data['Fluidics']['round'] = int(time_idx)
             opm_events.append(current_FP_event)
         # Create pause events starting at the second timepoint for timelapse acq.
-        elif (mda_time_plan is not None) and (time_idx>0):
+        elif (mda_time_plan is not None) and (time_idx>0) and (time_interval>0):
             current_timepoint_event = MDAEvent(**timelapse_event.model_dump())
             current_timepoint_event.action.data['plan']['timepoint'] = time_idx
             opm_events.append(current_timepoint_event)
@@ -1736,6 +1747,9 @@ def setup_mirrorscan(
                         current_daq_event.action.data['Camera']['exposure_channels'] = temp_exposures
                         opm_events.append(current_daq_event)
                     
+                        if ('none' in ao_mode) or ('start' in ao_mode):
+                            need_to_setup_DAQ = False
+                            
                     # Create image event for current t / p / c 
                     image_event = MDAEvent(
                         index=mappingproxy(

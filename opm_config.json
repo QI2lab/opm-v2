@@ -120,7 +120,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "projection",
+        "opm_mode": "stage",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1150.0,
@@ -132,7 +132,7 @@
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 128,
-            "o2o3_mode": "per timepoint"
+            "o2o3_mode": "none"
         },
         "AO": {
             "mirror_state": "system correction",
@@ -141,20 +141,23 @@
             "mode_alpha": 0.5,
             "num_iterations": 1,
             "image_mirror_range_um": 150.0,
-            "active_channel_id": "488nm",
+            "active_channel_id": "405nm",
             "active_channel_power": 30.0,
-            "exposure_ms": 400.0,
-            "ao_mode": "grid at start",
-            "num_scan_positions": 2,
-            "num_tile_positions": 2,
+            "exposure_ms": 20.0,
+            "ao_mode": "none",
+            "num_scan_positions": 1,
+            "num_tile_positions": 1,
             "save_dir_path": "G:/optimize_now",
-            "daq_mode": "projection"
+            "daq_mode": "2d",
+            "lightsheet_mode": "on",
+            "camera_mode": "on",
+            "readout_time": 4.868
         },
         "timelapse": {
             "channel_states": [
                 false,
-                true,
-                true,
+                false,
+                false,
                 false,
                 false
             ],
@@ -183,22 +186,22 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
+                false,
+                false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                20.0,
-                20.0,
+                0,
+                0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                400.0,
-                300.0,
+                0,
+                0,
                 0,
                 0
             ]
@@ -216,27 +219,29 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
+                false,
+                false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                20.0,
-                20.0,
+                0,
+                0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                400.0,
-                300.0,
+                0,
+                0,
                 0,
                 0
             ]
         },
         "projection_scan": {
+            "camera_ls_mode": false,
+            "camera_readout_ms": 4.867647,
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
             "scan_range_um": 150.0,
@@ -244,22 +249,22 @@
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
-                true,
+                false,
+                false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                20.0,
-                20.0,
+                0,
+                0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                400.0,
-                300.0,
+                0,
+                0,
                 0,
                 0
             ],
