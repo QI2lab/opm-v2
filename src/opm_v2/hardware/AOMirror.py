@@ -141,7 +141,7 @@ class AOMirror:
             index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
         ) 
-        
+                
         #---------------------------------------------#
         # Set up wfc positions and mirror position tracking
         #---------------------------------------------#
@@ -448,7 +448,7 @@ class AOMirror:
             coef_array = amps,
             index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
-        ) 
+        )
         
         # create a new haso_slope from the new modal coefficients
         haso_slopes = wkpy.HasoSlopes(
@@ -470,7 +470,26 @@ class AOMirror:
             return True
         else:
             return False  
-
+    
+    def get_current_phase(self):
+        """Get the phase from current modal_coeffs
+        """
+        phase_object = wkpy.Phase(
+            modalcoeff = self.modal_coeff,
+            filter = []
+        )
+        phase_stats = phase_object.get_statistics()
+        phase = {
+            'rms': phase_stats[0],
+            'pv': phase_stats[1],
+            'max': phase_stats[2],
+            'min': phase_stats[3],
+            'phase': phase_object.get_data()[0]
+        }
+        del phase_object
+        
+        return phase
+    
     def save_current_state(self, prefix: str = 'current'):
         """Save current mirror positions to disk.
 

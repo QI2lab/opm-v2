@@ -147,7 +147,8 @@ def run_ao_optimization(
         images_per_iteration = []
         metrics_per_iteration = [] 
         coeffs_per_iteration = []
-    
+        best_metrics = []
+        
     #---------------------------------------------#
     # setup the daq for selected mode
     #---------------------------------------------#
@@ -325,8 +326,11 @@ def run_ao_optimization(
             if (optimal_delta!=0) and (optimal_metric>best_metric):
                 best_metric = optimal_metric
             else:
-                optimal_metric = 0
+                optimal_delta = 0
                 
+            if save_dir_path:
+                best_metrics.append(best_metric)
+            
             # apply the new modal coefficient to the mirror and update current coefficients
             current_modal_coeffs[mode] = current_modal_coeffs[mode] + optimal_delta
             _ = aoMirror_local.set_modal_coefficients(current_modal_coeffs)
@@ -352,17 +356,21 @@ def run_ao_optimization(
         all_images = np.asarray(all_images)
         all_metrics = np.asarray(all_metrics)
         all_mode_coeffs = np.asarray(all_mode_coeffs)
+        best_metrics = np.asarray(best_metrics)
         images_per_iteration = np.asarray(images_per_iteration)
         metrics_per_iteration = np.asarray(metrics_per_iteration)
         coeffs_per_iteration = np.asarray(coeffs_per_iteration)
+        optimized_phase = AOMirror.get_current_phase()
         
         # save and produce
         save_optimization_results(
             all_images=all_images,
             all_metrics=all_metrics,
+            best_metrics = best_metrics,
             images_per_iteration=images_per_iteration,
             metrics_per_iteration=metrics_per_iteration,
             coeffs_per_iteration=coeffs_per_iteration,
+            optimized_phase=optimized_phase,
             modes_to_optimize=modes_to_optimize,
             metadata=metadata,
             save_dir_path=save_dir_path
@@ -523,6 +531,47 @@ def plot_metric_progress(
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_metrics.png"))
 
+def plot_phase(phase: Dict,
+               save_dir_path: Path = None,
+               show_fig: bool = False
+):
+    """Plot the 2d Phase for a given set of modal coeffs
+
+    Parameters
+    ----------
+    phase : Dict
+        _description_
+    save_dir_path : Path, optional
+        _description_, by default None
+    showfig : bool, optional
+        _description_, by default False
+    """
+    
+    import matplotlib.pyplot as plt
+    import matplotlib
+    if not show_fig:
+        matplotlib.use('Agg')
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+    vrange = np.max([np.abs(phase['min']), np.abs(phase['max'])])
+    im = ax.imshow(
+        phase['phase'],
+        cmap='seismic',
+        vmin=-vrange,
+        vmax=vrange
+    )
+    cbar = plt.colorbar(im)
+    ax.set_title('Wavefront Phase')
+    ax.set_xticks([])
+    ax.set_yticks([])
+    plt.tight_layout()
+    
+    if show_fig:
+        plt.show()
+    if save_dir_path:
+        fig.savefig(save_dir_path / Path("phase.png"))
+        
 def plot_2d_localization_fit_summary(
     fit_results,
     img,
@@ -1460,10 +1509,12 @@ def run_ao_grid_mapping(
 
 def save_optimization_results(all_images: ArrayLike,
                               all_metrics: ArrayLike,
+                              best_metrics: ArrayLike,
                               images_per_iteration: ArrayLike,
                               metrics_per_iteration: ArrayLike,
                               coefficients_per_iteration: ArrayLike,
                               modes_to_optimize: List[int],
+                              optimized_phase: Dict,
                               metadata: Dict,
                               save_dir_path: Path):
     """_summary_
@@ -1493,10 +1544,12 @@ def save_optimization_results(all_images: ArrayLike,
     # Create datasets in the Zarr store
     root.create_dataset("all_images", data=all_images, overwrite=True)
     root.create_dataset("all_metrics", data=all_metrics, overwrite=True)
+    root.create_dataset("best_metrics", data=best_metrics, overwrite=True)
     root.create_dataset("images_per_iteration", data=images_per_iteration, overwrite=True)
     root.create_dataset("metrics_per_iteration", data=metrics_per_iteration, overwrite=True)
     root.create_dataset("coefficients_per_iteration", data=coefficients_per_iteration, overwrite=True)
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
+    root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
     root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True)
     root.attrs.update(metadata)
     
@@ -1516,19 +1569,24 @@ def load_optimization_results(results_path: Path):
     
     all_images = results["all_images"][:]
     all_metrics = results["all_metrics"][:]
+    best_metrics = results["best_metrics"][:]
     images_per_iteration = results["images_per_iteration"][:]
     metrics_per_iteration = results["metrics_per_iteration"][:]
     coefficients_per_iteration = results["coefficients_per_iteration"][:]
+    optimized_phase = results['optimized_phase'][:]
+
     modes_to_optimize = results["modes_to_optimize"][:]
     zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
     
     ao_results = {
         "all_images":all_images,
         "all_metrics":all_metrics,
+        "best_metrics":best_metrics,
         "metrics_per_iteration":metrics_per_iteration,
         "images_per_iteration":images_per_iteration,
         "coefficients_per_iteration":coefficients_per_iteration,
         "modes_to_optimize":modes_to_optimize,
+        "optimized_phase":optimized_phase,
         "mode_names":zernike_mode_names,
     }
     ao_results.update(results.attrs)
