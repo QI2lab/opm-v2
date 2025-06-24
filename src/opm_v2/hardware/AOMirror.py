@@ -428,7 +428,7 @@ class AOMirror:
         else:
             return False    
         
-    def set_modal_coefficients(self,amps: NDArray):
+    def set_modal_coefficients(self, amps: NDArray):
         """Set modal coefficients.
         Amps are relative to zeros from the selected mirror flat file.
         
@@ -471,24 +471,24 @@ class AOMirror:
         else:
             return False  
     
-    def get_current_phase(self):
-        """Get the phase from current modal_coeffs
-        """
-        phase_object = wkpy.Phase(
-            modalcoeff = self.modal_coeff,
-            filter = []
-        )
-        phase_stats = phase_object.get_statistics()
-        phase = {
-            'rms': phase_stats[0],
-            'pv': phase_stats[1],
-            'max': phase_stats[2],
-            'min': phase_stats[3],
-            'phase': phase_object.get_data()[0]
-        }
-        del phase_object
+    # def get_current_phase(self):
+    #     """Get the phase from current modal_coeffs
+    #     """
+    #     phase_object = wkpy.Phase(
+    #         modalcoeff = self.modal_coeff,
+    #         filter = []
+    #     )
+    #     phase_stats = phase_object.get_statistics()
+    #     phase = {
+    #         'rms': phase_stats[0],
+    #         'pv': phase_stats[1],
+    #         'max': phase_stats[2],
+    #         'min': phase_stats[3],
+    #         'phase': phase_object.get_data()[0]
+    #     }
+    #     del phase_object
         
-        return phase
+    #     return phase
     
     def save_current_state(self, prefix: str = 'current'):
         """Save current mirror positions to disk.

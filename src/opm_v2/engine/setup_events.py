@@ -2394,6 +2394,8 @@ def setup_stagescan(
                                 else:
                                     current_ao_event = MDAEvent(**ao_optimization_event.model_dump())
                                 opm_events.append(current_ao_event)
+                                if 'grid' in ao_mode:
+                                    opm_events.append(stage_event)
                         
                         # Create AO optimization events for running each 'timepoint'
                         elif 'timepoint' in ao_mode:

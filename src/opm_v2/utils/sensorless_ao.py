@@ -27,7 +27,7 @@ except Exception:
     OPMNIDAQ = None
     
 DEBUGGING = False
-METRIC_PRECISION = 4
+METRIC_PRECISION = 3
 
 spherical_modes = [7,14,23]
 spherical_modes_first =  [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31]
@@ -80,7 +80,7 @@ def run_ao_optimization(
     image_mirror_range_um: float = 100,
     psf_radius_px: Optional[float] = 2,
     num_iterations: Optional[int] = 3,
-    num_mode_steps: Optional[int] = 3,
+    num_mode_steps: Optional[int] = 5,
     init_delta_range: Optional[float] = 0.35,
     delta_range_alpha_per_iter: Optional[float] = 0.60,
     modes_to_optimize: Optional[List[int]] = all_modes,
@@ -128,7 +128,7 @@ def run_ao_optimization(
     # Setup Zernike modal coeff arrays
     #---------------------------------------------#
     # TODO: Do we start from system flat or current mirror state?
-    # aoMirror_local.apply_system_flat_voltage()
+    aoMirror_local.apply_system_flat_voltage()
     starting_modal_coeffs = aoMirror_local.current_coeffs.copy() 
     if verbose:
         print(
@@ -261,9 +261,7 @@ def run_ao_optimization(
                             print('\n    ---- Metric failed == NAN ----')
                         success = False
                         metric = float(np.nan_to_num(metric))
-                    
-                    metric = np.round(metric, METRIC_PRECISION)
-                    
+                                        
                     if verbose:
                         print(f'      Delta={delta:.3f}, Metric = {metric:.6}, Success = {success}')
 
@@ -292,7 +290,7 @@ def run_ao_optimization(
                     popt = quadratic_fit(deltas, metrics)
                     a, b, c = popt
                     optimal_delta = -b / (2 * a)
-                    optimal_metric = np.round(a*optimal_delta**2 + b*optimal_delta + c, METRIC_PRECISION)
+                    optimal_metric = a*optimal_delta**2 + b*optimal_delta + c
                     
                     if a >=0:
                         raise Exception(f'Test metrics have a positive curvature: {metrics}')
@@ -306,7 +304,7 @@ def run_ao_optimization(
                             f'\n    ++   our delta: {optimal_delta}   ++',
                             f'\n    ++   Booth delta {booth_delta}   ++',
                             f'\n    ++++ Metric maximum at delta = {optimal_delta:3f} ++++'
-                            f'\n    ++++ Maximum metric = {optimal_metric} ++++'
+                            f'\n    ++++ Maximum metric = {optimal_metric:.4f} ++++'
                         )
                 except Exception as e:
                     optimal_delta = 0
@@ -323,13 +321,20 @@ def run_ao_optimization(
             # Apply the kept optimized mirror modal coeffs
             #---------------------------------------------# 
             # TODO: do we accept all the deltas or run a check against the best metric?
-            if (optimal_delta!=0) and (optimal_metric>best_metric):
-                best_metric = optimal_metric
-            else:
-                optimal_delta = 0
-                
-            if save_dir_path:
-                best_metrics.append(best_metric)
+            # if (optimal_delta!=0) and (np.round(optimal_metric,METRIC_PRECISION)>np.round(best_metric,METRIC_PRECISION)):
+            #     best_metric = optimal_metric
+            #     update = True
+            # else:
+            #     optimal_delta = 0
+            #     update = False
+            # if verbose:
+            #     print(
+            #         f'\n    ++++ optimal metric from fit: {optimal_metric} ++++',
+            #         f'\n    ++++ best_metric: {best_metric} ++++',
+            #         # f'\n    ++++ Was mirror updated: {update} ++++'
+            #     )
+            # if save_dir_path:
+            #     best_metrics.append(best_metric)
             
             # apply the new modal coefficient to the mirror and update current coefficients
             current_modal_coeffs[mode] = current_modal_coeffs[mode] + optimal_delta
@@ -360,7 +365,7 @@ def run_ao_optimization(
         images_per_iteration = np.asarray(images_per_iteration)
         metrics_per_iteration = np.asarray(metrics_per_iteration)
         coeffs_per_iteration = np.asarray(coeffs_per_iteration)
-        optimized_phase = AOMirror.get_current_phase()
+        # optimized_phase = aoMirror_local.get_current_phase()
         
         # save and produce
         save_optimization_results(
@@ -369,26 +374,26 @@ def run_ao_optimization(
             best_metrics = best_metrics,
             images_per_iteration=images_per_iteration,
             metrics_per_iteration=metrics_per_iteration,
-            coeffs_per_iteration=coeffs_per_iteration,
-            optimized_phase=optimized_phase,
+            coefficients_per_iteration=coeffs_per_iteration,
+            # optimized_phase=optimized_phase,
             modes_to_optimize=modes_to_optimize,
             metadata=metadata,
             save_dir_path=save_dir_path
         )        
-        plot_zernike_coeffs(
-            optimal_coefficients=coeffs_per_iteration,
-            zernike_mode_names=mode_names,
-            save_dir_path = save_dir_path,
-            show_fig = False,
-            x_range = 0.15
-        )        
-        plot_metric_progress(
-            all_metrics,
-            num_iterations=num_iterations,
-            modes_to_optimize=modes_to_optimize,
-            mode_names=mode_names,
-            save_dir_path=save_dir_path
-        )
+        # plot_zernike_coeffs(
+        #     optimal_coefficients=coeffs_per_iteration,
+        #     zernike_mode_names=mode_names,
+        #     save_dir_path = save_dir_path,
+        #     show_fig = False,
+        #     x_range = 0.15
+        # )        
+        # plot_metric_progress(
+        #     all_metrics=all_metrics,
+        #     num_iterations=num_iterations,
+        #     modes_to_optimize=modes_to_optimize,
+        #     zernike_mode_names=mode_names,
+        #     save_dir_path=save_dir_path
+        # )
 
 #-------------------------------------------------#
 # Plotting functions
@@ -1501,6 +1506,8 @@ def run_ao_grid_mapping(
     aoMirror_local.positions_modal_array = position_wfc_coeffs
     aoMirror_local.positions_voltage_array = position_wfc_positions
     
+    if verbose:
+        print("AO Grid complete!")
     return True
 
 #-------------------------------------------------#
@@ -1514,7 +1521,7 @@ def save_optimization_results(all_images: ArrayLike,
                               metrics_per_iteration: ArrayLike,
                               coefficients_per_iteration: ArrayLike,
                               modes_to_optimize: List[int],
-                              optimized_phase: Dict,
+                            #   optimized_phase: Dict,
                               metadata: Dict,
                               save_dir_path: Path):
     """_summary_
@@ -1549,7 +1556,7 @@ def save_optimization_results(all_images: ArrayLike,
     root.create_dataset("metrics_per_iteration", data=metrics_per_iteration, overwrite=True)
     root.create_dataset("coefficients_per_iteration", data=coefficients_per_iteration, overwrite=True)
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
-    root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
+    # root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
     root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True)
     root.attrs.update(metadata)
     
@@ -1573,7 +1580,7 @@ def load_optimization_results(results_path: Path):
     images_per_iteration = results["images_per_iteration"][:]
     metrics_per_iteration = results["metrics_per_iteration"][:]
     coefficients_per_iteration = results["coefficients_per_iteration"][:]
-    optimized_phase = results['optimized_phase'][:]
+    # optimized_phase = results['optimized_phase'][:]
 
     modes_to_optimize = results["modes_to_optimize"][:]
     zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
@@ -1586,7 +1593,7 @@ def load_optimization_results(results_path: Path):
         "images_per_iteration":images_per_iteration,
         "coefficients_per_iteration":coefficients_per_iteration,
         "modes_to_optimize":modes_to_optimize,
-        "optimized_phase":optimized_phase,
+        # "optimized_phase":optimized_phase,
         "mode_names":zernike_mode_names,
     }
     ao_results.update(results.attrs)
