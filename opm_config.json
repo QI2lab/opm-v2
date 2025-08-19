@@ -157,10 +157,10 @@
         },
         "timelapse": {
             "channel_states": [
+                true,
                 false,
                 false,
-                false,
-                false,
+                true,
                 false
             ],
             "channel_powers": [
@@ -187,24 +187,24 @@
             "tile_axis_overlap": 0.15,
             "laser_blanking": false,
             "channel_states": [
+                true,
                 false,
                 false,
-                false,
-                false,
+                true,
                 false
             ],
             "channel_powers": [
+                20.0,
                 0,
                 0,
-                0,
-                0,
+                1.0,
                 0
             ],
             "channel_exposures_ms": [
+                30.0,
                 0,
                 0,
-                0,
-                0,
+                30.0,
                 0
             ]
         },
@@ -220,24 +220,24 @@
             "excess_end_frames": 0,
             "laser_blanking": false,
             "channel_states": [
+                true,
                 false,
                 false,
-                false,
-                false,
+                true,
                 false
             ],
             "channel_powers": [
+                20.0,
                 0,
                 0,
-                0,
-                0,
+                1.0,
                 0
             ],
             "channel_exposures_ms": [
+                30.0,
                 0,
                 0,
-                0,
-                0,
+                30.0,
                 0
             ]
         },
@@ -250,24 +250,24 @@
             "tile_axis_overlap": 0.2,
             "laser_blanking": false,
             "channel_states": [
+                true,
                 false,
                 false,
-                false,
-                false,
+                true,
                 false
             ],
             "channel_powers": [
+                20.0,
                 0,
                 0,
-                0,
-                0,
+                1.0,
                 0
             ],
             "channel_exposures_ms": [
+                30.0,
                 0,
                 0,
-                0,
-                0,
+                30.0,
                 0
             ],
             "image_mirror_range_um": 0.0
