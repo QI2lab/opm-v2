@@ -393,27 +393,28 @@ def run_ao_optimization(
             metadata=metadata,
             save_dir_path=save_dir_path
         )        
-        # plot_zernike_coeffs(
-        #     optimal_coefficients=coeffs_per_iteration,
-        #     zernike_mode_names=mode_names,
-        #     save_dir_path = save_dir_path,
-        #     show_fig = False,
-        #     x_range = 0.15
-        # )        
-        # plot_metric_progress(
-        #     all_metrics=all_metrics,
-        #     num_iterations=num_iterations,
-        #     modes_to_optimize=modes_to_optimize,
-        #     zernike_mode_names=mode_names,
-        #     save_dir_path=save_dir_path
-        # )
+        plot_zernike_coeffs(
+            optimal_coefficients=coeffs_per_iteration,
+            zernike_mode_names=mode_names,
+            save_dir_path = save_dir_path,
+            show_fig = False,
+            x_range = 0.15
+        )        
+        plot_metric_progress(
+            all_metrics=all_metrics,
+            num_iterations=num_iterations,
+            modes_to_optimize=modes_to_optimize,
+            zernike_mode_names=mode_names,
+            save_dir_path=save_dir_path
+        )
 
 #-------------------------------------------------#
 # Plotting functions
 #-------------------------------------------------#
 
 def plot_zernike_coeffs(
-    optimal_coefficients: ArrayLike,
+    coefficients_per_iteration: ArrayLike,
+    num_iterations: int,
     zernike_mode_names: ArrayLike,
     save_dir_path: Optional[Path] = None,
     show_fig: Optional[bool] = False,
@@ -434,9 +435,20 @@ def plot_zernike_coeffs(
     import matplotlib
     if not show_fig:
         matplotlib.use('Agg')
+    from matplotlib.ticker import FormatStrFormatter
+    
+    plt.rcParams.update({
+        "font.size": 14,        # base font size
+        "axes.titlesize": 18,   # title size
+        "axes.labelsize": 15,   # x/y label size
+        "xtick.labelsize": 15,  # x-tick label size
+        "ytick.labelsize": 15,  # y-tick label size
+        "legend.fontsize": 14   # legend size
+    })
     
     # Create the plot
-    fig, ax = plt.subplots(figsize=(6, 8))
+    fig, ax = plt.subplots(figsize=(7.5, 8))
+    ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
     
     # Define colors and markers for each iteration
     colors = ['b', 'g', 'r', 'c', 'm']  
@@ -444,10 +456,10 @@ def plot_zernike_coeffs(
 
     # populate plots
     for i in range(len(zernike_mode_names)):
-        for j in range(optimal_coefficients.shape[0]):
+        for j in range(num_iterations):
             marker_style = markers[j % len(markers)]
             ax.scatter(
-                optimal_coefficients[j, i], i, 
+                coefficients_per_iteration[j, i], i, 
                 color=colors[j % len(colors)],
                 s=125, 
                 marker=marker_style,
@@ -459,20 +471,24 @@ def plot_zernike_coeffs(
     ax.axvline(0, color='k', linestyle='-', linewidth=1)
 
     # Customize the plot
-    ax.set_yticks(np.arange(len(zernike_mode_names)))
-    ax.set_yticklabels(zernike_mode_names)
-    ax.set_xlabel("Coefficient Value")
-    ax.set_title("Zernike mode coefficients at each iteration")
-    ax.set_xlim(-x_range, x_range)
+    ax.set(
+        yticks=np.round(np.arange(len(zernike_mode_names)),1),
+        yticklabels=zernike_mode_names,
+        xlabel=r'$\vert Z_n \vert$',
+        title='Zernike Coefficients per Iteration',
+        xlim=(-x_range, x_range)
+    )
 
     # Add a legend for time points
     ax.legend(
-        [f'Iteration: {i+1}' for i in range(optimal_coefficients.shape[0])], 
+        [f'Iter.: {i+1}' for i in range(num_iterations)], 
         loc='upper right'
     )
 
     # Remove grid lines
     ax.grid(False)
+
+    plt.tight_layout()
 
     plt.tight_layout()
     if show_fig:
@@ -504,13 +520,30 @@ def plot_metric_progress(
         _description_, by default False
     """   
     import matplotlib.pyplot as plt
-    import matplotlib
     if not show_fig:
+        import matplotlib
         matplotlib.use('Agg')
-    
-    metric_per_mode = np.zeros([num_iterations, len(modes_to_optimize)])
-    for i in range(num_iterations):
-        metric_per_mode[i, :] = all_metrics[i, 2::3]
+        
+    plt.rcParams.update({
+        "font.size": 14,        # base font size
+        "axes.titlesize": 18,   # title size
+        "axes.labelsize": 15,   # x/y label size
+        "xtick.labelsize": 15,  # x-tick label size
+        "ytick.labelsize": 15,  # y-tick label size
+        "legend.fontsize": 14   # legend size
+    })
+    num_modes = len(modes_to_optimize)
+    samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
+    modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
+
+    # Ignore starting metric
+    metrics = np.array(all_metrics[1:])
+
+    # Reshape into: (iterations, modes, samples)
+    metrics_by_iteration = metrics.reshape(
+        num_iterations, num_modes, int(samples_per_mode)
+    )
+    zero_metrics_by_iteration = metrics_by_iteration[:, :, int(samples_per_mode//2)]
         
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
@@ -520,9 +553,10 @@ def plot_metric_progress(
     markers = ['x', 'o', '^', 's', '*']
 
     # Loop over iterations and plot each series
-    for ii, series in enumerate(metric_per_mode):
+    for ii in range(num_iterations):
         ax.plot(
-            series,
+            np.linspace(0, num_modes-1, num_modes),
+            zero_metrics_by_iteration[ii],
             color=colors[ii],
             label=f"iteration {ii}", 
             marker=markers[ii],
@@ -530,18 +564,15 @@ def plot_metric_progress(
             linewidth=1
         )
 
-    # Set the x-axis to correspond to the modes_to_optimize
-    mode_labels = [zernike_mode_names[i] for i in modes_to_optimize]
-    ax.set_xticks(np.arange(len(mode_labels))) 
-    ax.set_xticklabels(mode_labels, rotation=60, ha="right", fontsize=16) 
-
-    # Customize the plot
-    ax.set_ylabel("Metric", fontsize=16)
-    ax.set_title("Optimal Metric Progress per Iteration", fontsize=18)
-
-    ax.legend(fontsize=15)
-    
+    ax.set(
+        title='Metric Progress per Iteration',
+        ylabel='Metric',
+        xticks=np.arange(len(modes_to_use_names))
+    )
+    ax.set_xticklabels(modes_to_use_names, rotation=60, ha="right", fontsize=16) 
+    ax.legend()
     plt.tight_layout()
+    plt.show()
     
     if show_fig:
         plt.show()
@@ -568,7 +599,15 @@ def plot_phase(phase: Dict,
     import matplotlib
     if not show_fig:
         matplotlib.use('Agg')
-    
+    # --- Set rcParams (this affects all plots until you change/reset it) ---
+    plt.rcParams.update({
+        "font.size": 14,        # base font size
+        "axes.titlesize": 18,   # title size
+        "axes.labelsize": 16,   # x/y label size
+        "xtick.labelsize": 14,  # x-tick label size
+        "ytick.labelsize": 14,  # y-tick label size
+        "legend.fontsize": 14   # legend size
+    })
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
     vrange = np.max([np.abs(phase['min']), np.abs(phase['max'])])

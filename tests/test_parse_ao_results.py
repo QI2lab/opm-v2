@@ -6,7 +6,9 @@ import zarr
 
 
 showfig = False
-data_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_setup\20250818_152802_laser_optimization\ao_results.zarr')
+data_path = Path(
+    r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results.zarr'
+)
 
 results = ao.load_optimization_results(data_path)
 
@@ -16,42 +18,34 @@ all_metrics = results['all_metrics']
 metrics_per_iteration = results['metrics_per_iteration']
 images_per_iteration = results['images_per_iteration']
 coeff_per_iteration = results['coefficients_per_iteration']
-num_iterations = results['num_iterations']
 modes_to_optimize = results['modes_to_optimize']
+zernike_mode_names = results['mode_names']
+modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
+num_iterations = results['num_iterations']
+num_modes = len(modes_to_optimize)
+num_metrics = len(all_metrics)
 samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
 
+print(
+    f'samples per mode: {samples_per_mode}\n'
+    f'number of iterations: {num_iterations}\n'
+    f'number of metrics: {len(all_metrics)}\n'
+)
 
+ao.plot_metric_progress(
+    all_metrics = all_metrics,
+    modes_to_optimize = modes_to_optimize,
+    num_iterations = num_iterations,
+    zernike_mode_names = zernike_mode_names,
+    save_dir_path = data_path,
+    show_fig = True,
+)
 
-# Combine grid data to take place of iterations
-if 'grid' in _d.name:
-    optimal_coefficients = []
-    all_metrics = []
-    for ao_results in grid_results:
-        optimal_coefficients.append(ao_results['coefficients_per_iteration'])
-        all_metrics.append(ao_results['all_metrics'])
-        
-        zernike_mode_names = ao_results['mode_names']
-        modes_to_optimize = ao_results['modes_to_optimize']
-        save_dir_path = None
-        showfig = True
-
-    optimal_coefficients = np.asarray(optimal_coefficients).reshape([len(grid_results), len(zernike_mode_names)])
-    all_metrics = np.asarray(all_metrics)
-
-
-    
-    ao.plot_metric_progress(
-        all_metrics = all_metrics,
-        modes_to_optimize = modes_to_optimize,
-        num_iterations = len(grid_results),
-        zernike_mode_names = zernike_mode_names,
-        save_dir_path = root_dir,
-        show_fig = True,
-    )
-    ao.plot_zernike_coeffs(
-        optimal_coefficients=optimal_coefficients,
-        zernike_mode_names=zernike_mode_names,
-        save_dir_path=root_dir,
-        show_fig=True,
-        x_range=0.1
-    )
+ao.plot_zernike_coeffs(
+    coefficients_per_iteration=coeff_per_iteration,
+    num_iterations=num_iterations,
+    zernike_mode_names=zernike_mode_names,
+    save_dir_path=data_path,
+    show_fig=True,
+    x_range=0.1
+)
