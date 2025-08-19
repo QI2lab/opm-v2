@@ -2,25 +2,16 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 from opm_v2.utils import sensorless_ao as ao
 import numpy as np
-import zarr
 
 
 showfig = False
-data_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_setup\20250818_152802_laser_optimization\ao_results.zarr')
-
-results = ao.load_optimization_results(data_path)
-
-best_metrics = results['best_metrics']
-all_images = results['all_images']
-all_metrics = results['all_metrics']
-metrics_per_iteration = results['metrics_per_iteration']
-images_per_iteration = results['images_per_iteration']
-coeff_per_iteration = results['coefficients_per_iteration']
-num_iterations = results['num_iterations']
-modes_to_optimize = results['modes_to_optimize']
-samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
-
-
+root_dir = Path("/home/steven/Documents/qi2lab/projects/local_working_files/OPM/autophagy_full_run_ao_results")
+import zarr
+# process grid acquisitions, need to parse mulitle directories by defualt
+grid_results = []
+for _d in root_dir.iterdir():
+    zarr_path = [p for p in _d.glob('*ao_results.zarr')][0]
+    grid_results.append(ao.load_optimization_results(zarr_path))    
 
 # Combine grid data to take place of iterations
 if 'grid' in _d.name:

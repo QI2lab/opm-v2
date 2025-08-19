@@ -212,24 +212,12 @@ class OPMEngine(MDAEngine):
                     )
                     print(
                         "\nScan positions:",
-                        f"\n  start: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanFastAxisStartPosition(mm)"
-                            )}",
-                        f"\n  end: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanFastAxisStopPosition(mm)"
-                            )}",
-                        f"\n  Scan settling time: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanSettlingTime(ms)"
-                            )}",
+                        f"\n  start: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStartPosition(mm)')}",
+                        f"\n  end: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStopPosition(mm)')}",
+                        f"\n  Scan settling time: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanSettlingTime(ms)')}",
                         f"\n  actual speed: {actual_speed_x}",
-                        f"\n  requested speed: {np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}", 
-                        f"\n  Do stage speeds match: {actual_speed_x==np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}"                     
+                        f"\n  requested speed: {np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}",
+                        f"\n  Do stage speeds match: {actual_speed_x == np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}"
                     )
                 
                 # put camera into external START trigger mode

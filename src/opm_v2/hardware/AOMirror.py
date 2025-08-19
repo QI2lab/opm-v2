@@ -79,8 +79,13 @@ class AOMirror:
         self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
         self._output_path = output_path
-        self._control_mode = control_mode
+        self._focus_mode = 1.65
         
+        if not control_mode in ['voltage', 'modal']:
+            raise ValueError("AO mirror control mode must be 'voltage' or 'modal'!")
+        else:
+            self._control_mode = control_mode
+
         #---------------------------------------------#
         # Start wfc 
         #---------------------------------------------#
@@ -173,8 +178,6 @@ class AOMirror:
         
         # Set mirror in system flat by defualt
         self.apply_system_flat_voltage()
-        # Set mirror in system flat by defualt
-        self.apply_system_flat_voltage()
 
         #---------------------------------------------#
         # Define mode names matching the mirror modes
@@ -221,8 +224,8 @@ class AOMirror:
 
     @control_mode.setter
     def control_mode(self, mode: str):
-        if mode not in ('modal', 'position'):
-            raise ValueError("AOmirror control_mode must be 'modal' or 'position'")
+        if mode not in ('modal', 'voltage'):
+            raise ValueError("AOmirror control_mode must be 'modal' or 'voltage'")
         self._control_mode = mode
         
     @property
@@ -415,9 +418,8 @@ class AOMirror:
         positions : NDArray
             Flatten array of actuators 
         """
-        
-        if self.control_mode != "positions":
-            print('Control mode set to modal, cannot use actuator positions!')
+        if self.control_mode != "voltage":
+            print("Control mode set to 'modal', cannot use actuator positions!")
             return False
         
         if self._validate_voltage(positions):
@@ -426,9 +428,9 @@ class AOMirror:
             self._update_current_state()
             return True
         else:
-            return False    
-        
-    def set_modal_coefficients(self,amps: NDArray):
+            return False
+
+    def set_modal_coefficients(self, amps: NDArray):
         """Set modal coefficients.
         Amps are relative to zeros from the selected mirror flat file.
         
@@ -438,17 +440,20 @@ class AOMirror:
             Flatten array of Zernike modes
         """
         if self.control_mode != "modal":
-            print('Control mode set to positions, cannot use modal coefficients!')
+            print("Control mode set to 'voltage', cannot use modal coefficients!")
             return False
         
         assert amps.shape[0]==self._n_modes, "amps array must have the same shape as the number of Zernike modes."
         
+        #amps[2] = self._focus_mode
+
         # update modal data
         self.modal_coeff.set_data(
             coef_array = amps,
             index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
         )
+
         
         # create a new haso_slope from the new modal coefficients
         haso_slopes = wkpy.HasoSlopes(
@@ -457,7 +462,6 @@ class AOMirror:
         )
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
-        new_positions = np.asarray(self.system_flat_voltage) + np.asarray(deltas)
         new_positions = np.asarray(self.system_flat_voltage) + np.asarray(deltas)
             
         if self._validate_voltage(new_positions):
@@ -471,24 +475,24 @@ class AOMirror:
         else:
             return False  
     
-    def get_current_phase(self):
-        """Get the phase from current modal_coeffs
-        """
-        phase_object = wkpy.Phase(
-            modalcoeff = self.modal_coeff,
-            filter = []
-        )
-        phase_stats = phase_object.get_statistics()
-        phase = {
-            'rms': phase_stats[0],
-            'pv': phase_stats[1],
-            'max': phase_stats[2],
-            'min': phase_stats[3],
-            'phase': phase_object.get_data()[0]
-        }
-        del phase_object
+    # def get_current_phase(self):
+    #     """Get the phase from current modal_coeffs
+    #     """
+    #     phase_object = wkpy.Phase(
+    #         modalcoeff = self.modal_coeff,
+    #         filter = []
+    #     )
+    #     phase_stats = phase_object.get_statistics()
+    #     phase = {
+    #         'rms': phase_stats[0],
+    #         'pv': phase_stats[1],
+    #         'max': phase_stats[2],
+    #         'min': phase_stats[3],
+    #         'phase': phase_object.get_data()[0]
+    #     }
+    #     del phase_object
         
-        return phase
+    #     return phase
     
     def save_current_state(self, prefix: str = 'current'):
         """Save current mirror positions to disk.
@@ -508,7 +512,7 @@ class AOMirror:
             else:
                 # save wfc compatible file
                 actuator_save_path = self._output_path / Path(f"{prefix}_wfc_voltage.wcs") 
-                self.wfc.save_current_voltage_to_file(pmc_file_path=str(actuator_save_path))
+                self.wfc.save_current_positions_to_file(str(actuator_save_path))
                 
                 # save current state and last optimized positions to disk
                 metadata_path = self._output_path / Path(f'{prefix}_aoMirror_state.json')

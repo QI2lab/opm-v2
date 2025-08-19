@@ -148,7 +148,7 @@ class OPMSettings(QWidget):
         self.layout_active_channel_power.addWidget(self.spbx_active_channel_power)
                 
         self.spbx_ao_exposure = self.create_dbspinbox(
-            min = 20,
+            min = 5,
             max = 1000,
             connect_to_fn=self.update_config
         )
