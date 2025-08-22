@@ -121,3 +121,10 @@ src/opm_v2/processing/deskew.py
 src/opm_v2/processing/imageprocessing.py
 src/opm_v2/processing/petakit_deconvolution.py
 src/opm_v2/processing/qi2lab_opm_processing.py
+src/opm_v2/hardware/*.json
+# *.wcs
+# *.aoc
+*.dat
+*.zarr
+*.png
+*.tiff

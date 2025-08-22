@@ -12,7 +12,8 @@ haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v
 mirror_state_output_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_position_files')
 
 # WFC positions file, use None for zeros
-wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_setup\20250818_154141_laser_optimization\20250818_laser_wfc_voltage.wcs')
+wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_position_files\20250821_laser_tilted_curvature_closed_loop_output.wcs')
+wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_setup\20250821_170336_laser_brightness_from_wfc_nocurvature_using_max\20250821_brightness_from_wfc_nocurvature_using_max_wfc_voltage.wcs')
 
 # Load ao_mirror controller using the given positions file
 ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,

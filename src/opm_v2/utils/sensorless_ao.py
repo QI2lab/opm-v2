@@ -830,6 +830,7 @@ def get_cropped_image(
         x_min, x_max = max(center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[0])
         y_min, y_max = max(center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[1])
         cropped_image = image[x_min:x_max, y_min:y_max]
+
     return cropped_image
 
 
@@ -1039,6 +1040,29 @@ def quadratic_fit(x: ArrayLike, y: ArrayLike) -> Sequence[float]:
     coeffs = np.linalg.lstsq(A, y, rcond=None)[0]
 
     return coeffs
+
+def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
+    """
+    Normalize input image (roi) to [0,1] between the defined (low) percentile and the maximum.
+
+    Parameters
+    ----------
+    roi, ndrray of image (ROI)
+    metric_settings, named tuple
+
+    Returns
+    ----------
+    roi_normalized, ndarray of normalized ROI
+    """
+    assert len(roi.shape) == 2, "Error: ROI captured by camera must be 2D."
+    bg = np.percentile(roi, bg_percentile)
+    peak = roi.max()
+    roi_normalized = (roi - bg)/(peak - bg)
+    roi_normalized = np.clip(roi_normalized, 0, 1)
+    if debug_mode:
+        print('normalize_roi() values (low_percentile, background, peak):'
+              + str(bg_percentile) + ',  ' + "{0:2.3f}".format(bg) + ',  ' + "{0:2.3f}".format(peak))
+    return roi_normalized
 
 #-------------------------------------------------#
 # Localization methods to generate ROIs for fitting
@@ -1250,29 +1274,6 @@ def metric_shannon_dct(
         return shannon_dct, image
     else:
         return shannon_dct
-    
-def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
-    """
-    Normalize input image (roi) to [0,1] between the defined (low) percentile and the maximum.
-
-    Parameters
-    ----------
-    roi, ndrray of image (ROI)
-    metric_settings, named tuple
-
-    Returns
-    ----------
-    roi_normalized, ndarray of normalized ROI
-    """
-    assert len(roi.shape) == 2, "Error: ROI captured by camera must be 2D."
-    bg = np.percentile(roi, bg_percentile)
-    peak = roi.max()
-    roi_normalized = (roi - bg)/(peak - bg)
-    roi_normalized = np.clip(roi_normalized, 0, 1)
-    if debug_mode:
-        print('normalize_roi() values (low_percentile, background, peak):'
-              + str(bg_percentile) + ',  ' + "{0:2.3f}".format(bg) + ',  ' + "{0:2.3f}".format(peak))
-    return roi_normalized
 
 def metric_gauss2d(
     image: ArrayLike,
@@ -1313,7 +1314,7 @@ def metric_gauss2d(
         image = get_cropped_image(image, crop_size, center)
         
     # normalize image 0-1
-    image = normalize_roi(image, bg_percentile=25.0)
+    image = image / np.max(image) # normalize_roi(image, bg_percentile=25.0)
     image = image.astype(np.float32)
     
     # create coord. grid for fitting 
@@ -1323,7 +1324,7 @@ def metric_gauss2d(
     
     # fitting assumes a single bead in FOV....
     initial_guess = (image.max(), image.shape[1] // 2, 
-                     image.shape[0] // 2, 5, 5, image.min())
+                     image.shape[0] // 2, 3, 3, image.min())
     fit_bounds = [[0,0,0,1.0,1.0,0],
                   [1.5,image.shape[1],image.shape[0],100,100,5000]]
     try:
@@ -1337,7 +1338,10 @@ def metric_gauss2d(
         )
         
         amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
-        weighted_metric = (1 - np.abs((sigma_x-sigma_y) / (sigma_x+sigma_y))) + 1 / (sigma_x+sigma_y)  + np.exp(-1 * (sigma_x+sigma_y-4)**2)
+
+        weighted_metric = (1 - np.abs((sigma_x-sigma_y) / (sigma_x+sigma_y))) + 1 / (sigma_x+sigma_y)  + np.exp(-1 * (sigma_x+sigma_y-1)**2)
+        # weighted_metric = np.exp(-1 * np.abs(sigma_x - sigma_y)) + 2 / (sigma_y + sigma_x)
+
         # SJS: From old laser_optmization code 
         # weighted_metric = (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y)))* (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
         # weight_amp = 0
