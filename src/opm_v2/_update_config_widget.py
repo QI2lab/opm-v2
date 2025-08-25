@@ -556,6 +556,26 @@ class OPMSettings(QWidget):
         self.layout_stage_image_range.addWidget(QLabel('Stage scan range (\u00B5m):'))
         self.layout_stage_image_range.addWidget(self.spbx_stage_image_range)
 
+        self.spbx_excess_start_frames = self.create_spinbox(
+            value=0,
+            min=0,
+            max=1000,
+            connect_to_fn=self.update_config
+        )
+        self.spbx_excess_end_frames = self.create_spinbox(
+            value=0,
+            min=0,
+            max=1000,
+            connect_to_fn=self.update_config
+        )
+        self.layout_stage_excess_frames = QHBoxLayout()
+        self.layout_stage_excess_frames.addWidget(QLabel('Stage scan excess frame:'))
+        self.layout_stage_excess_frames.addStretch()
+        self.layout_stage_excess_frames.addWidget(QLabel('start:'))
+        self.layout_stage_excess_frames.addWidget(self.spbx_excess_start_frames)
+        self.layout_stage_excess_frames.addWidget(QLabel('end:'))
+        self.layout_stage_excess_frames.addWidget(self.spbx_excess_end_frames)
+
         self.spbx_stage_slope_x = self.create_dbspinbox(
             min=-0.10, 
             max=0.10,
@@ -594,6 +614,7 @@ class OPMSettings(QWidget):
         self.layout_scan_settings.addLayout(self.layout_scan_step_size)
         self.layout_scan_settings.addLayout(self.layout_mirror_image_range)
         self.layout_scan_settings.addLayout(self.layout_stage_image_range)
+        self.layout_scan_settings.addLayout(self.layout_stage_excess_frames)
         self.layout_scan_settings.addLayout(self.layout_proj_image_range)
         self.layout_scan_settings.addLayout(self.layout_stage_slope)
         self.group_scan_settings = QGroupBox('Scan Settings')
@@ -661,7 +682,9 @@ class OPMSettings(QWidget):
                 'scan_step_size_um': self.spbx_scan_step_size,
                 'stage_scan_range_um': self.spbx_stage_image_range,
                 'coverslip_slope_x': self.spbx_stage_slope_x,
-                'coverslip_slope_y': self.spbx_stage_slope_y
+                'coverslip_slope_y': self.spbx_stage_slope_y,
+                'excess_start_frames': self.spbx_excess_start_frames,
+                'excess_end_frames': self.spbx_excess_end_frames
             },
             'camera_roi': {
                 'center_x': self.spbx_roi_center_x,

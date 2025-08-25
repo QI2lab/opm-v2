@@ -180,7 +180,7 @@ def main() -> None:
     mmc = win.mmcore
     mmc.loadSystemConfiguration(Path(config["OPM"]["mm_config_path"]))   
     mda_widget = win.get_widget(WidgetAction.MDA_WIDGET)
-    mda_widget.save_info.save_dir.setText(r"G:/")
+    mda_widget.save_info.save_dir.setText(r"E:/")
     mda_widget.tab_wdg.grid_plan.setMode("bounds")
     mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()   
     stage_widget = win.get_widget(WidgetAction.STAGE_CONTROL)

@@ -303,7 +303,6 @@ def optimize_modes(
         all_metrics.append(starting_metric)
         all_mode_coeffs.append(starting_modal_coeffs.copy())
             
-        
     # Start AO iterations 
     for k in range(num_iterations): 
         # initialize current values

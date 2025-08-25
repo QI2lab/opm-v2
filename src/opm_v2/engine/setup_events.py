@@ -657,6 +657,7 @@ def setup_optimizenow(
         # Define AO optimization action data   
         ao_action_data = {
             'AO' : {
+                'starting_state': str(config['acq_config']['AO']['mirror_state']),
                 'daq_mode':str(config['acq_config']['AO']['daq_mode']),
                 'channel_states': AO_channel_states,
                 'channel_powers' : AO_channel_powers,
@@ -838,8 +839,8 @@ def setup_projection(
             AO_save_path = ao_output_dir
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'stage_positions': None,
-                    # 'starting_mirror_state':str(config['acq_config']['AO']['starting_mirror_state']),
                     'num_scan_positions':int(config['acq_config']['AO']['num_scan_positions']),
                     'num_tile_positions':int(config['acq_config']['AO']['num_tile_positions']),
                     'apply_ao_map': bool(False),
@@ -879,6 +880,7 @@ def setup_projection(
             AO_save_path = ao_output_dir
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'channel_states': AO_channel_states,
                     'channel_powers' : AO_channel_powers,
                     # 'starting_mirror_state':str(config['acq_config']['AO']['starting_mirror_state']),
@@ -1404,6 +1406,7 @@ def setup_mirrorscan(
             # Define AO Grid generation action data
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'stage_positions': None,
                     'num_scan_positions':int(config['acq_config']['AO']['num_scan_positions']),
                     'num_tile_positions':int(config['acq_config']['AO']['num_tile_positions']),
@@ -1444,6 +1447,7 @@ def setup_mirrorscan(
             # Define AO optimization action data   
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'channel_states': AO_channel_states,
                     'channel_powers' : AO_channel_powers,
                     'daq_mode': str(config['acq_config']['AO']['daq_mode']),
@@ -1986,6 +1990,7 @@ def setup_stagescan(
         if 'grid' in ao_mode:
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'stage_positions': None,
                     'num_scan_positions':int(config['acq_config']['AO']['num_scan_positions']),
                     'num_tile_positions':int(config['acq_config']['AO']['num_tile_positions']),
@@ -2022,6 +2027,7 @@ def setup_stagescan(
         else:
             ao_action_data = {
                 'AO' : {
+                    'starting_state': str(config['acq_config']['AO']['mirror_state']),
                     'channel_states': AO_channel_states,
                     'channel_powers' : AO_channel_powers,
                     'daq_mode': str(config['acq_config']['AO']['daq_mode']),
