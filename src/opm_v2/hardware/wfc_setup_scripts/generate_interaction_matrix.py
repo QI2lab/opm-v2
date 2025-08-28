@@ -16,14 +16,14 @@ import tifffile as tf
 """Setup configuration paths
 """
 wfs_config_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\WFS_HASO4_VIS_7635.dat"
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
 )
 wfc_config_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\WaveFrontCorrector_mirao52-e_0329.dat"
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 # Set the output path
-output_prefix = '202508021_tilted'
-root_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\interaction_matrices")
+output_prefix = '202508026_tilted'
+root_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files\interaction_matrices")
 output_image_path = root_path / Path(output_prefix + r'_interaction_images.tiff')
 output_file_path = root_path / Path(output_prefix + "_interaction_matrix.aoc")
 

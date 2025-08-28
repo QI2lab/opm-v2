@@ -128,3 +128,4 @@ src/opm_v2/hardware/*.json
 *.zarr
 *.png
 *.tiff
+src/opm_v2/hardware/wfc_position_files
