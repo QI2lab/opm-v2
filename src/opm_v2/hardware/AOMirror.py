@@ -367,7 +367,9 @@ class AOMirror:
         """Update the last optimized voltage and modal arrays
         """
         if self.control_mode == 'modal':
-            self.last_opt_modal_array = self.current_coeffs.copy() 
+            self.last_opt_modal_array = self.current_coeffs.copy()
+            if DEBUGGING:
+                print(f'--- AOmirror: last_opt_modal_array updated to {self.last_opt_modal_array} ----') 
         self.last_opt_volt_array = self.current_voltage.copy()
     
     def apply_system_flat_voltage(self):
@@ -389,6 +391,10 @@ class AOMirror:
         else:
             self.set_mirror_voltage(self.last_opt_volt_array)
         self._update_current_state()
+        if DEBUGGING:
+            print(
+                f'--- AOmirror: Mirror set to last optimized positions ----'
+                f'\n  mode coeffs: {self.last_opt_modal_array}')
         
     def apply_positions_array(self, idx: int = 0):
         """Set mirror positions from stored array.
