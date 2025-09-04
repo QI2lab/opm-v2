@@ -1722,83 +1722,62 @@ def setup_mirrorscan(
              
             #----------------------------------------------------------------#
             # Handle acquiring images
-            if interleaved_acq:
-                # Update daq state to sequence all channels
-                current_daq_event = MDAEvent(**daq_event.model_dump())
-                current_daq_event.action.data['DAQ']['active_channels'] = channel_states
-                current_daq_event.action.data['DAQ']['channel_powers'] = channel_powers
-                current_daq_event.action.data['Camera']['exposure_channels'] = channel_exposures_ms
-                opm_events.append(current_daq_event)
-                
-            # Create image events
-            current_chan_idx = 0
-            for chan_idx, chan_bool in enumerate(channel_states):               
-                if chan_bool:
-                    if not(interleaved_acq):
-                        # Update daq for each channel separately
-                        temp_channels = [False] * len(channel_states)
-                        temp_exposures = [0] * len(channel_exposures_ms)
-                        temp_powers = [0] * len(channel_powers)
-        
-                        temp_channels[chan_idx] = True
-                        temp_exposures[chan_idx] = channel_exposures_ms[chan_idx]
-                        temp_powers[chan_idx] = channel_powers[chan_idx]
-                        
-                        # create daq event for a single channel                    
-                        current_daq_event = MDAEvent(**daq_event.model_dump())
-                        current_daq_event.action.data['DAQ']['active_channels'] = temp_channels
-                        current_daq_event.action.data['DAQ']['channel_powers'] = temp_powers
-                        current_daq_event.action.data['Camera']['exposure_channels'] = temp_exposures
-                        opm_events.append(current_daq_event)
-                    
-                        if ('none' in ao_mode) or ('start' in ao_mode):
-                            need_to_setup_DAQ = False
-                            
-                    # Create image event for current t / p / c 
-                    image_event = MDAEvent(
-                        index=mappingproxy(
-                            {
-                                't': time_idx, 
-                                'p': pos_idx, 
-                                'c': current_chan_idx
+            # Mirror scan acquisition are forced interleaved acquisitions,
+            # The daq programs each channel per mirror voltage position and advances 
+            # each camera trigger output.
+                     
+            # Create image events     
+            for scan_idx in range(n_scan_steps):
+                current_chan_idx = 0
+                for chan_idx, chan_bool in enumerate(channel_states):               
+                    if chan_bool:
+                                                    
+                        # Create image event for current t / p / c / scan idx
+                        image_event = MDAEvent(
+                            index=mappingproxy(
+                                {
+                                    't': time_idx, 
+                                    'p': pos_idx, 
+                                    'c': current_chan_idx,
+                                    'z': scan_idx
+                                }
+                            ),
+                            metadata = {
+                                'DAQ' : {
+                                    'mode' : scan_mode,
+                                    'image_mirror_range_um' : float(scan_range_um),
+                                    'image_mirror_step_um': float(scan_step_um),
+                                    'active_channels' : channel_states,
+                                    'exposure_channels_ms': channel_exposures_ms,
+                                    'laser_powers' : channel_powers,
+                                    'interleaved' : interleaved_acq,
+                                    'blanking' : laser_blanking,
+                                    'current_channel' : channel_names[chan_idx]
+                                },
+                                'Camera' : {
+                                    'exposure_ms' : float(channel_exposures_ms[chan_idx]),
+                                    'camera_center_x' : int(camera_center_x),
+                                    'camera_center_y' : int(camera_center_y),
+                                    'camera_crop_x' : int(camera_crop_x),
+                                    'camera_crop_y' : int(camera_crop_y),
+                                    'offset' : float(offset),
+                                    'e_to_ADU': float(e_to_ADU)
+                                },
+                                'OPM' : {
+                                    'angle_deg' : float(config['OPM']['angle_deg']),
+                                    'camera_Zstage_orientation' : str(config['OPM']['camera_Zstage_orientation']),
+                                    'camera_XYstage_orientation' : str(config['OPM']['camera_XYstage_orientation']),
+                                    'camera_mirror_orientation' : str(config['OPM']['camera_mirror_orientation'])
+                                },
+                                'Stage' : {
+                                    'x_pos' : float(stage_positions[pos_idx]['x']),
+                                    'y_pos' : float(stage_positions[pos_idx]['y']),
+                                    'z_pos' : float(stage_positions[pos_idx]['z']),
+                                }
                             }
-                        ),
-                        metadata = {
-                            'DAQ' : {
-                                'mode' : scan_mode,
-                                'image_mirror_range_um' : float(scan_range_um),
-                                'image_mirror_step_um': float(scan_step_um),
-                                'active_channels' : channel_states,
-                                'exposure_channels_ms': channel_exposures_ms,
-                                'laser_powers' : channel_powers,
-                                'interleaved' : interleaved_acq,
-                                'blanking' : laser_blanking,
-                                'current_channel' : channel_names[chan_idx]
-                            },
-                            'Camera' : {
-                                'exposure_ms' : float(channel_exposures_ms[chan_idx]),
-                                'camera_center_x' : int(camera_center_x),
-                                'camera_center_y' : int(camera_center_y),
-                                'camera_crop_x' : int(camera_crop_x),
-                                'camera_crop_y' : int(camera_crop_y),
-                                'offset' : float(offset),
-                                'e_to_ADU': float(e_to_ADU)
-                            },
-                            'OPM' : {
-                                'angle_deg' : float(config['OPM']['angle_deg']),
-                                'camera_Zstage_orientation' : str(config['OPM']['camera_Zstage_orientation']),
-                                'camera_XYstage_orientation' : str(config['OPM']['camera_XYstage_orientation']),
-                                'camera_mirror_orientation' : str(config['OPM']['camera_mirror_orientation'])
-                            },
-                            'Stage' : {
-                                'x_pos' : float(stage_positions[pos_idx]['x']),
-                                'y_pos' : float(stage_positions[pos_idx]['y']),
-                                'z_pos' : float(stage_positions[pos_idx]['z']),
-                            }
-                        }
-                    )
-                    opm_events.append(image_event)
-                    current_chan_idx += 1
+                        )
+                        opm_events.append(image_event)
+                        current_chan_idx += 1
 
     # Check if path ends if .zarr. If so, use our OutputHandler
     if len(Path(output).suffixes) == 1 and Path(output).suffix ==  '.zarr':

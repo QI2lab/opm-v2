@@ -414,7 +414,7 @@ class OPMNIDAQ:
         Parameters
         ----------
         scan_type: str
-            scan type. One of "2d", "mirror", "projection", or "stage
+            scan type. One of "2d", "mirror", "projection", or "stage"
         channel_states: Sequence[bool]
             channel states, in order of [405nm, 488nm, 561nm, 637nm, 730nm].
         image_mirror_step_um: float

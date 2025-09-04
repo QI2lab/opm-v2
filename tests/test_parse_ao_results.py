@@ -5,19 +5,19 @@ import numpy as np
 import zarr
 
 
-showfig = False
+showfig = True
 data_path = Path(
-    r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results.zarr'
+    r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_AO_ao_results/grid_pos_3/ao_results.zarr'
 )
 
 results = ao.load_optimization_results(data_path)
 
-best_metrics = results['best_metrics']
 all_images = results['all_images']
 all_metrics = results['all_metrics']
 metrics_per_iteration = results['metrics_per_iteration']
 images_per_iteration = results['images_per_iteration']
-coeff_per_iteration = results['coefficients_per_iteration']
+
+optimal_coeffs = results['optimal_coeffs']
 modes_to_optimize = results['modes_to_optimize']
 zernike_mode_names = results['mode_names']
 modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
@@ -42,7 +42,7 @@ ao.plot_metric_progress(
 )
 
 ao.plot_zernike_coeffs(
-    coefficients_per_iteration=coeff_per_iteration,
+    optimal_coeffs=optimal_coeffs,
     num_iterations=num_iterations,
     zernike_mode_names=zernike_mode_names,
     save_dir_path=data_path,
