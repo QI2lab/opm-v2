@@ -29,7 +29,7 @@ except Exception:
 DEBUGGING = False
 
 # Metric global parameters
-METRIC_PRECISION = 5
+# METRIC_PRECISION = 5
 METRIC_PERC_THRESHOLD = 1.0
 MAXIMUM_MODE_DELTA = 0.5
 PSF_RADIUS_PX = 3
@@ -109,11 +109,11 @@ def get_metric(
 def metric_from_fit(a, b, c, delta):
     return a * delta**2 + b * delta + c
 
-def round_to_sigfigs(x):
+def round_to_sigfigs(x, signif_figs=SIGN_FIGS):
     if x == 0:
         return 0
     else:
-        digits = SIGN_FIGS - int(np.floor(np.log10(abs(x)))) - 1
+        digits = signif_figs - int(np.floor(np.log10(abs(x)))) - 1
         return np.round(x, digits)
     
 def run_ao_optimization(
@@ -126,6 +126,7 @@ def run_ao_optimization(
     num_mode_steps: Optional[int] = 3,
     init_delta_range: Optional[float] = 0.25,
     delta_range_alpha_per_iter: Optional[float] = 0.9,
+    metric_precision: Optional[int] = SIGN_FIGS,
     modes_to_optimize: Optional[List[int]] = spherical_modes_first,
     starting_mirror_state: Optional[str] = "system flat",
     save_dir_path: Optional[Path] = None,
@@ -327,6 +328,7 @@ def run_ao_optimization(
                     # Measure the image metric
                     try:
                         metric = get_metric(image, metric_to_use)
+                        metric = round_to_sigfigs(metric, metric_precision)
                         metrics.append(metric)
                         all_metrics.append(metric)
                         all_images.append(image)
@@ -411,7 +413,7 @@ def run_ao_optimization(
                         opmNIDAQ_local.start_waveform_playback()
                 optimal_image = mmc.snap()
                 optimal_metric = get_metric(optimal_image, metric_to_use)
-                
+                optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
                     print(
                         f'\n   ++ Optimal delta from fit: {optimal_delta:.4f} ++'
@@ -419,7 +421,7 @@ def run_ao_optimization(
                     )
                 
                 # Check if the new metric is better than the current optimal metric
-                if round_to_sigfigs(optimal_metric)>=round_to_sigfigs(current_optimal_metrics[-1]*METRIC_PERC_THRESHOLD):
+                if optimal_metric >= current_optimal_metrics[-1]*METRIC_PERC_THRESHOLD:
                     # Accept the change, and update current mode coeffs
                     update = True
                     current_coeffs[mode] = current_coeffs[mode] + optimal_delta
@@ -1512,6 +1514,7 @@ def run_ao_grid_mapping(
     ao_dict: dict,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
+    metric_precision: Optional[int] = SIGN_FIGS,
     save_dir_path: Path = None,
     verbose: bool = False,
 ) -> bool:

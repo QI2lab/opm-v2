@@ -233,6 +233,15 @@ class OPMSettings(QWidget):
         self.layout_mode_alpha.addWidget(QLabel('Mode range alpha:'))
         self.layout_mode_alpha.addWidget(self.spbx_mode_alpha)
         
+        self.spbx_metric_precision = self.create_spinbox(
+            value=self.config['acq_config']['AO']['metric_precision'],
+            max=10,
+            connect_to_fn=self.update_config
+        )        
+        self.layout_metric_prec = QHBoxLayout()
+        self.layout_metric_prec.addWidget(QLabel('Metric precision:'))
+        self.layout_metric_prec.addWidget(self.spbx_metric_precision)
+        
         self.spbx_num_scan_positions = self.create_spinbox(
             value=MIN_AO_POSITIONS,
             min=MIN_AO_POSITIONS,
@@ -285,6 +294,7 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_num_iterations)
         self.layout_ao_main.addLayout(self.layout_mode_delta)
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
+        self.layout_ao_main.addLayout(self.layout_metric_prec)
         self.layout_ao_main.addLayout(self.layout_num_scan_positions)
         self.layout_ao_main.addLayout(self.layout_num_tile_positions)
         self.layout_ao_main.addLayout(self.layout_camera_mode)

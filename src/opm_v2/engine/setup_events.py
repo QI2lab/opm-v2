@@ -411,6 +411,7 @@ def setup_timelapse(
                 'daq_mode': str(config['acq_config']['AO']['daq_mode']),
                 'exposure_ms': float(config['acq_config']['AO']['exposure_ms']),
                 'modal_delta': float(config['acq_config']['AO']['mode_delta']),
+                'metric_precision':int(config['acq_config']['AO']['metric_precision']),
                 'modal_alpha':float(config['acq_config']['AO']['mode_alpha']),                        
                 'iterations': int(config['acq_config']['AO']['num_iterations']),
                 'metric': str(config['acq_config']['AO']['metric']),
@@ -856,6 +857,7 @@ def setup_projection(
                         'iterations': int(config['acq_config']['AO']['num_iterations']),
                         'metric': str(config['acq_config']['AO']['metric']),
                         'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],
+                        'metric_precision':int(config['acq_config']['AO']['metric_precision'])
                     }
                 },
                 'Camera' : {
@@ -1420,6 +1422,7 @@ def setup_mirrorscan(
                         'iterations': int(config['acq_config']['AO']['num_iterations']),
                         'metric': str(config['acq_config']['AO']['metric']),
                         'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],
+                        'metric_precision':int(config['acq_config']['AO']['metric_precision'])
                     },
                     'apply_ao_map': bool(False),
                     'pos_idx': int(0),
@@ -1453,7 +1456,8 @@ def setup_mirrorscan(
                     'daq_mode': str(config['acq_config']['AO']['daq_mode']),
                     'exposure_ms': float(config['acq_config']['AO']['exposure_ms']),
                     'modal_delta': float(config['acq_config']['AO']['mode_delta']),
-                    'modal_alpha':float(config['acq_config']['AO']['mode_alpha']),                        
+                    'modal_alpha':float(config['acq_config']['AO']['mode_alpha']),      
+                    'metric_precision':int(config['acq_config']['AO']['metric_precision']),
                     'iterations': int(config['acq_config']['AO']['num_iterations']),
                     'metric': str(config['acq_config']['AO']['metric']),
                     'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],
@@ -1578,7 +1582,7 @@ def setup_mirrorscan(
     need_to_setup_DAQ = True
 
     opm_events: list[MDAEvent] = []
-
+    
     if 'none' not in ao_mode:
         AOmirror_setup.n_positions = n_stage_positions
         
@@ -1726,6 +1730,11 @@ def setup_mirrorscan(
             # The daq programs each channel per mirror voltage position and advances 
             # each camera trigger output.
                      
+            if need_to_setup_DAQ:
+                opm_events.append(daq_event)
+                #TODO: catch casees where the daq does not need to be setup each time
+
+
             # Create image events     
             for scan_idx in range(n_scan_steps):
                 current_chan_idx = 0
@@ -1986,6 +1995,7 @@ def setup_stagescan(
                         'iterations': int(config['acq_config']['AO']['num_iterations']),
                         'metric': str(config['acq_config']['AO']['metric']),
                         'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],
+                        'metric_precision':int(config['acq_config']['AO']['metric_precision'])
                     }
                 },
                 'Camera' : {
@@ -2013,6 +2023,7 @@ def setup_stagescan(
                     'exposure_ms': float(config['acq_config']['AO']['exposure_ms']),
                     'modal_delta': float(config['acq_config']['AO']['mode_delta']),
                     'modal_alpha':float(config['acq_config']['AO']['mode_alpha']),                        
+                        'metric_precision':int(config['acq_config']['AO']['metric_precision']),
                     'iterations': int(config['acq_config']['AO']['num_iterations']),
                     'metric': str(config['acq_config']['AO']['metric']),
                     'image_mirror_range_um' : config['acq_config']['AO']['image_mirror_range_um'],

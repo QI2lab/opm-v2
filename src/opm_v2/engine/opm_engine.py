@@ -355,7 +355,7 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
                 
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
+                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["channel_states"]):
                     if chan_bool:
                         self._mmc.setProperty(
                             self._config["Lasers"]["name"],
@@ -418,6 +418,8 @@ class OPMEngine(MDAEngine):
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
 
+                if DEBUGGING:
+                    print('Setting exposure to:', exposure_ms)
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
@@ -501,6 +503,7 @@ class OPMEngine(MDAEngine):
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
+                        metric_precision=int(data_dict["AO"]["metric_precision"]),
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )
@@ -532,6 +535,7 @@ class OPMEngine(MDAEngine):
                         ao_dict = data_dict["AO"]["ao_dict"],
                         num_tile_positions = data_dict["AO"]["num_tile_positions"],
                         num_scan_positions = data_dict["AO"]["num_scan_positions"],
+                        metric_precision = int(data_dict["AO"]["metric_precision"]),
                         save_dir_path = data_dict["AO"]["output_path"],
                         verbose = DEBUGGING,
                     )
