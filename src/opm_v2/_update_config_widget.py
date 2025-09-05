@@ -329,6 +329,7 @@ class OPMSettings(QWidget):
                     'active_channel_power': self.spbx_active_channel_power,
                     'exposure_ms': self.spbx_ao_exposure,
                     'ao_mode': self.cmbx_ao_mode,
+                    'metric_precision': self.spbx_metric_precision,
                     'mirror_state': self.cmbx_ao_mirror,
                     'lightsheet_mode': self.cmbx_ao_camera_mode,
                     'readout_ms': self.spbx_readout_time

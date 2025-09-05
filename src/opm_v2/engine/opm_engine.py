@@ -570,6 +570,25 @@ class OPMEngine(MDAEngine):
                         f'\n  sleep time: {sleep_time}'
                     )
             
+            elif action_name == "AO-mirrorUpdate":
+                coeffs = data_dict["AOmirror"]["coefficients"]
+                positions = data_dict["AOmirror"]["voltages"]
+                if coeffs is not None:
+                    self.AOMirror.set_modal_coefficients(np.array(coeffs))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with new modal coefficients:',
+                            f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
+                        )
+                elif positions is not None:
+                    self.AOMirror.set_positions(np.array(positions))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with new voltages:',
+                            f'\n  voltages: {self.AOMirror.current_positions.copy()}'
+                        )
+                else:
+                    print("\nAO-mirrorUpdate: No coefficients or positions sent!")
         else:
             result = super().exec_event(event)
             return result

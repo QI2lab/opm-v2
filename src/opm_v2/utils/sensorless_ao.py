@@ -267,6 +267,7 @@ def run_ao_optimization(
     try:
         starting_image = mmc.snap()
         starting_metric = get_metric(starting_image, metric_to_use)
+        starting_metric = round_to_sigfigs(starting_metric, metric_precision)
     except Exception as e:
         print(
             'Failed to get metric!'
@@ -342,7 +343,7 @@ def run_ao_optimization(
                             print('\n    ---- Metric failed! ----')
                                         
                 if verbose:
-                    print(f'    + Delta={delta:.4f}, Metric = {metric:.6f}, Success = {success} +')
+                    print(f'    + Delta={delta:.4f}, Metric = {metric:.4}, Success = {success} +')
             
             #---------------------------------------------#
             # Fit metrics to determine optimal metric
@@ -417,7 +418,7 @@ def run_ao_optimization(
                 if verbose:
                     print(
                         f'\n   ++ Optimal delta from fit: {optimal_delta:.4f} ++'
-                        f'\n   ++ Measured optimal metric: {optimal_metric:.6f} ++'
+                        f'\n   ++ Measured optimal metric: {optimal_metric:.4} ++'
                     )
                 
                 # Check if the new metric is better than the current optimal metric

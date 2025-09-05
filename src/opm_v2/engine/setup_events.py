@@ -333,6 +333,8 @@ def setup_timelapse(
         [camera_crop_x, camera_crop_y],
         interleaved_acq
     )
+    if daq_event is None:
+        return None, None
     
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
@@ -342,6 +344,8 @@ def setup_timelapse(
             [camera_center_x, camera_center_y],
             [camera_crop_x, config['acq_config']['O2O3-autofocus']['roi_crop_y']]
         )
+        if o2o3_event is None:
+            return None, None
         
     #----------------------------------------------------------------#
     # Create the AO custom events
@@ -362,7 +366,9 @@ def setup_timelapse(
             config,
             ao_output_dir
         )
-    
+        if ao_optimize_event is None:
+            return None, None
+        
     #----------------------------------------------------------------#
     # Compile positions from active MDA tabs and config
     #----------------------------------------------------------------#
@@ -441,6 +447,8 @@ def setup_timelapse(
             # update the mirror state
             current_coeffs = AOmirror_setup.current_coeffs.copy()
             ao_mirror_update = create_ao_mirror_update_event(mirror_coeffs=current_coeffs)
+            if ao_mirror_update is None:
+                return None, None
             opm_events.append(ao_mirror_update)
             
             

@@ -136,7 +136,7 @@ def create_ao_optimize_event(config: Dict,
                     'metric': str(ao_config['metric']),
                     'image_mirror_range_um' : ao_config['image_mirror_range_um'],
                     'lightsheet_mode': str(ao_config['lightsheet_mode']),
-                    'readout_time': float(ao_config['readout_time']),
+                    'readout_ms': float(ao_config['readout_ms']),
                     'apply_existing': bool(False),
                     'pos_idx': int(0),
                     'output_path':output_dir_path
@@ -160,10 +160,10 @@ def create_ao_grid_event():
     pass
 
 def create_ao_mirror_update_event(
-    mirror_coeffs: Optional[List],
-    mirror_positions: Optional[List]
+    mirror_coeffs: Optional[List] = None,
+    mirror_positions: Optional[List] = None
 ):
-    if not mirror_coeffs and not mirror_positions:
+    if mirror_coeffs is None and mirror_positions is None:
         return None 
     else:
         ao_mirror_update = MDAEvent(
@@ -171,8 +171,8 @@ def create_ao_mirror_update_event(
                 name='AO-mirrorUpdate',
                 data = {
                     'AOmirror' : {
-                        'coefficients' : mirror_coeffs,
-                        'voltages' : mirror_positions,
+                        'coefficients' : mirror_coeffs.tolist() if mirror_coeffs is not None else None,
+                        'voltages' : mirror_positions.tolist() if mirror_positions is not None else None,
                     }
                 }
             )
