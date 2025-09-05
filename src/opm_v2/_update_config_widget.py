@@ -43,6 +43,16 @@ class OPMSettings(QWidget):
                 continue
         config['acq_config']['timelapse']['channel_states'] = [False] * n_channels
 
+        # force mirror scan range to zero
+        config['acq_config']['mirror_scan']['scan_range_um'] = 0
+        
+        # force stage scan range to max
+        config['acq_config']['stage_scan']['stage_scan_range_um'] = 1000
+        
+        # force the scan step size to be 0.4
+        for mode in ['stage_scan','mirror_scan']:
+            config['acq_config'][mode]['scan_step_size_um'] = 0.4
+            
         self.config = config
         self.widgets = {}       
         self.create_ui()
@@ -261,7 +271,7 @@ class OPMSettings(QWidget):
         self.layout_num_tile_positions.addWidget(QLabel('AO grid tile axis positions:'))
         self.layout_num_tile_positions.addWidget(self.spbx_num_tile_positions)
         
-        self.cmbx_ao_camera_mode = self.create_combobox(['on', 'off'], connect_to_fn=None)
+        self.cmbx_ao_camera_mode = self.create_combobox(['on', 'off'], connect_to_fn=self.update_config)
         self.layout_camera_mode = QHBoxLayout()
         self.layout_camera_mode.addWidget(QLabel('LS camera mode:'))
         self.layout_camera_mode.addWidget(self.cmbx_ao_camera_mode)
@@ -271,7 +281,8 @@ class OPMSettings(QWidget):
             min=MIN_READOUT_US,
             max=MAX_READOUT_US,
             precision=3,
-            interval=1
+            interval=1,
+            connect_to_fn=self.update_config
         )
         self.layout_readout_time = QHBoxLayout()
         self.layout_readout_time.addWidget(QLabel('LS camera readout time (us):'))
@@ -319,8 +330,8 @@ class OPMSettings(QWidget):
                     'exposure_ms': self.spbx_ao_exposure,
                     'ao_mode': self.cmbx_ao_mode,
                     'mirror_state': self.cmbx_ao_mirror,
-                    'camera_ls_mode': self.cmbx_ao_camera_mode,
-                    'camera_readout_ms': self.spbx_readout_time
+                    'lightsheet_mode': self.cmbx_ao_camera_mode,
+                    'readout_ms': self.spbx_readout_time
                     }  
                 }
         )
@@ -766,6 +777,7 @@ class OPMSettings(QWidget):
         # Update the slider value when the spinbox value changes
         # self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
         pass
+    
     #--------------------------------------------------------------------#
     # Methods to update acquisition channel states
     #--------------------------------------------------------------------#

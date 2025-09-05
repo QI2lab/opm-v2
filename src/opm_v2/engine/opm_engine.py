@@ -380,7 +380,7 @@ class OPMEngine(MDAEngine):
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
                         scan_type =  "projection",
-                        channel_states = data_dict["DAQ"]["active_channels"],
+                        channel_states = data_dict["DAQ"]["channel_states"],
                         image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms

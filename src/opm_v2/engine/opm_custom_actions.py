@@ -127,12 +127,9 @@ DAQ_event = MDAEvent(
         data = {
             'DAQ' : {
                 'mode' : None,
-                'image_mirror_step_um' : None,
-                'image_mirror_range_um' : None,
                 'channel_states' : None,
                 'channel_powers' : None,
                 'interleaved' : None,
-                'active_channels': None,
                 'blanking' : None, 
             },
             'Camera' : {
