@@ -4,10 +4,9 @@ TO DO: Fix init so we only have one instance of OPMNIDAQ, OPMAOMIRROR, and confi
 
 Change Log:
 2025-02-07: New version that includes all possible modes
+2025/09/05: Synchronized opm_config options and A.O.
 """
-from datetime import datetime
 from PyQt6.QtCore import QThread
-
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
@@ -211,12 +210,12 @@ class OPMEngine(MDAEngine):
                         )
                     )
                     print(
-                        "\nScan positions:",
-                        f"\n  start: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStartPosition(mm)')}",
-                        f"\n  end: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStopPosition(mm)')}",
-                        f"\n  Scan settling time: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanSettlingTime(ms)')}",
-                        f"\n  actual speed: {actual_speed_x}",
-                        f"\n  requested speed: {np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}",
+                        "\nScan positions:"
+                        f"\n  start: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStartPosition(mm)')}"
+                        f"\n  end: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStopPosition(mm)')}"
+                        f"\n  Scan settling time: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanSettlingTime(ms)')}"
+                        f"\n  actual speed: {actual_speed_x}"
+                        f"\n  requested speed: {np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}"
                         f"\n  Do stage speeds match: {actual_speed_x == np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}"
                     )
                 
@@ -406,7 +405,6 @@ class OPMEngine(MDAEngine):
                 
                 #--------------------------------------------------------#
                 # Setup camera properties
-                print(self._mmc.getROI())
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[3]) or not (int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[2]):                   
                     self._mmc.clearROI()
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
@@ -495,7 +493,7 @@ class OPMEngine(MDAEngine):
                         )
                 else:
                     run_ao_optimization(
-                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
+                        starting_mirror_state=str(data_dict['mirror_state']),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
@@ -504,6 +502,7 @@ class OPMEngine(MDAEngine):
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
+                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )

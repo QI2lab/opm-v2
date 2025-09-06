@@ -1,11 +1,8 @@
-"""Sensorless adaptive optics.
+"""
+Sensorless adaptive optics and tools.
 
-TO DO:
-- Load interaction matrix from disk
-- Set and get Zernike mode amplitudes from mirror
-- Might need HASO functions to do this, since Zernike need to be composed given the pupil
-
-2024/12 DPS initial work
+2024/12 DPS: initial work
+2025/09/05 SJS: updates to synchronize with opm_custom_events and opm_config
 """
 from pymmcore_plus import CMMCorePlus
 import numpy as np
@@ -15,7 +12,6 @@ from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
 from pathlib import Path
-from tifffile import imwrite
 import zarr
 from time import sleep
 
@@ -82,11 +78,24 @@ mode_names = [
 #-------------------------------------------------#
 
 def get_metric(
-    image,
-    metric_to_use
-):
-    """Calculate the selected metric on the provided image"""
-    if metric_to_use not in ["DCT", "localize_gauss_2d", "gauss_2d", "brightness", "fourier_ratio"]:
+    image: ArrayLike,
+    metric_to_use: str
+) -> float:
+    """ Calculate the selected metric on the provided image
+
+    Parameters
+    ----------
+    image : ArrayLike
+        image to measure metric on
+    metric_to_use : str
+        descriptor for metric to use
+
+    Returns
+    -------
+    float
+        calculated metric
+    """
+    if metric_to_use not in ['DCT", "localize_gauss_2d", "gauss_2d", "brightness", "fourier_ratio']:
         print(f"Warning: AO metric '{metric_to_use}' not supported. Exiting function.")
         return np.nan
     try:
@@ -106,20 +115,52 @@ def get_metric(
         metric = np.nan
     return metric
 
-def metric_from_fit(a, b, c, delta):
+def metric_from_fit(a: float, b: float, c: float, delta: float) -> float:
+    """Return the optimal metric based on the delta and quadratic fit
+
+    Parameters
+    ----------
+    a : float
+        x2 term of quadratic
+    b : float
+        x term of quadratic
+    c : float
+        constant term of quadratic
+    delta : float
+        Optimal delta to evaluate quadratic at
+
+    Returns
+    -------
+    float
+        metric at the given delta and fit parameters
+    """
     return a * delta**2 + b * delta + c
 
-def round_to_sigfigs(x, signif_figs=SIGN_FIGS):
+def round_to_sigfigs(x: float, signif_figs: int=SIGN_FIGS) -> float:
+    """Round value to given significant figures
+
+    Parameters
+    ----------
+    x : float
+        value to round
+    signif_figs : int, optional
+        number of significant figures, by default SIGN_FIGS
+
+    Returns
+    -------
+    float
+        given value rounded to significant figures
+    """
     if x == 0:
         return 0
     else:
         digits = signif_figs - int(np.floor(np.log10(abs(x)))) - 1
         return np.round(x, digits)
-    
+
 def run_ao_optimization(
     exposure_ms: float,
     channel_states: List[bool],
-    metric_to_use: Optional[str] = "shannon_dct",
+    metric_to_use: Optional[str] = "DCT",
     daq_mode: Optional[str] = "projection",
     image_mirror_range_um: float = 100,
     num_iterations: Optional[int] = 3,
@@ -132,7 +173,47 @@ def run_ao_optimization(
     save_dir_path: Optional[Path] = None,
     save_prefix: Optional[str] = None,
     verbose: Optional[bool] = True,
-    ):
+) -> bool:
+    """Run sensorless adaptive optics
+
+    Parameters
+    ----------
+    exposure_ms : float
+        camera exposure in ms
+    channel_states : List[bool]
+        channel states list to pass to daq
+    metric_to_use : Optional[str], optional
+        descriptor of metric to use, by default "DCT"
+    daq_mode : Optional[str], optional
+        by default "projection"
+    image_mirror_range_um : float, optional
+        by default 100
+    num_iterations : Optional[int], optional
+        by default 3
+    num_mode_steps : Optional[int], optional
+        number of deltas to sample per mode, by default 3
+    init_delta_range : Optional[float], optional
+        maximum mode coefficient delta to sample, by default 0.25
+    delta_range_alpha_per_iter : Optional[float], optional
+        factor to reduce delta range by per iteration, by default 0.9
+    metric_precision : Optional[int], optional
+        number of significant figures to round metrics to, by default SIGN_FIGS
+    modes_to_optimize : Optional[List[int]], optional
+        list of modes to optimize, by default spherical_modes_first
+    starting_mirror_state : Optional[str], optional
+        the starting mirror state, either system flat or last optimized, by default "system flat"
+    save_dir_path : Optional[Path], optional
+        Path to save figures, by default None
+    save_prefix : Optional[str], optional
+        Path prefix to append for saving the AO mirror state, by default None
+    verbose : Optional[bool], optional
+        whether to print out updates, by default True
+
+    Returns
+    -------
+    bool
+        Indicates success or not
+    """
     
     #---------------------------------------------#
     # Create hardware controller instances
@@ -529,17 +610,20 @@ def plot_zernike_coeffs(
     save_dir_path: Optional[Path] = None,
     show_fig: Optional[bool] = False,
     x_range = 0.1
-):
-    """_summary_
+) -> None:
+    """Plot the Zernike coefficient values per iteration
 
     Parameters
     ----------
-    optimal_coefficients : ArrayLike
-        _description_
-    save_dir_path : Path
-        _description_
-    showfig : bool
-        _description_
+    optimal_coeffs : ArrayLike
+    num_iterations : int
+    zernike_mode_names : ArrayLike
+    save_dir_path : Optional[Path], optional
+        Path to save figure, by default None
+    show_fig : Optional[bool], optional
+        whether to display figure, by default False
+    x_range : float, optional
+        the coefficient magnitude to display on axis, by default 0.1
     """
     import matplotlib.pyplot as plt
     import matplotlib
@@ -613,22 +697,20 @@ def plot_metric_progress(
     zernike_mode_names: List[str],
     save_dir_path: Optional[Path] = None,
     show_fig: Optional[bool] = False
-):
-    """_summary_
+) -> None:
+    """Plot the metric magnitude throughout optimization
 
     Parameters
     ----------
-    metrics_per_iteration : ArrayLike
-        N_iter x N_modes array of the metric value per mode
-    modes_to_optmize : List[int]
-        _description_
+    all_metrics : ArrayLike
+    num_iterations : float
+    modes_to_optimize : List[int]
     zernike_mode_names : List[str]
-        _description_
     save_dir_path : Optional[Path], optional
-        _description_, by default None
+        Path to save figure, by default None
     show_fig : Optional[bool], optional
-        _description_, by default False
-    """   
+        whether to display figure, by default False
+    """
     import matplotlib.pyplot as plt
     if not show_fig:
         import matplotlib
@@ -691,7 +773,7 @@ def plot_metric_progress(
 def plot_phase(phase: Dict,
                save_dir_path: Path = None,
                show_fig: bool = False
-):
+) -> None:
     """Plot the 2d Phase for a given set of modal coeffs
 
     Parameters
@@ -699,9 +781,9 @@ def plot_phase(phase: Dict,
     phase : Dict
         _description_
     save_dir_path : Path, optional
-        _description_, by default None
+        Path to save figure, by default None
     showfig : bool, optional
-        _description_, by default False
+        whether to display figure, by default False
     """
     
     import matplotlib.pyplot as plt
@@ -744,7 +826,7 @@ def plot_2d_localization_fit_summary(
     save_dir_path: Path = None,
     showfig: bool = False
 ):
-    """_summary_
+    """Generate a figure showing the localization an fit results
 
     Parameters
     ----------
@@ -771,11 +853,11 @@ def plot_2d_localization_fit_summary(
     import matplotlib
     matplotlib.use('Agg')
     
-    to_keep = fit_results["to_keep"]
-    sxy = fit_results["fit_params"][to_keep, 4]
-    amp = fit_results["fit_params"][to_keep, 0]
-    bg = fit_results["fit_params"][to_keep, 6]
-    centers = fit_results["fit_params"][to_keep][:, (3, 2, 1)]
+    to_keep = fit_results['to_keep']
+    sxy = fit_results['fit_params'][to_keep, 4]
+    amp = fit_results['fit_params'][to_keep, 0]
+    bg = fit_results['fit_params'][to_keep, 6]
+    centers = fit_results['fit_params'][to_keep][:, (3, 2, 1)]
     cx = centers[:,2]
     cy = centers[:,1]
 
@@ -797,10 +879,10 @@ def plot_2d_localization_fit_summary(
     figh_sum = plot_bead_locations(
         img,
         centers,
-        weights=[fit_results["fit_params"][to_keep, 4]],
-        color_lists=["autumn"],
+        weights=[fit_results['fit_params'][to_keep, 4]],
+        color_lists=['autumn'],
         color_limits=[[0.05,0.5]],
-        cbar_labels=[r"$\sigma_{xy}$"],
+        cbar_labels=[r'$\sigma_{xy}$'],
         title="Max intensity projection with Sxy",
         coords=coords_2d,
         gamma=0.5,
@@ -942,7 +1024,6 @@ def get_cropped_image(
 
     return cropped_image
 
-
 #-------------------------------------------------#
 # Functions for fitting and calculations
 #-------------------------------------------------#
@@ -952,6 +1033,27 @@ def metric_r_power_integral(
     integration_radius: int = 40,
     power: int = 2
 ) -> float:
+    """TODO
+
+    Parameters
+    ----------
+    img : np.ndarray
+        _description_
+    integration_radius : int, optional
+        _description_, by default 40
+    power : int, optional
+        _description_, by default 2
+
+    Returns
+    -------
+    float
+        _description_
+
+    Raises
+    ------
+    ValueError
+        _description_
+    """
     h, w = img.shape
     if min(h, w) < 2 * integration_radius:
         raise ValueError("Radius too large for image size")
@@ -1190,7 +1292,7 @@ def localize_2d_img(
     showfig: bool = False,
     verbose: bool = False
 ):
-    """_summary_
+    """TODO
 
     Parameters
     ----------
@@ -1227,9 +1329,9 @@ def localize_2d_img(
     coords_2d = get_coords(img.shape, (dxy, dxy))
                            
     # Set fit bounds and parameter filters
-    threshold = localize_psf_filters["threshold"]
-    amp_bounds = localize_psf_filters["amp_bounds"]
-    sxy_bounds = localize_psf_filters["sxy_bounds"]
+    threshold = localize_psf_filters['threshold']
+    amp_bounds = localize_psf_filters['amp_bounds']
+    sxy_bounds = localize_psf_filters['sxy_bounds']
     fit_dist_max_err = (0, dxy*2) 
     fit_roi_size = (1, dxy*9, dxy*9)
     min_spot_sep = (0, dxy*5)
@@ -1286,8 +1388,7 @@ def metric_brightness(
     image_center: Optional[int] = None,
     return_image: Optional[bool] = False
 ) -> float:
-    """
-    Compute weighted metric for 2D Gaussian.
+    """Compute weighted metric for 2D Gaussian.
 
     Parameters
     ----------
@@ -1470,7 +1571,7 @@ def metric_gauss2d(
         return weighted_metric
 
 def metric_localize_gauss2d(image: ArrayLike) -> float:
-    """_summary_
+    """TODO
 
     Parameters
     ----------
@@ -1496,8 +1597,8 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
             verbose = False
             )
         
-        to_keep = fit_results["to_keep"]
-        sxy = fit_results["fit_params"][to_keep, 4]
+        to_keep = fit_results['to_keep']
+        sxy = fit_results['fit_params'][to_keep, 4]
         metric = 1.0 / np.median(sxy)
     except Exception as e:
         print(f"2d localization and fit exceptions: {e}")
@@ -1505,34 +1606,27 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
         
     return metric
 
-
 #-------------------------------------------------#
 # Helper function for generating grid
 #-------------------------------------------------#
 
 def run_ao_grid_mapping(
-    stage_positions: List,
     ao_dict: dict,
+    stage_positions: List,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
-    metric_precision: Optional[int] = SIGN_FIGS,
     save_dir_path: Path = None,
     verbose: bool = False,
 ) -> bool:
-    """_summary_
+    """Given a set of stage positions, generate a grid to run A.O.
+    then interpolate to stage positions.
 
     Parameters
     ----------
     stage_positions : list
         Experimental stage positions. Optimized for stage scan acquisitions
     ao_dict : dict
-        A dictionary containing AO optimization parameters, including:
-        - "image_mirror_range_um"
-        - "exposure_ms"
-        - "channel_states"
-        - "metric"
-        - "modal_alpha"
-        - "iterations"
+        A dictionary containing AO optimization parameters
     save_dir_path : Path, optional
         Path to save AO optimization data. Default is None.
     verbose : bool, optional
@@ -1548,7 +1642,7 @@ def run_ao_grid_mapping(
     
     stage_positions_array = np.array(
         [
-            (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+            (pos['z'], pos['y'], pos['x']) for pos in stage_positions
         ]
     )
     # Extract unique positions along each axis
@@ -1650,9 +1744,9 @@ def run_ao_grid_mapping(
         if verbose:
             print(f"\nMoving stage to: {ao_stage_positions[ao_pos_idx]}")
             
-        target_x = ao_stage_positions[ao_pos_idx]["x"]
-        target_y = ao_stage_positions[ao_pos_idx]["y"]
-        target_z = ao_stage_positions[ao_pos_idx]["z"]
+        target_x = ao_stage_positions[ao_pos_idx]['x']
+        target_y = ao_stage_positions[ao_pos_idx]['y']
+        target_z = ao_stage_positions[ao_pos_idx]['z']
         
         mmc.setPosition(np.round(target_z,2))
         mmc.waitForDevice(mmc.getFocusDevice())
@@ -1666,18 +1760,22 @@ def run_ao_grid_mapping(
             current_x, current_y = mmc.getXYPosition()
             sleep(.5)
         
+        if ao_pos_idx==0:
+            mirror_state = ao_dict['mirror_state']
+        else:
+            mirror_state = 'last_optimized'
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
-            starting_mirror_state="last optimized",
-            metric_to_use=ao_dict["metric"],
-            daq_mode=ao_dict["daq_mode"],
-            image_mirror_range_um=ao_dict["image_mirror_range_um"],
-            exposure_ms=ao_dict["exposure_ms"],
-            channel_states=ao_dict["channel_states"],
-            num_iterations=ao_dict["iterations"],
-            init_delta_range=ao_dict["modal_delta"],
-            delta_range_alpha_per_iter=ao_dict["modal_alpha"],
+            starting_mirror_state=mirror_state,
+            metric_to_use=ao_dict['metric'],
+            channel_states=ao_dict['channel_states'],
+            exposure_ms=ao_dict['exposure_ms'],
+            daq_mode=ao_dict['daq_mode'],
+            image_mirror_range_um=ao_dict['image_mirror_range_um'],
+            num_iterations=ao_dict['iterations'],
+            init_delta_range=ao_dict['modal_delta'],
+            delta_range_alpha_per_iter=ao_dict['modal_alpha'],
             save_dir_path=current_save_dir,
             verbose=verbose
         )
@@ -1695,8 +1793,8 @@ def run_ao_grid_mapping(
     position_wfc_positions = np.zeros(aoMirror_local.positions_voltage_array.shape)
         
     # Convert AO positions and stage positions into structured arrays for efficient lookup
-    ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
-    stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
+    ao_stage_positions_array = np.array([(pos['z'], pos['y'], pos['x']) for pos in ao_stage_positions])
+    stage_positions_array = np.array([(pos['z'], pos['y'], pos['x']) for pos in stage_positions])
 
     for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
         # Get matching target ao positions
@@ -1756,25 +1854,27 @@ def save_optimization_results(
     # optimized_phase: Dict,
     metadata: Dict,
     save_dir_path: Path
-):
-    """_summary_
+) -> None:
+    """Save the results from running AO-optimize
 
     Parameters
     ----------
-    images_per_mode : ArrayLike
-        _description_
-    metrics_per_mode : ArrayLike
-        _description_
+    all_images : ArrayLike
+        all images acquired during optimization
+    all_metrics : ArrayLike
+        all metrics measured during optimization
     images_per_iteration : ArrayLike
-        _description_
+        optimal images per interation, including the starting image
     metrics_per_iteration : ArrayLike
-        _description_
+        optmial metrics per iteration, including the starting metric
     optimal_coeffs : ArrayLike
-        _description_
+        optimal coefficients per iteration
     modes_to_optimize : List[int]
-        _description_
+        The modes optimized, in order
+    metadata : Dict
+        run_optimization parameters
     save_dir_path : Path
-        _description_
+        zarr destination path
     """
 
     # Create the Zarr directory if it doesn't exist
@@ -1806,15 +1906,15 @@ def load_optimization_results(results_path: Path):
     store = zarr.DirectoryStore(str(results_path))
     results = zarr.open(store)
     
-    all_images = results["all_images"][:]
-    all_metrics = results["all_metrics"][:]
-    images_per_iteration = results["images_per_iteration"][:]
-    metrics_per_iteration = results["metrics_per_iteration"][:]
-    optimal_coeffs = results["optimal_coeffs"][:]
+    all_images = results['all_images'][:]
+    all_metrics = results['all_metrics'][:]
+    images_per_iteration = results['images_per_iteration'][:]
+    metrics_per_iteration = results['metrics_per_iteration'][:]
+    optimal_coeffs = results['optimal_coeffs'][:]
     # optimized_phase = results['optimized_phase'][:]
 
-    modes_to_optimize = results["modes_to_optimize"][:]
-    zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
+    modes_to_optimize = results['modes_to_optimize'][:]
+    zernike_mode_names = [name.decode("utf-8") for name in results['zernike_mode_names'][:]]
     
     ao_results = {
         "all_images":all_images,

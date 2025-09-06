@@ -184,7 +184,7 @@
             "scan_range_um": 0.0,
             "scan_step_size_um": 0.4,
             "z_axis_overlap": 0.2,
-            "tile_axis_overlap": 0.15,
+            "tile_axis_overlap": 0.2,
             "laser_blanking": false,
             "channel_states": [
                 false,
@@ -215,6 +215,7 @@
             "scan_step_size_um": 0.4,
             "stage_scan_range_um": 1000.0,
             "scan_axis_overlap_um": 40,
+            "z_axis_overlap": 0.2,
             "tile_axis_overlap": 0.2,
             "excess_start_frames": 0,
             "excess_end_frames": 0,
