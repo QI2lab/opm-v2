@@ -15,6 +15,9 @@ MIN_AO_POSITIONS = 1
 MAX_AO_POSITIONS = 20
 MAX_AO_ITERATIONS = 10
 MAX_STAGE_RANGE = 1000
+MIN_READOUT_US = 4.867647
+MAX_READOUT_US = 963.8
+ 
 class OPMSettings(QWidget):
     
     settings_changed = pyqtSignal()
@@ -40,6 +43,16 @@ class OPMSettings(QWidget):
                 continue
         config['acq_config']['timelapse']['channel_states'] = [False] * n_channels
 
+        # force mirror scan range to zero
+        config['acq_config']['mirror_scan']['scan_range_um'] = 0
+        
+        # force stage scan range to max
+        config['acq_config']['stage_scan']['stage_scan_range_um'] = 1000
+        
+        # force the scan step size to be 0.4
+        for mode in ['stage_scan','mirror_scan']:
+            config['acq_config'][mode]['scan_step_size_um'] = 0.4
+            
         self.config = config
         self.widgets = {}       
         self.create_ui()
@@ -145,7 +158,7 @@ class OPMSettings(QWidget):
         self.layout_active_channel_power.addWidget(self.spbx_active_channel_power)
                 
         self.spbx_ao_exposure = self.create_dbspinbox(
-            min = 20,
+            min = 5,
             max = 1000,
             connect_to_fn=self.update_config
         )
@@ -230,6 +243,15 @@ class OPMSettings(QWidget):
         self.layout_mode_alpha.addWidget(QLabel('Mode range alpha:'))
         self.layout_mode_alpha.addWidget(self.spbx_mode_alpha)
         
+        self.spbx_metric_precision = self.create_spinbox(
+            value=self.config['acq_config']['AO']['metric_precision'],
+            max=10,
+            connect_to_fn=self.update_config
+        )        
+        self.layout_metric_prec = QHBoxLayout()
+        self.layout_metric_prec.addWidget(QLabel('Metric precision:'))
+        self.layout_metric_prec.addWidget(self.spbx_metric_precision)
+        
         self.spbx_num_scan_positions = self.create_spinbox(
             value=MIN_AO_POSITIONS,
             min=MIN_AO_POSITIONS,
@@ -248,7 +270,24 @@ class OPMSettings(QWidget):
         self.layout_num_tile_positions = QHBoxLayout()
         self.layout_num_tile_positions.addWidget(QLabel('AO grid tile axis positions:'))
         self.layout_num_tile_positions.addWidget(self.spbx_num_tile_positions)
-                
+        
+        self.cmbx_ao_camera_mode = self.create_combobox(['on', 'off'], connect_to_fn=self.update_config)
+        self.layout_camera_mode = QHBoxLayout()
+        self.layout_camera_mode.addWidget(QLabel('LS camera mode:'))
+        self.layout_camera_mode.addWidget(self.cmbx_ao_camera_mode)
+        
+        self.spbx_readout_time = self.create_dbspinbox(
+            value=MIN_READOUT_US,
+            min=MIN_READOUT_US,
+            max=MAX_READOUT_US,
+            precision=3,
+            interval=1,
+            connect_to_fn=self.update_config
+        )
+        self.layout_readout_time = QHBoxLayout()
+        self.layout_readout_time.addWidget(QLabel('LS camera readout time (us):'))
+        self.layout_readout_time.addWidget(self.spbx_readout_time)
+        
         #--------------------------------------------------------------------#
         # Populate AO group 
         #--------------------------------------------------------------------#
@@ -266,8 +305,11 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_num_iterations)
         self.layout_ao_main.addLayout(self.layout_mode_delta)
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
+        self.layout_ao_main.addLayout(self.layout_metric_prec)
         self.layout_ao_main.addLayout(self.layout_num_scan_positions)
         self.layout_ao_main.addLayout(self.layout_num_tile_positions)
+        self.layout_ao_main.addLayout(self.layout_camera_mode)
+        self.layout_ao_main.addLayout(self.layout_readout_time)
         self.group_ao_main.setLayout(self.layout_ao_main)
 
         #--------------------------------------------------------------------#
@@ -287,7 +329,10 @@ class OPMSettings(QWidget):
                     'active_channel_power': self.spbx_active_channel_power,
                     'exposure_ms': self.spbx_ao_exposure,
                     'ao_mode': self.cmbx_ao_mode,
-                    'mirror_state': self.cmbx_ao_mirror
+                    'metric_precision': self.spbx_metric_precision,
+                    'mirror_state': self.cmbx_ao_mirror,
+                    'lightsheet_mode': self.cmbx_ao_camera_mode,
+                    'readout_ms': self.spbx_readout_time
                     }  
                 }
         )
@@ -533,6 +578,26 @@ class OPMSettings(QWidget):
         self.layout_stage_image_range.addWidget(QLabel('Stage scan range (\u00B5m):'))
         self.layout_stage_image_range.addWidget(self.spbx_stage_image_range)
 
+        self.spbx_excess_start_frames = self.create_spinbox(
+            value=0,
+            min=0,
+            max=1000,
+            connect_to_fn=self.update_config
+        )
+        self.spbx_excess_end_frames = self.create_spinbox(
+            value=0,
+            min=0,
+            max=1000,
+            connect_to_fn=self.update_config
+        )
+        self.layout_stage_excess_frames = QHBoxLayout()
+        self.layout_stage_excess_frames.addWidget(QLabel('Stage scan excess frame:'))
+        self.layout_stage_excess_frames.addStretch()
+        self.layout_stage_excess_frames.addWidget(QLabel('start:'))
+        self.layout_stage_excess_frames.addWidget(self.spbx_excess_start_frames)
+        self.layout_stage_excess_frames.addWidget(QLabel('end:'))
+        self.layout_stage_excess_frames.addWidget(self.spbx_excess_end_frames)
+
         self.spbx_stage_slope_x = self.create_dbspinbox(
             min=-0.10, 
             max=0.10,
@@ -571,6 +636,7 @@ class OPMSettings(QWidget):
         self.layout_scan_settings.addLayout(self.layout_scan_step_size)
         self.layout_scan_settings.addLayout(self.layout_mirror_image_range)
         self.layout_scan_settings.addLayout(self.layout_stage_image_range)
+        self.layout_scan_settings.addLayout(self.layout_stage_excess_frames)
         self.layout_scan_settings.addLayout(self.layout_proj_image_range)
         self.layout_scan_settings.addLayout(self.layout_stage_slope)
         self.group_scan_settings = QGroupBox('Scan Settings')
@@ -638,7 +704,9 @@ class OPMSettings(QWidget):
                 'scan_step_size_um': self.spbx_scan_step_size,
                 'stage_scan_range_um': self.spbx_stage_image_range,
                 'coverslip_slope_x': self.spbx_stage_slope_x,
-                'coverslip_slope_y': self.spbx_stage_slope_y
+                'coverslip_slope_y': self.spbx_stage_slope_y,
+                'excess_start_frames': self.spbx_excess_start_frames,
+                'excess_end_frames': self.spbx_excess_end_frames
             },
             'camera_roi': {
                 'center_x': self.spbx_roi_center_x,
@@ -710,6 +778,7 @@ class OPMSettings(QWidget):
         # Update the slider value when the spinbox value changes
         # self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
         pass
+    
     #--------------------------------------------------------------------#
     # Methods to update acquisition channel states
     #--------------------------------------------------------------------#

@@ -6,6 +6,7 @@ import wavekit_py as wkpy
 import time
 import json
 
+DEBUGGING = True
 MIRROR_SETTLE_MS = 100
 
 _instance_mirror = None
@@ -59,7 +60,8 @@ class AOMirror:
         n_modes: int = 32,
         n_positions: int = 1,
         modes_to_ignore: List[int] = [],
-        output_path: Path = None
+        output_path: Path = None,
+        control_mode: str = 'modal'
         ):
         
         # Set the first instance of this class as the global singleton
@@ -77,7 +79,13 @@ class AOMirror:
         self._modes_to_ignore = modes_to_ignore
         self._n_positions = n_positions
         self._output_path = output_path
+        self._focus_mode = 1.65
         
+        if not control_mode in ['voltage', 'modal']:
+            raise ValueError("AO mirror control mode must be 'voltage' or 'modal'!")
+        else:
+            self._control_mode = control_mode
+
         #---------------------------------------------#
         # Start wfc 
         #---------------------------------------------#
@@ -96,7 +104,7 @@ class AOMirror:
         )
         self.corr_data_manager.set_command_matrix_prefs(self._n_modes,True)
         self.corr_data_manager.compute_command_matrix()
-           
+
         self.wfc.set_temporization(MIRROR_SETTLE_MS)
 
         # create the configuration object
@@ -110,7 +118,6 @@ class AOMirror:
             dimensions=pupil_dimensions,
             serial_number = self.haso_config.serial_number
         )
-        
         # initiate an empty pupil
         self.pupil = wkpy.Pupil(dimensions=pupil_dimensions, value=False)
         pupil_buffer = self.corr_data_manager.get_greatest_common_pupil()
@@ -122,7 +129,6 @@ class AOMirror:
             wkpy.E_PUPIL_COVERING.CIRCUMSCRIBED,
             False
         )
-
         # create modal coeff object
         self.modal_coeff = wkpy.ModalCoef(modal_type=wkpy.E_MODAL.ZERNIKE)
         self.modal_coeff.set_zernike_prefs(
@@ -140,35 +146,38 @@ class AOMirror:
             index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
         ) 
-        
+                
         #---------------------------------------------#
-        # Set up wfc positions and position tracking
+        # Set up wfc positions and mirror position tracking
         #---------------------------------------------#
         
         if self._system_flat_file_path is not None:
-            self.system_flat_positions = np.asarray(self.wfc.get_positions_from_file(str(self._system_flat_file_path)))
+            self.system_flat_voltage = np.asarray(
+                self.wfc.get_positions_from_file(str(self._system_flat_file_path))
+            )
         else:
-            self.system_flat_positions = np.zeros(self.wfc.nb_actuators)
+            self.system_flat_voltage = np.zeros(self.wfc.nb_actuators)
+            
         if self._mirror_flat_file_path is not None:
-            self.mirror_flat_positions = np.asarray(self.wfc.get_positions_from_file(str(self._mirror_flat_file_path)))
+            self.mirror_flat_voltage = np.asarray(
+                self.wfc.get_positions_from_file(str(self._mirror_flat_file_path))
+            )
         else:
-            self.mirror_flat_positions = np.zeros(self.wfc.nb_actuators)
-        
+            self.mirror_flat_voltage = np.zeros(self.wfc.nb_actuators)
+
+        # For tracking the current mirror state
         self._current_coeffs = np.zeros(n_modes,dtype=np.float32)
-        self._current_positions = np.asarray(self.system_flat_positions)
+        self._current_voltage = np.asarray(self.system_flat_voltage)
+        self._current_zernikes = {}
+        # Initialize last opt arrays with zeros
+        self.last_opt_modal_array = self._current_coeffs
+        self.last_opt_volt_array = self._current_voltage
+        # Store a 1d array of ao mirror positions that correspond to stage positions array.
+        self.positions_voltage_array = np.zeros((n_positions,self.wfc.nb_actuators))
+        self.positions_modal_array = np.zeros((n_positions,31)) # shape matches mode names length
         
-        # here is a spot to keep mirror position arrays
-        self.wfc_positions = {
-            "mirror_flat":self.mirror_flat_positions,
-            "system_flat":self.system_flat_positions,
-            "last_optimized": self.system_flat_positions
-            }          
-        # here we store a 1d array of ao mirror positions that correspond to stage positions array.
-        self.wfc_positions_array = np.zeros((n_positions,self.wfc.nb_actuators))
-        self.wfc_coeffs_array = np.zeros((n_positions,31))
-        
-        self.set_mirror_positions_flat()
-        self.get_mirror_positions()
+        # Set mirror in system flat by defualt
+        self.apply_system_flat_voltage()
 
         #---------------------------------------------#
         # Define mode names matching the mirror modes
@@ -208,7 +217,17 @@ class AOMirror:
             "Vert. 9th Asm.", # 30
             "Oblq. 9th Asm.", # 31
         ]
-                
+    
+    @property
+    def control_mode(self) -> str:
+        return self._control_mode
+
+    @control_mode.setter
+    def control_mode(self, mode: str):
+        if mode not in ('modal', 'voltage'):
+            raise ValueError("AOmirror control_mode must be 'modal' or 'voltage'")
+        self._control_mode = mode
+        
     @property
     def output_path(self) -> str|Path:
         """Output path.
@@ -222,7 +241,6 @@ class AOMirror:
         return getattr(self,"_output_path",None)
 
     @output_path.setter
-    
     def output_path(self, value: str|Path):
         """Set the output path.
         
@@ -263,20 +281,20 @@ class AOMirror:
             self._n_positions = value
         else:
             self._n_positions = value
-            
-        self.wfc_positions_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
-        self.wfc_coeffs_array = np.zeros((self._n_positions,len(self.mode_names)))
+        self.positions_voltage_array = np.zeros((self._n_positions,self.wfc.nb_actuators))
+        self.positions_modal_array = np.zeros((self._n_positions,len(self.mode_names)))
 
     @property
-    def current_positions(self) -> np.ndarray:
+    def current_voltage(self) -> np.ndarray:
         """Get current mirror positions."""
-        return self._current_positions
+        return self._current_voltage
+        return self._current_voltage
 
-    @current_positions.setter
-    def current_positions(self, value: np.ndarray):
+    @current_voltage.setter
+    def current_voltage(self, value: np.ndarray):
         """Set and update current mirror positions."""
-        self._current_positions = value
-        self._deltas = self._current_positions - self.system_flat_positions
+        self._current_voltage = value
+        self._deltas = self._current_voltage - self.system_flat_voltage
 
     @property
     def current_coeffs(self) -> np.ndarray:
@@ -289,6 +307,20 @@ class AOMirror:
         self._current_coeffs = value
 
     @property
+    def current_zernikes(self) -> dict:
+        """Get current Zernike modes and amplitude"""
+        return self._current_zernikes
+    
+    @current_zernikes.setter
+    def current_zernikes(self):
+        """Set the current zernike dict"""
+        # Save dictionary of current coefficients where the key is the mode name
+        mode_dict = {}
+        for c in range(len(self.mode_names)):
+            mode_dict[self.mode_names[c - 1]] = f"{self.current_coeffs[c-1]:.4f}"
+        self._current_zernikes = mode_dict
+        
+    @property
     def deltas(self) -> np.ndarray:
         """Get the difference between current and flat mirror positions."""
         return self._deltas
@@ -297,33 +329,74 @@ class AOMirror:
         """Disconnect from mirror on close"""
         self.wfc.disconnect()
 
-    def _validate_positions(self, positions: NDArray) -> bool:
+    def _validate_voltage(self, volts: NDArray) -> bool:
         """Ensure mirror positions are within safe voltage limits."""
-        if positions.shape[0] != self.wfc.nb_actuators:
-            print(f"Positions array must have shape = {self.wfc.nb_actuators}")
+        if volts.shape[0] != self.wfc.nb_actuators:
+            print(f"Volts array must have shape = {self.wfc.nb_actuators}")
             return False
-        if np.sum(np.where(np.abs(positions) >= 0.99,1,0)) > 1:
+        if np.sum(np.where(np.abs(volts) >= 0.99,1,0)) > 1:
             print('Individual actuator voltage too high.')
             return False
-        if np.sum(np.abs(positions)) >= 25:
+        if np.sum(np.abs(volts)) >= 25:
             print('Total voltage too high.')
             return False
         else:
             return True
         
-    def get_mirror_positions(self, key: str=None):
+    def _update_current_state(self, key: str=None):
         """Update stored mirror positions from wavefront corrector."""
-        self.current_positions = np.array(self.wfc.get_current_positions())
-        self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
+        # Only track modal coeffs if committed
+        if self.control_mode == 'modal':
+            self.current_coeffs = np.asarray(self.modal_coeff.get_coefs_values()[0])
+        # Always track positions
+        self.current_voltage = np.array(self.wfc.get_current_positions())   
 
-        if key in self.wfc_positions:
-            return self.wfc_positions[key]         
+    def update_positions_array(self, idx):
+        """Update stage position arrays with the current voltage or modal coeffs.
+
+        Parameters
+        ----------
+        idx : int
+            stage positions array index
+        """
+        if self.control_mode == 'modal':
+            self.positions_modal_array[idx, :] = self.current_coeffs.copy() 
+        self.positions_voltage_array[idx, :] = self.current_voltage.copy()
     
-    def set_mirror_positions_flat(self):
+    def update_optimized_array(self):
+        """Update the last optimized voltage and modal arrays
+        """
+        if self.control_mode == 'modal':
+            self.last_opt_modal_array = self.current_coeffs.copy()
+            if DEBUGGING:
+                print(f'--- AOmirror: last_opt_modal_array updated to {self.last_opt_modal_array} ----') 
+        self.last_opt_volt_array = self.current_voltage.copy()
+    
+    def apply_system_flat_voltage(self):
         """Set mirror to positions to system flat."""
-        self.set_mirror_positions(self.wfc_positions["system_flat"])
-
-    def set_mirror_positions_from_array(self,idx: int = 0):
+        if self.control_mode == 'modal':
+            self.set_modal_coefficients(np.zeros(self._n_modes))       
+        else:
+            self.set_mirror_voltage(self.system_flat_voltage)
+        self._update_current_state()
+        
+    def apply_last_optimized(self):
+        """Set mirror to positions to last optimized
+        
+        Note: Return mirror positions to 'last optimized' synchronizes the mirror 
+        positions with the modal model coefficients.
+        """
+        if self.control_mode == 'modal':
+            self.set_modal_coefficients(self.last_opt_modal_array)
+        else:
+            self.set_mirror_voltage(self.last_opt_volt_array)
+        self._update_current_state()
+        if DEBUGGING:
+            print(
+                f'--- AOmirror: Mirror set to last optimized positions ----'
+                f'\n  mode coeffs: {self.last_opt_modal_array}')
+        
+    def apply_positions_array(self, idx: int = 0):
         """Set mirror positions from stored array.
         
         Used in nD acquisitions where each "position" has a unique correction.
@@ -333,10 +406,17 @@ class AOMirror:
         idx: int, default = 0
             position index to use
         """
-        self.set_mirror_positions(self.wfc_positions_array[idx,:])
-        self.get_mirror_positions()
-        
-    def set_mirror_positions(self, positions: NDArray):
+        try:
+            if self.control_mode == 'modal':
+                self.set_modal_coefficients(self.positions_modal_array[idx, :])
+            else:
+                self.set_mirror_voltage(self.positions_voltage_array[idx,:])
+            self._update_current_state()
+        except Exception as e:
+            print(f'\nSetting mirror positions from POS array failed!/n  e:{e}\n')
+            
+            
+    def set_mirror_voltage(self, positions: NDArray):
         """Set mirror positions.
 
         Parameters
@@ -344,31 +424,42 @@ class AOMirror:
         positions : NDArray
             Flatten array of actuators 
         """
-        if self._validate_positions(positions):
+        if self.control_mode != "voltage":
+            print("Control mode set to 'modal', cannot use actuator positions!")
+            return False
+        
+        if self._validate_voltage(positions):
             self.wfc.move_to_absolute_positions(positions)
             time.sleep(MIRROR_SETTLE_MS*10**-3)
-            self.get_mirror_positions()
+            self._update_current_state()
             return True
         else:
-            return False    
-        
-    def set_modal_coefficients(self,amps: NDArray):
-        """Set modal coefficients.
+            return False
 
+    def set_modal_coefficients(self, amps: NDArray):
+        """Set modal coefficients.
+        Amps are relative to zeros from the selected mirror flat file.
+        
         Parameters
         ----------
         amps : NDArray
-            Flatten array of Zernike modes.
+            Flatten array of Zernike modes
         """
-
+        if self.control_mode != "modal":
+            print("Control mode set to 'voltage', cannot use modal coefficients!")
+            return False
+        
         assert amps.shape[0]==self._n_modes, "amps array must have the same shape as the number of Zernike modes."
         
+        #amps[2] = self._focus_mode
+
         # update modal data
         self.modal_coeff.set_data(
             coef_array = amps,
             index_array = np.arange(1, self._n_modes+1, 1),
             pupil = self.pupil
-        ) 
+        )
+
         
         # create a new haso_slope from the new modal coefficients
         haso_slopes = wkpy.HasoSlopes(
@@ -377,81 +468,124 @@ class AOMirror:
         )
         # calculate the voltage delta to achieve the desired modalcoef
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(delta_slopes=haso_slopes)
-        new_positions = np.asarray(self.system_flat_positions) + np.asarray(deltas)
-                
-        if self._validate_positions(new_positions):
+        new_positions = np.asarray(self.system_flat_voltage) + np.asarray(deltas)
+            
+        if self._validate_voltage(new_positions):
+            # Move mirror actuators
             self.wfc.move_to_absolute_positions(new_positions)
+            # blocking pause for mirror settling
             time.sleep(MIRROR_SETTLE_MS*10**-3)
-            self.get_mirror_positions()
+            # Update local mirror position and coeff amplitude arrays
+            self._update_current_state()
             return True
         else:
             return False  
-
-    def save_wfc_state(self, name: str):
+    
+    # def get_current_phase(self):
+    #     """Get the phase from current modal_coeffs
+    #     """
+    #     phase_object = wkpy.Phase(
+    #         modalcoeff = self.modal_coeff,
+    #         filter = []
+    #     )
+    #     phase_stats = phase_object.get_statistics()
+    #     phase = {
+    #         'rms': phase_stats[0],
+    #         'pv': phase_stats[1],
+    #         'max': phase_stats[2],
+    #         'min': phase_stats[3],
+    #         'phase': phase_object.get_data()[0]
+    #     }
+    #     del phase_object
+        
+    #     return phase
+    
+    def save_current_state(self, prefix: str = 'current'):
         """Save current mirror positions to disk.
 
         Parameters
         ----------
-        name : str
+        prefix : str
+        prefix : str
             _description_
         """
-        self.get_mirror_positions()
+        self._update_current_state()
         
-        # Update mirror position dict.
-        self.wfc_positions[name] = self.current_positions
-        
-        # Save positions to disk
-        if self._output_path:
-            actuator_save_path = self._output_path / Path(f"{name}_actuator_positions.wcs") 
-            self.wfc.save_current_positions_to_file(pmc_file_path=str(actuator_save_path))
+        try:
+            if self._output_path is None:
+                raise Exception('missing output path')
             
-            # save last updated
-            coeff_save_path = self._output_path / Path(f"{name}_modalcoeffs.json")
-            
-            # Populate dictionary of modes and their amplitudes.
-            coefs = self.current_coeffs
-            mode_dict = {}
-            for c in range(len(self.mode_names)):
-                mode_dict[self.mode_names[c - 1]] = f"{coefs[c-1]:.4f}"
+            else:
+                # save wfc compatible file
+                actuator_save_path = self._output_path / Path(f"{prefix}_wfc_voltage.wcs") 
+                self.wfc.save_current_positions_to_file(str(actuator_save_path))
+                
+                # save current state and last optimized positions to disk
+                metadata_path = self._output_path / Path(f'{prefix}_aoMirror_state.json')
+                metadata = {
+                    'mode_names':self.mode_names,
+                    'last_optimized':{
+                        'mode_amplitudes': self.last_opt_modal_array,
+                        'volt_amplitudes': self.last_opt_volt_array
+                    },
+                    'current_state':{
+                        'mode_amplitudes': self.current_coeffs,
+                        'volt_amplitudes': self.current_voltage
+                    }
+                }
+                with open(metadata_path, "w") as f:
+                    json.dump(metadata, f)
+                
+                # Save dictionary of current coefficients where the key is the mode name
+                modal_save_path = self._output_path / Path(f"{prefix}_aoMirror_zernike.json")
+                mode_dict = {}
+                for c in range(len(self.mode_names)):
+                    mode_dict[self.mode_names[c - 1]] = f"{self.current_coeffs[c-1]:.4f}"
 
-            with open(coeff_save_path, "w") as f:
-                json.dump(mode_dict, f)
-        else:
-            pass
+                with open(modal_save_path, "w") as f:
+                    json.dump(mode_dict, f)
             
-    def save_wfc_positions_array(self, fname : str = "exp_ao_positions"):
+        except Exception as e:
+            print(f'--- AOmirror: Failed to save current state! ----\n  {e} \n')
+            
+    def save_positions_array(self, prefix : str = "stage_position"):
         """Save wfc positions array to disk
         
         Parameters
         ----------
-        fname : str
+        prefix : str
+            Filename prefix, by default "stage_position"
         """
         if self._output_path:
-            positions_file_path = self._output_path / Path(f"{fname}_pos.json")
-            wfc_positions_list = self.wfc_positions_array.tolist()
+            positions_file_path = self._output_path / Path(f"{prefix}_voltage.json")
+            positions_list = self.positions_voltage_array.tolist()
             with open(positions_file_path, "w") as f:
-                json.dump(wfc_positions_list, f)
+                json.dump(positions_list, f)
                 
-            positions_file_path = self._output_path / Path(f"{fname}_coeff.json")
-            wfc_coeffs_list = self.wfc_coeffs_array.tolist()
+            positions_file_path = self._output_path / Path(f"{prefix}_mode_amplitude.json")
+            wfc_coeffs_list = self.positions_modal_array.tolist()
             with open(positions_file_path, "w") as f:
                 json.dump(wfc_coeffs_list, f)
         else:
             pass
             
-    def load_wfc_positions_array(self, fname : str = "exp_ao_positions"):
-        positions_file_path = self._output_path / Path(f"{fname}_pos.json")
-        with open(positions_file_path, "r") as f:
-            wfc_positions_list = json.load(f)
+    def load_positions_array(self, prefix : str = "stage_position"):
+        """Load positions from json saved using 'save_positions_array'
 
-        # Convert the loaded list back to a NumPy array
-        self.wfc_positions_array = np.asarray(wfc_positions_list)
-        
-        positions_file_path = self._output_path / Path(f"{fname}_coeffs.json")
-        with open(positions_file_path, "r") as f:
-            wfc_coeffs_list = json.load(f)
-            
-        self.wfc_coeffs_array = np.asarray(wfc_coeffs_list)
+        Parameters
+        ----------
+        prefix : str, optional
+            file name prefix, by default "stage_position"
+        """
+        file_path = self._output_path / Path(f"{prefix}_voltage.json")
+        with open(file_path, "r") as f:
+            voltage_list = json.load(f)
+        self.positions_voltage_array = np.asarray(voltage_list)
+
+        file_path = self._output_path / Path(f"{prefix}_mode_amplitude.json")
+        with open(file_path, "r") as f:
+            mode_amplitudes = json.load(f)
+        self.positions_modal_array = np.asarray(mode_amplitudes)
 
 def DM_voltage_to_map(v):
     """Reshape mirror to a map.

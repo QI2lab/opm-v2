@@ -25,7 +25,7 @@ def main():
         modes_to_ignore = []
     )
     
-    opmAOmirror.set_mirror_positions_flat()
+    opmAOmirror.apply_system_flat_voltage()
 
     # load OPM NIDAQ and OPM AO mirror classes
     opmNIDAQ = OPMNIDAQ(

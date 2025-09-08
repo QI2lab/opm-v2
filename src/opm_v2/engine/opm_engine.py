@@ -4,10 +4,9 @@ TO DO: Fix init so we only have one instance of OPMNIDAQ, OPMAOMIRROR, and confi
 
 Change Log:
 2025-02-07: New version that includes all possible modes
+2025/09/05: Synchronized opm_config options and A.O.
 """
-from datetime import datetime
 from PyQt6.QtCore import QThread
-
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent, MDASequence, CustomAction
 from typing import TYPE_CHECKING, Iterable
@@ -211,25 +210,13 @@ class OPMEngine(MDAEngine):
                         )
                     )
                     print(
-                        "\nScan positions:",
-                        f"\n  start: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanFastAxisStartPosition(mm)"
-                            )}",
-                        f"\n  end: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanFastAxisStopPosition(mm)"
-                            )}",
-                        f"\n  Scan settling time: {
-                            self._mmc.getProperty(
-                                self._mmc.getXYStageDevice(),
-                                "ScanSettlingTime(ms)"
-                            )}",
-                        f"\n  actual speed: {actual_speed_x}",
-                        f"\n  requested speed: {np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}", 
-                        f"\n  Do stage speeds match: {actual_speed_x==np.round(data_dict["ASI"]["scan_axis_speed_mm_s"],4)}"                     
+                        "\nScan positions:"
+                        f"\n  start: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStartPosition(mm)')}"
+                        f"\n  end: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanFastAxisStopPosition(mm)')}"
+                        f"\n  Scan settling time: {self._mmc.getProperty(self._mmc.getXYStageDevice(), 'ScanSettlingTime(ms)')}"
+                        f"\n  actual speed: {actual_speed_x}"
+                        f"\n  requested speed: {np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}"
+                        f"\n  Do stage speeds match: {actual_speed_x == np.round(data_dict['ASI']['scan_axis_speed_mm_s'], 4)}"
                     )
                 
                 # put camera into external START trigger mode
@@ -367,7 +354,7 @@ class OPMEngine(MDAEngine):
                 self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.clear_tasks()
                 
-                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["active_channels"]):
+                for chan_idx, chan_bool in enumerate(data_dict["DAQ"]["channel_states"]):
                     if chan_bool:
                         self._mmc.setProperty(
                             self._config["Lasers"]["name"],
@@ -392,7 +379,7 @@ class OPMEngine(MDAEngine):
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
                         scan_type =  "projection",
-                        channel_states = data_dict["DAQ"]["active_channels"],
+                        channel_states = data_dict["DAQ"]["channel_states"],
                         image_mirror_range_um = float(data_dict["DAQ"]["image_mirror_range_um"]),
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
@@ -418,7 +405,6 @@ class OPMEngine(MDAEngine):
                 
                 #--------------------------------------------------------#
                 # Setup camera properties
-                print(self._mmc.getROI())
                 if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[3]) or not (int(data_dict["Camera"]["camera_crop"][2]) == self._mmc.getROI()[2]):                   
                     self._mmc.clearROI()
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
@@ -430,6 +416,8 @@ class OPMEngine(MDAEngine):
                     )
                     self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
 
+                if DEBUGGING:
+                    print('Setting exposure to:', exposure_ms)
                 self._mmc.setProperty(
                     str(self._config["Camera"]["camera_id"]), 
                     "Exposure", 
@@ -493,18 +481,19 @@ class OPMEngine(MDAEngine):
             if action_name == "O2O3-autofocus":
                 manage_O3_focus(self._config["O2O3-autofocus"]["O3_stage_name"], verbose=DEBUGGING)
                     
-            elif action_name == "AO-optimize":               
+            elif action_name == "AO-optimize":
+                pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_existing"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_positions_array(int(pos_idx))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
-                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
-                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                            f'\n  pos: {int(pos_idx)}',
+                            f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
                     run_ao_optimization(
-                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
+                        starting_mirror_state=str(data_dict['mirror_state']),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
@@ -512,28 +501,32 @@ class OPMEngine(MDAEngine):
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         init_delta_range=float(data_dict["AO"]["modal_delta"]),
                         delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
+                        metric_precision=int(data_dict["AO"]["metric_precision"]),
+                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )
-                    try:
-                        self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:] = self.AOMirror.current_positions.copy()
-                        if DEBUGGING:
-                            print(
-                                '\nAO: Saving positions to array:',
-                                f'\n  pos_idx: {int(data_dict["AO"]["pos_idx"])}',
-                                f'\n  mirror positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"]),:]}'
-                            )
-                    except Exception:
-                        print("\nAO: Not setting ao positions array")
-                        
+                    if pos_idx is not None:
+                        try:
+                            self.AOMirror.update_positions_array[int(pos_idx)]
+                            if DEBUGGING:
+                                print(
+                                    '\nAO: Saving positions to array:',
+                                    f'\n  pos: {int(pos_idx)}',
+                                    f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
+                                )
+                        except Exception as e:
+                            print(f"\nAO: Not setting ao positions array \n  e:{e}")
+                            
             elif action_name == "AO-grid":    
+                pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.set_mirror_positions_from_array(int(data_dict["AO"]["pos_idx"]))
+                    self.AOMirror.apply_positions_array(int(pos_idx))
                     if DEBUGGING:
                         print(
                             '\nAO: updating mirror with existing positions:',
-                            f'\n  pos: {int(data_dict["AO"]["pos_idx"])}',
-                            f'\n  positions: {self.AOMirror.wfc_positions_array[int(data_dict["AO"]["pos_idx"])]}'
+                            f'\n  pos: {int(pos_idx)}',
+                            f'\n  positions: {self.AOMirror.current_coeffs.copy()}'
                         )
                 else:
                     run_ao_grid_mapping(
@@ -541,6 +534,7 @@ class OPMEngine(MDAEngine):
                         ao_dict = data_dict["AO"]["ao_dict"],
                         num_tile_positions = data_dict["AO"]["num_tile_positions"],
                         num_scan_positions = data_dict["AO"]["num_scan_positions"],
+                        metric_precision = int(data_dict["AO"]["metric_precision"]),
                         save_dir_path = data_dict["AO"]["output_path"],
                         verbose = DEBUGGING,
                     )
@@ -575,6 +569,25 @@ class OPMEngine(MDAEngine):
                         f'\n  sleep time: {sleep_time}'
                     )
             
+            elif action_name == "AO-mirrorUpdate":
+                coeffs = data_dict["AOmirror"]["coefficients"]
+                positions = data_dict["AOmirror"]["voltages"]
+                if coeffs is not None:
+                    self.AOMirror.set_modal_coefficients(np.array(coeffs))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with new modal coefficients:',
+                            f'\n  modal coefficients: {self.AOMirror.current_coeffs.copy()}'
+                        )
+                elif positions is not None:
+                    self.AOMirror.set_positions(np.array(positions))
+                    if DEBUGGING:
+                        print(
+                            '\nAO: updating mirror with new voltages:',
+                            f'\n  voltages: {self.AOMirror.current_positions.copy()}'
+                        )
+                else:
+                    print("\nAO-mirrorUpdate: No coefficients or positions sent!")
         else:
             result = super().exec_event(event)
             return result
@@ -612,7 +625,7 @@ class OPMEngine(MDAEngine):
         
         # save mirror positions array
         if self.AOMirror.output_path:
-            self.AOMirror.save_wfc_positions_array()
+            self.AOMirror.save_positions_array()
         self._mmc.clearCircularBuffer()
         
         super().teardown_sequence(sequence)

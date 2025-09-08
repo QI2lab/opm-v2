@@ -12,28 +12,28 @@ sources = ["src"]
 # https://peps.python.org/pep-0621/
 [project]
 name = "opm-v2"
-version = "0.1.0"
+version = "0.2.0"
 description = "qi2lab-OPM control using pymmcore-gui"
 readme = "README.md"
-requires-python = ">=3.11"
+requires-python = ">=3.12"  
 license = { text = "BSD-3-Clause" }
-authors = [{ name = "Douglas Shepherd", email = "douglas.shepherd@asu.edu" }]
+authors = [{ name = "Douglas Shepherd", email = "douglas.shepherd@asu.edu" }, { name = "Steven Sheppard", email = "sjshepp2@asu.edu" }]
 # https://pypi.org/classifiers/
 classifiers = [
     "Development Status :: 3 - Alpha",
     "License :: OSI Approved :: BSD License",
-    "Programming Language :: Python :: 3",    
-    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Typing :: Typed",
 ]
 # add your package dependencies here
-dependencies = ["pymmcore-plus", "pymmcore-widgets", "matplotlib",
+dependencies = ["pymmcore-plus", "matplotlib", "pymmcore-widgets",
                 "pydaqmx", "pyserial", "scipy", "numba",
-                "pycparser==2.21","pythonnet==3.0.3",
-                "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@f0eb39a"]
-
+                "pycparser==2.21","pythonnet==3.0.3", "pyfirmata2",
+                "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui"]
+# @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@f0eb39a"
+# ==0.9.1
 [tool.hatch.metadata]
 allow-direct-references = true
 
@@ -61,8 +61,6 @@ repository = "https://github.com/qi2lab/opm-v2"
 
 # [project.entry-points."some.group"]
 # tomatoes = "opm_v2:main_tomatoes"
-
-
 
 # https://docs.pytest.org/
 [tool.pytest.ini_options]

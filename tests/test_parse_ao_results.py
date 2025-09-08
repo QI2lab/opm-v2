@@ -1,32 +1,51 @@
 from pathlib import Path
 import matplotlib.pyplot as plt
 from opm_v2.utils import sensorless_ao as ao
+import numpy as np
+import zarr
 
-showfig = False
-root_dir = Path("/home/steven/Documents/qi2lab/projects/OPM/ao_optimization_images")
 
-for _d in root_dir.iterdir():
-    if "_ao_optimize" in _d.name:
-        print(_d)
-        ao_data_path = _d / Path("ao_results.zarr")
+showfig = True
+data_path = Path(
+    r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_AO_ao_results/grid_pos_3/ao_results.zarr'
+)
 
-        ao_results = ao.load_optimization_results(ao_data_path)
+results = ao.load_optimization_results(data_path)
 
-        # ao.plot_metric_progress(ao_results["metrics_per_mode"],
-        #                         ao_results["metrics_per_iteration"],
-        #                         ao_results["modes_to_optimize"],
-        #                         ao_results["mode_names"],
-        #                         _d,
-        #                         showfig)
+all_images = results['all_images']
+all_metrics = results['all_metrics']
+metrics_per_iteration = results['metrics_per_iteration']
+images_per_iteration = results['images_per_iteration']
 
-        # ao.plot_zernike_coeffs(ao_results["coefficients_per_iteration"],
-        #                     ao_results["mode_names"],
-        #                     _d, 
-        #                     showfig)
-        
-        fig, axs = plt.subplots(len(ao_results["images_per_mode"]), 1, sharex=True, sharey=True)
-        for ii, img in enumerate(ao_results["images_per_mode"]):
-            axs[ii].imshow(img)
-            
-        plt.show()
-            
+optimal_coeffs = results['optimal_coeffs']
+modes_to_optimize = results['modes_to_optimize']
+zernike_mode_names = results['mode_names']
+modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
+num_iterations = results['num_iterations']
+num_modes = len(modes_to_optimize)
+num_metrics = len(all_metrics)
+samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
+
+print(
+    f'samples per mode: {samples_per_mode}\n'
+    f'number of iterations: {num_iterations}\n'
+    f'number of metrics: {len(all_metrics)}\n'
+)
+
+ao.plot_metric_progress(
+    all_metrics = all_metrics,
+    modes_to_optimize = modes_to_optimize,
+    num_iterations = num_iterations,
+    zernike_mode_names = zernike_mode_names,
+    save_dir_path = data_path,
+    show_fig = True,
+)
+
+ao.plot_zernike_coeffs(
+    optimal_coeffs=optimal_coeffs,
+    num_iterations=num_iterations,
+    zernike_mode_names=zernike_mode_names,
+    save_dir_path=data_path,
+    show_fig=True,
+    x_range=0.1
+)

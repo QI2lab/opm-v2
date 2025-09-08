@@ -1,0 +1,269 @@
+<?xml version="1.0" encoding="utf-8"?>
+<state>
+	<actuators>
+		<actuator number="1">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="2">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="3">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="4">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="5">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="6">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="7">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="8">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="9">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="10">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="11">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="12">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="13">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="14">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="15">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="16">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="17">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="18">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="19">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="20">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="21">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="22">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="23">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="24">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="25">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="26">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="27">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="28">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="29">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="30">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="31">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="32">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="33">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="34">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="35">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="36">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="37">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="38">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="39">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="40">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="41">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="42">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="43">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="44">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="45">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="46">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="47">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="48">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="49">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="50">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="51">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+		<actuator number="52">
+			<validity>valid</validity>
+			<min>-1</min>
+			<max>1</max>
+		</actuator>
+	</actuators>
+	<position>0.0526964 -0.00796167 0.046392 0.0321712 0.00653149 -0.137515 0.133817 -0.0385128 0.0467539 -0.00586731 0.0910311 0.115845 -0.0643393 -0.0468873 5.78086e-005 -0.0435876 -0.154957 -0.00324686 0.0849549 0.184608 -0.177966 0.0265608 0.0258411 0.00811703 -0.0348153 -0.0524437 0.0115406 -0.0905304 -0.0464266 0.0347442 -0.011 0.0620718 -0.158833 -0.0628686 -0.0498223 -0.0905532 -0.0118279 -0.0640445 0.0201694 -0.118506 -0.100812 -0.0544153 -0.0305064 -0.0870679 0.313524 -0.22665 0.0896154 0.0129222 -0.0628299 0.0170539 0.0515697 0.0736746 </position>
+</state>
+<comments/>
+<min_sleep_after_movement>200</min_sleep_after_movement>
+<last_movement_date>0000-01-01T00:00:00.000000</last_movement_date>

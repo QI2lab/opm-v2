@@ -37,7 +37,8 @@
         ],
         "ao_metrics": [
             "DCT",
-            "localize_gauss_2d"
+            "localize_gauss_2d",
+            "brightness"
         ],
         "ao_modes": [
             "none",
@@ -50,30 +51,30 @@
         ],
         "ao_mirror_states": [
             "system correction",
-            "mirror flat",
             "last optimized"
         ],
         "autofocus_frequencies": [
             "none",
-            "optmize now",
+            "optimize now",
             "per xyz position",
             "per timepoint",
             "once at start"
         ],
         "tile_overlap_perc": 20,
-        "stage_move_speed": 0.05
+        "stage_move_speed": 0.05,
+        "pixel_size_um": 0.115
     },
     "AOMirror": {
-        "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WaveFrontCorrector_mirao52-e_0329.dat",
-        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/correction_data_backup_starter.aoc",
-        "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_ao/Configuration Files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_ao/OUT_FILES/20250215_tilted_brightness_laser_actuator_positions2.wcs"
+        "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WaveFrontCorrector_mirao52-e_0329.dat",
+        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/202508026_tilted_interaction_matrix.aoc",
+        "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WFS_HASO4_VIS_7635.dat",
+        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_position_files/20250827_brightness_from_wfs_opt_max_wfc_voltage.wcs"
     },
     "Camera": {
         "camera_id": "OrcaFusionBT",
         "exposure_ms": 50.0,
-        "roi_center_x": 1150,
-        "roi_center_y": 1151,
+        "roi_center_x": 1148,
+        "roi_center_y": 1153,
         "roi_crop_x": 1900,
         "roi_crop_y": 256,
         "line_readout_ms": 0.4
@@ -85,7 +86,7 @@
         "image_mirror_calibration": 0.0433,
         "projection_mirror_calibration": 0.00566,
         "image_mirror_step_um": 0.4,
-        "image_mirror_neutral_v": 0.2,
+        "image_mirror_neutral_v": 0.0,
         "projection_mirror_neutral_v": 0.0,
         "verbose": false
     },
@@ -108,7 +109,7 @@
         "shutter_id": 712,
         "O3_stage_name": "MCL NanoDrive Z Stage",
         "exposure_ms": 10.0,
-        "roi_crop_y": 128
+        "roi_crop_y": 256
     },
     "Stage": {
         "name": "TigerCommHub"
@@ -121,84 +122,87 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "timelapse",
+        "opm_mode": "stage",
         "fluidics": "none",
         "camera_roi": {
-            "center_x": 1150.0,
-            "center_y": 1151.0,
-            "crop_x": 500.0,
-            "crop_y": 128.0
+            "center_x": 1149.0,
+            "center_y": 1149.0,
+            "crop_x": 1500.0,
+            "crop_y": 256.0
         },
         "O2O3-autofocus": {
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
-            "roi_crop_y": 128,
+            "roi_crop_y": 512,
             "o2o3_mode": "none"
         },
         "AO": {
-            "mirror_state": "last optimized",
+            "mirror_state": "system correction",
             "metric": "DCT",
-            "mode_delta": 0.15,
-            "mode_alpha": 0.7,
+            "mode_delta": 0.05,
+            "mode_alpha": 0.05,
             "num_iterations": 1,
-            "image_mirror_range_um": 20.0,
-            "active_channel_id": "488nm",
+            "image_mirror_range_um": 90.0,
+            "active_channel_id": "405nm",
             "active_channel_power": 100.0,
-            "exposure_ms": 20.0,
-            "ao_mode": "once at start",
+            "exposure_ms": 5.0,
+            "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
-            "save_dir_path": "G:/optimize_now",
-            "daq_mode": "2d"
+            "save_dir_path": "e:/optimize_now",
+            "daq_mode": "2d",
+            "lightsheet_mode": "off",
+            "readout_ms": 4.868,
+            "metric_precision": 5
         },
         "timelapse": {
             "channel_states": [
                 false,
-                true,
+                false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0.0,
+                1.0,
                 100.0,
-                10.0,
-                0.0,
-                0.0
+                25.0,
+                1.0
             ],
             "channel_exposures_ms": [
                 0.0,
-                60.0,
-                250.0,
-                0.0,
-                0.0
+                100.0,
+                65.0,
+                50.0,
+                150.0
             ]
         },
         "mirror_scan": {
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
-            "scan_range_um": 6.0,
+            "scan_range_um": 0.0,
             "scan_step_size_um": 0.4,
-            "z_axis_overlap": 0.15,
-            "tile_axis_overlap": 0.15,
+            "z_axis_overlap": 0.2,
+            "tile_axis_overlap": 0.2,
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
+                false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                100.0,
+                0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                60.0,
+                0,
                 0,
                 0,
                 0
@@ -211,60 +215,62 @@
             "scan_step_size_um": 0.4,
             "stage_scan_range_um": 1000.0,
             "scan_axis_overlap_um": 40,
+            "z_axis_overlap": 0.2,
             "tile_axis_overlap": 0.2,
             "excess_start_frames": 0,
             "excess_end_frames": 0,
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
+                false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                100.0,
+                0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                60.0,
+                0,
                 0,
                 0,
                 0
             ]
         },
         "projection_scan": {
+            "camera_ls_mode": false,
+            "camera_readout_ms": 4.867647,
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
-            "scan_range_um": 160.0,
+            "scan_range_um": 10.0,
             "tile_axis_overlap": 0.2,
             "laser_blanking": false,
             "channel_states": [
                 false,
-                true,
+                false,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                100.0,
+                0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                60.0,
+                0,
                 0,
                 0,
                 0
-            ],
-            "image_mirror_range_um": 0.0
+            ]
         }
     }
 }
