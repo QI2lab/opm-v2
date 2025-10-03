@@ -4,16 +4,17 @@ Sensorless adaptive optics and tools.
 2024/12 DPS: initial work
 2025/09/05 SJS: updates to synchronize with opm_custom_events and opm_config
 """
-from pymmcore_plus import CMMCorePlus
+from pathlib import Path
+from time import sleep
+from typing import Dict, List, Optional, Sequence, Tuple
+
 import numpy as np
+import zarr
 from numpy.typing import ArrayLike
-from typing import Optional, Tuple, Sequence, List, Dict
+from pymmcore_plus import CMMCorePlus
 from scipy.fftpack import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
-from pathlib import Path
-import zarr
-from time import sleep
 
 try:
     from opm_v2.hardware.AOMirror import AOMirror
@@ -95,7 +96,7 @@ def get_metric(
     float
         calculated metric
     """
-    if metric_to_use not in ['DCT", "localize_gauss_2d", "gauss_2d", "brightness", "fourier_ratio']:
+    if metric_to_use not in ['DCT', "localize_gauss_2d", "gauss_2d", 'brightness', 'fourier_ratio']:
         print(f"Warning: AO metric '{metric_to_use}' not supported. Exiting function.")
         return np.nan
     try:
@@ -625,8 +626,8 @@ def plot_zernike_coeffs(
     x_range : float, optional
         the coefficient magnitude to display on axis, by default 0.1
     """
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     if not show_fig:
         matplotlib.use('Agg')
     from matplotlib.ticker import FormatStrFormatter
@@ -786,8 +787,8 @@ def plot_phase(phase: Dict,
         whether to display figure, by default False
     """
     
-    import matplotlib.pyplot as plt
     import matplotlib
+    import matplotlib.pyplot as plt
     if not show_fig:
         matplotlib.use('Agg')
     # --- Set rcParams (this affects all plots until you change/reset it) ---
@@ -847,10 +848,10 @@ def plot_2d_localization_fit_summary(
         _description_
     """
     # imports
+    import matplotlib
+    import matplotlib.pyplot as plt
     from localize_psf.fit_psf import sxy2na
     from localize_psf.localize import plot_bead_locations
-    import matplotlib.pyplot as plt
-    import matplotlib
     matplotlib.use('Agg')
     
     to_keep = fit_results['to_keep']
@@ -1318,10 +1319,10 @@ def localize_2d_img(
     """
     from localize_psf.fit_psf import gaussian3d_psf_model
     from localize_psf.localize import (
-        localize_beads_generic,
+        get_coords,
         get_param_filter,
-        get_coords
-        )
+        localize_beads_generic,
+    )
     
     # Define fitting model and coordinates
     model = gaussian3d_psf_model() 

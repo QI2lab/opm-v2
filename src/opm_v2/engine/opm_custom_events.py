@@ -3,9 +3,11 @@ Methods to create OPM acquisition custom events
 
 2025/09/05 SJS: initialization
 """
-from useq import MDAEvent, CustomAction
-from typing import Optional, List, Dict
-from pathlib import Path   
+from pathlib import Path
+from typing import Dict, List, Optional
+
+from useq import CustomAction, MDAEvent
+
 
 def create_timelapse_event(interval: int, time_steps: int, timepoint: int) -> MDAEvent:
     """Create an event that pauses the acquisition
@@ -217,7 +219,7 @@ def create_ao_grid_event(
                     'pos_idx':int(0),
                     'ao_dict': {
                         'mirror_state': str(ao_config['mirror_state']),
-                        'daq_mode': None,
+                        'daq_mode': str(ao_config['daq_mode']),
                         'channel_states': channel_states,
                         'channel_powers' : channel_powers,
                         'exposure_ms': float(ao_config['exposure_ms']),

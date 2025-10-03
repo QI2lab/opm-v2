@@ -15,8 +15,9 @@
 # ----------------------------------------------------------------------------------------
 # Import
 # ----------------------------------------------------------------------------------------
-import serial
 import time
+
+import serial
 
 acknowledge = '\x06'
 start = '\x0A'
@@ -40,7 +41,9 @@ class APump():
         return _instance_pump
 
     def __init__(self,
-                 parameters = False):
+                 parameters: dict = {}
+        ) -> None:
+        """Initialize the pump"""
         
         # Set the first instance of this class as the global singleton
         global _instance_pump

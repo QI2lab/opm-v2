@@ -6,25 +6,24 @@ Change Log:
 2025-02-07: New version that includes all possible modes
 2025/09/05: Synchronized opm_config options and A.O.
 """
-from PyQt6.QtCore import QThread
-from pymmcore_plus.mda import MDAEngine
-from useq import MDAEvent, MDASequence, CustomAction
-from typing import TYPE_CHECKING, Iterable
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
-from opm_v2.hardware.AOMirror import AOMirror
-from opm_v2.utils.elveflow_control import run_fluidic_program
-from pymmcore_plus.metadata import (
-    FrameMetaV1,
-    SummaryMetaV1
-)
-from numpy.typing import NDArray
-from opm_v2.utils.sensorless_ao import run_ao_optimization, run_ao_grid_mapping
-from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 import json
-from pathlib import Path
-import numpy as np
-from time import sleep, perf_counter
 import logging
+from pathlib import Path
+from time import perf_counter, sleep
+from typing import TYPE_CHECKING, Iterable
+
+import numpy as np
+from numpy.typing import NDArray
+from pymmcore_plus.mda import MDAEngine
+from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
+from PyQt6.QtCore import QThread
+from useq import CustomAction, MDAEvent, MDASequence
+
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
+from opm_v2.utils.elveflow_control import run_fluidic_program
+from opm_v2.utils.sensorless_ao import run_ao_grid_mapping, run_ao_optimization
 
 logging.getLogger("pymmcore-plus")
 
@@ -493,7 +492,7 @@ class OPMEngine(MDAEngine):
                         )
                 else:
                     run_ao_optimization(
-                        starting_mirror_state=str(data_dict['mirror_state']),
+                        starting_mirror_state=str(data_dict['AO']['mirror_state']),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
@@ -534,7 +533,6 @@ class OPMEngine(MDAEngine):
                         ao_dict = data_dict["AO"]["ao_dict"],
                         num_tile_positions = data_dict["AO"]["num_tile_positions"],
                         num_scan_positions = data_dict["AO"]["num_scan_positions"],
-                        metric_precision = int(data_dict["AO"]["metric_precision"]),
                         save_dir_path = data_dict["AO"]["output_path"],
                         verbose = DEBUGGING,
                     )

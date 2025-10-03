@@ -6,41 +6,40 @@ Change Log:
 2025/02: Initial version of the script.
 """
 from __future__ import annotations
+
 # TODO AO getting values from gui instead of json.
 import argparse
 import importlib
 import importlib.util
+import json
 import os
 import sys
 import traceback
 from contextlib import suppress
+from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
-from datetime import datetime
-from PyQt6.QtCore import pyqtSignal, Qt
+
+import numpy as np
+from pymmcore_gui import MicroManagerGUI, WidgetAction, __version__
+from PyQt6.QtCore import Qt, pyqtSignal
 from PyQt6.QtGui import QIcon
 from PyQt6.QtWidgets import QApplication, QDockWidget
 from superqt.utils import WorkerBase
 
-from pymmcore_gui import MicroManagerGUI,WidgetAction, __version__
-
-import json
-
-import numpy as np
-
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2._update_config_widget import OPMSettings
+from opm_v2.engine.opm_engine import OPMEngine
+from opm_v2.engine.setup_events import (
+    setup_mirrorscan,
+    setup_optimizenow,
+    setup_projection,
+    setup_stagescan,
+    setup_timelapse,
+)
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
-from opm_v2.engine.opm_engine import OPMEngine
-from opm_v2._update_config_widget import OPMSettings
-from opm_v2.engine.setup_events import (
-    setup_stagescan,
-    setup_mirrorscan,
-    setup_projection,
-    setup_optimizenow,
-    setup_timelapse
-)
 
 DEBUGGING = True
 if TYPE_CHECKING:
@@ -363,7 +362,7 @@ def main() -> None:
     # Connect the above callback to the event that a continuous sequence is starting
     mmc.events.continuousSequenceAcquisitionStarting.connect(setup_preview_mode_callback)
     
-    def custom_execute_mda(output: Path | str | object | None) -> None:
+    def custom_execute_mda(output: Path | str | None) -> None:
         """Custom execute_mda method that modifies the sequence before running it.
         
         This function parses the various configuration groups and the MDA sequence.
@@ -373,10 +372,13 @@ def main() -> None:
 
         Parameters
         ----------
-        output : Path | str | object | None
+        output : Path | str | None
             The output path for the MDA sequence.
         """
-
+        opm_events, handler = None, None
+        if output is not None:
+            if isinstance(output, str):
+                output = Path(output)
         #--------------------------------------------------------------------#
         # Get the acquisition settings from configuration on disk
         #--------------------------------------------------------------------#
@@ -404,7 +406,6 @@ def main() -> None:
             return
         
         if output:
-            now = datetime.now()
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
             new_dir.mkdir(exist_ok=True) 
@@ -447,38 +448,39 @@ def main() -> None:
                 mmc = mmc,
                 config = config
                 )
-        elif ('timelapse' in opm_mode):
-            opm_events, handler = setup_timelapse(
-                mmc = mmc,
-                config = config,
-                sequence = mda_widget.value(),
-                output = output
-            )
-        elif ("stage" in opm_mode):
-            opm_events, handler = setup_stagescan(
-                mmc = mmc,
-                config = config,
-                sequence = mda_widget.value(),
-                output = output
-                )
-        elif ("mirror" in opm_mode):
-            opm_events, handler = setup_mirrorscan(
-                mmc = mmc,
-                config = config,
-                sequence = mda_widget.value(),
-                output = output
-                )
-        elif ("projection" in opm_mode):
-            opm_events, handler = setup_projection(
-                mmc = mmc,
-                config = config,
-                sequence = mda_widget.value(),
-                output = output
-                )
-        if not(optimize_now):
-            # tell AO mirror class where to save mirror information
-            opmAOmirror_local = AOMirror.instance()
-            opmAOmirror_local.output_path = output.parents[0]
+        else:
+            if output:
+                if ('timelapse' in opm_mode):
+                    opm_events, handler = setup_timelapse(
+                        mmc = mmc,
+                        config = config,
+                        sequence = mda_widget.value(),
+                        output = output
+                    )
+                elif ("stage" in opm_mode):
+                    opm_events, handler = setup_stagescan(
+                        mmc = mmc,
+                        config = config,
+                        sequence = mda_widget.value(),
+                        output = output
+                        )
+                elif ("mirror" in opm_mode):
+                    opm_events, handler = setup_mirrorscan(
+                        mmc = mmc,
+                        config = config,
+                        sequence = mda_widget.value(),
+                        output = output
+                        )
+                elif ("projection" in opm_mode):
+                    opm_events, handler = setup_projection(
+                        mmc = mmc,
+                        config = config,
+                        sequence = mda_widget.value(),
+                        output = output
+                        )
+                # tell AO mirror class where to save mirror information
+                opmAOmirror_local = AOMirror.instance()
+                opmAOmirror_local.output_path = output.parents[0]
 
         if opm_events is None:
             print("OPM events empty, acquisition not started!")
