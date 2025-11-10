@@ -3,13 +3,24 @@ QtWidget for setting the OPM configuration.
 
 2025/03/07 Sheppard: Initial setup
 '''
-import sys
-from PyQt6.QtCore import pyqtSignal, Qt
-from PyQt6.QtWidgets import (QWidget, QApplication, QDoubleSpinBox, 
-                             QHBoxLayout, QVBoxLayout, QGroupBox, 
-                             QLabel, QComboBox, QSlider, QCheckBox, QSpinBox)
-from pathlib import Path
 import json
+import sys
+from pathlib import Path
+
+from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtWidgets import (
+    QApplication,
+    QCheckBox,
+    QComboBox,
+    QDoubleSpinBox,
+    QGroupBox,
+    QHBoxLayout,
+    QLabel,
+    QSlider,
+    QSpinBox,
+    QVBoxLayout,
+    QWidget,
+)
 
 MIN_AO_POSITIONS = 1
 MAX_AO_POSITIONS = 20
@@ -202,7 +213,17 @@ class OPMSettings(QWidget):
         self.layout_ao_metric = QHBoxLayout()
         self.layout_ao_metric.addWidget(QLabel('Metric:'))
         self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
+
+        self.cmbx_ao_modes = self.create_combobox(
+            items=self.config['OPM']['ao_modes_to_optimize'],
+            width=125,
+            connect_to_fn=self.update_config
+        )
         
+        self.layout_ao_modes = QHBoxLayout()
+        self.layout_ao_modes.addWidget(QLabel('Modes to Opt.:'))
+        self.layout_ao_modes.addWidget(self.cmbx_ao_modes)
+
         self.cmbx_ao_daq_mode =  self.create_combobox(
             items=self.config['OPM']['daq_modes'],
             width=125,
@@ -297,6 +318,7 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_ao_mirror)
         self.layout_ao_main.addLayout(self.layout_ao_mode)
         self.layout_ao_main.addLayout(self.layout_ao_metric)
+        self.layout_ao_main.addLayout(self.layout_ao_modes)
         self.layout_ao_main.addLayout(self.layout_ao_daq_mode)
         self.layout_ao_main.addLayout(self.layout_ao_active_channel)
         self.layout_ao_main.addLayout(self.layout_active_channel_power)
@@ -318,7 +340,8 @@ class OPMSettings(QWidget):
 
         self.widgets.update(
             {'AO':{
-                    'metric':self.cmbx_ao_metric,
+                    'metric': self.cmbx_ao_metric,
+                    'modes_to_optimize': self.cmbx_ao_modes,
                     'mode_delta': self.spbx_mode_delta,
                     'mode_alpha': self.spbx_mode_alpha,
                     'num_iterations': self.spbx_num_iterations,

@@ -9,18 +9,18 @@ TO DO:
 """
 
 
-import numpy as np
-from time import sleep
 import time
-from typing import Optional, List
-from typing import Optional
-from pathlib import Path
-from pymmcore_plus import CMMCorePlus
 from datetime import datetime
+from pathlib import Path
+from time import sleep
+from typing import List, Optional
 
 import matplotlib.pyplot as plt
-from opm_v2.hardware.AOMirror import AOMirror, plotDM
+import numpy as np
+from pymmcore_plus import CMMCorePlus
+
 import opm_v2.utils.sensorless_ao as ao
+from opm_v2.hardware.AOMirror import AOMirror, plotDM
 
 METRIC_PERC_THRESHOLD = 1.0
 MAXIMUM_MODE_DELTA = 0.5
@@ -194,8 +194,8 @@ def optimize_modes(
     metric_to_use: Optional[str] = "brightness",
     num_iterations: Optional[int] = 3,
     num_mode_steps: Optional[int] = 3,
-    init_delta_range: Optional[float] = 0.25,
-    delta_range_alpha_per_iter: Optional[float] = 0.9,
+    starting_coef_delta: Optional[float] = 0.25,
+    coef_delta_scale: Optional[float] = 0.9,
     modes_to_optimize: Optional[List[int]] = spherical_modes_first,
     save_dir_path: Optional[Path] = None,
     verbose: Optional[bool] = True,
@@ -218,7 +218,7 @@ def optimize_modes(
     starting_coeffs = aoMirror_local.current_coeffs.copy() 
     
     # Define the coefficient deltas to use each iteration
-    mode_deltas = [(init_delta_range - k*init_delta_range*(1-delta_range_alpha_per_iter)) for k in range(num_iterations)]
+    mode_deltas = [(starting_coef_delta - k*starting_coef_delta*(1-coef_delta_scale)) for k in range(num_iterations)]
     
     """Definition of variables
     all_images: ALL images passed into get_metric except optimal measurements.
@@ -586,8 +586,8 @@ if __name__ == "__main__":
         metric_to_use= 'brightness',
         num_iterations=2,
         num_mode_steps= 3,
-        init_delta_range= 0.08,
-        delta_range_alpha_per_iter= 0.80,
+        starting_coef_delta= 0.08,
+        coef_delta_scale= 0.80,
         modes_to_optimize = stationary_modes,
         save_dir_path= ao_mirror_output_path,
         verbose= True,

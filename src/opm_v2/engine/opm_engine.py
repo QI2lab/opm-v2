@@ -496,10 +496,11 @@ class OPMEngine(MDAEngine):
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
+                        modes_to_optimize=data_dict["AO"]["modes_to_optimize"],
                         daq_mode=data_dict["AO"]["daq_mode"],
                         num_iterations=int(data_dict["AO"]["iterations"]),
-                        init_delta_range=float(data_dict["AO"]["modal_delta"]),
-                        delta_range_alpha_per_iter=float(data_dict["AO"]["modal_alpha"]),
+                        starting_coef_delta=float(data_dict["AO"]["modal_delta"]),
+                        coef_delta_scale=float(data_dict["AO"]["modal_alpha"]),
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         save_dir_path=data_dict["AO"]["output_path"],
@@ -507,7 +508,7 @@ class OPMEngine(MDAEngine):
                     )
                     if pos_idx is not None:
                         try:
-                            self.AOMirror.update_positions_array[int(pos_idx)]
+                            self.AOMirror.update_positions_array(int(pos_idx))
                             if DEBUGGING:
                                 print(
                                     '\nAO: Saving positions to array:',

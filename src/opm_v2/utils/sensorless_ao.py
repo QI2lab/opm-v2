@@ -10,9 +10,9 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import zarr
-from numpy.typing import ArrayLike
+from numpy.typing import NDArray
 from pymmcore_plus import CMMCorePlus
-from scipy.fftpack import dct
+from scipy.fft import dct
 from scipy.ndimage import center_of_mass
 from scipy.optimize import curve_fit
 
@@ -27,10 +27,11 @@ DEBUGGING = False
 
 # Metric global parameters
 # METRIC_PRECISION = 5
-METRIC_PERC_THRESHOLD = 1.0
+METRIC_PERC_THRESHOLD = 0.99999 # Works for metrics ~100
 MAXIMUM_MODE_DELTA = 0.5
-PSF_RADIUS_PX = 3
-SIGN_FIGS = 6
+ACCEPT_ALL_CHANGES = False
+DEFUALT_PSF_RADIUS_PX = 3
+DEFUALT_SIGN_FIGS = 6
 
 # Modes to optimize lists
 focusing_modes = [2,7,14,23]
@@ -74,46 +75,62 @@ mode_names = [
     "Oblq. 9th Asm.",
 ]
 
+
+# TODO: Update other scripts for starting_coef_delta -> starting_coef_delta
+# TODO: Update other scripts for coef_delta_scale -> coef_delta_scale
+# TODO: Implement Fourier ratio metric
+
 #-------------------------------------------------#
 # Modal AO optimization
 #-------------------------------------------------#
 
 def get_metric(
-    image: ArrayLike,
-    metric_to_use: str
+    image: NDArray,
+    metric_to_use: str,
+    psf_radius_px: int = DEFUALT_PSF_RADIUS_PX
 ) -> float:
     """ Calculate the selected metric on the provided image
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         image to measure metric on
     metric_to_use : str
         descriptor for metric to use
+    psf_radius_px : int
+        Radius of PSF in pixels
 
     Returns
     -------
     float
         calculated metric
     """
-    if metric_to_use not in ['DCT', "localize_gauss_2d", "gauss_2d", 'brightness', 'fourier_ratio']:
-        print(f"Warning: AO metric '{metric_to_use}' not supported. Exiting function.")
+    metrics_str_list=["DCT","localize_gauss_2d","gauss_2d","brightness","fourier_ratio"]
+    if metric_to_use not in metrics_str_list:
+        print(
+            "------- SensorlessAO -------"
+            f"ERROR: AO metric {metric_to_use} not supported")
         return np.nan
+    
     try:
         if "DCT" in metric_to_use:
-            metric = metric_shannon_dct(image, PSF_RADIUS_PX)  * 100
+            metric = metric_shannon_dct(image, psf_radius_px)  * 100
         elif "localize_gauss_2d" in metric_to_use:
             metric = metric_localize_gauss2d(image)
-        elif 'gauss_2d' in metric_to_use:
+        elif "gauss_2d" in metric_to_use:
             metric = metric_gauss2d(image)
-        elif 'brightness' in metric_to_use:
+        elif "brightness" in metric_to_use:
             metric = metric_brightness(image)
         elif "fourier_ratio" in metric_to_use:
-            # TODO: implement fourier ratio metric
-            metric = metric_shannon_dct(image, PSF_RADIUS_PX)
+            metric = metric_shannon_dct(image, psf_radius_px) #TODO
     except Exception as e:
-        print(f"Warning: AO metric '{metric_to_use}' calculation failed with exception: {e}")
+        print(
+            "------- SensorlessAO -------"
+            f"\nERROR: AO metric {metric_to_use} calculation failed with exception:"
+            f"\n{e}"
+        )
         metric = np.nan
+        
     return metric
 
 def metric_from_fit(a: float, b: float, c: float, delta: float) -> float:
@@ -137,7 +154,7 @@ def metric_from_fit(a: float, b: float, c: float, delta: float) -> float:
     """
     return a * delta**2 + b * delta + c
 
-def round_to_sigfigs(x: float, signif_figs: int=SIGN_FIGS) -> float:
+def round_to_sigfigs(x: float, signif_figs: int = DEFUALT_SIGN_FIGS) -> float:
     """Round value to given significant figures
 
     Parameters
@@ -145,7 +162,7 @@ def round_to_sigfigs(x: float, signif_figs: int=SIGN_FIGS) -> float:
     x : float
         value to round
     signif_figs : int, optional
-        number of significant figures, by default SIGN_FIGS
+        number of significant figures, by default DEFUALT_SIGN_FIGS
 
     Returns
     -------
@@ -160,52 +177,55 @@ def round_to_sigfigs(x: float, signif_figs: int=SIGN_FIGS) -> float:
 
 def run_ao_optimization(
     exposure_ms: float,
-    channel_states: List[bool],
-    metric_to_use: Optional[str] = "DCT",
-    daq_mode: Optional[str] = "projection",
+    channel_states: Tuple[bool],
+    metric_to_use: str = "DCT",
+    daq_mode: str = "projection",
     image_mirror_range_um: float = 100,
-    num_iterations: Optional[int] = 3,
-    num_mode_steps: Optional[int] = 3,
-    init_delta_range: Optional[float] = 0.25,
-    delta_range_alpha_per_iter: Optional[float] = 0.9,
-    metric_precision: Optional[int] = SIGN_FIGS,
-    modes_to_optimize: Optional[List[int]] = spherical_modes_first,
-    starting_mirror_state: Optional[str] = "system flat",
-    save_dir_path: Optional[Path] = None,
-    save_prefix: Optional[str] = None,
-    verbose: Optional[bool] = True,
+    num_iterations: int = 3,
+    num_mode_steps: int = 3,
+    starting_coef_delta: float = 0.25,
+    coef_delta_scale: float = 0.9,
+    metric_precision: int = DEFUALT_SIGN_FIGS,
+    modes_to_optimize: str = "spherical first",
+    starting_mirror_state: str = "system flat",
+    accept_all_changes: bool = False,
+    metric_update_threshold: float = 0.98,
+    save_dir_path: Path | None = None,
+    save_prefix: str | None = None,
+    verbose: bool = True,
 ) -> bool:
     """Run sensorless adaptive optics
-
     Parameters
     ----------
     exposure_ms : float
         camera exposure in ms
     channel_states : List[bool]
         channel states list to pass to daq
-    metric_to_use : Optional[str], optional
+    metric_to_use : str, optional
         descriptor of metric to use, by default "DCT"
-    daq_mode : Optional[str], optional
+    daq_mode : str, optional
         by default "projection"
     image_mirror_range_um : float, optional
         by default 100
-    num_iterations : Optional[int], optional
+    num_iterations : int, optional
         by default 3
-    num_mode_steps : Optional[int], optional
+    num_mode_steps : int, optional
         number of deltas to sample per mode, by default 3
-    init_delta_range : Optional[float], optional
+    starting_coef_delta : Optional[float], optional
         maximum mode coefficient delta to sample, by default 0.25
-    delta_range_alpha_per_iter : Optional[float], optional
+    coef_delta_scale : Optional[float], optional
         factor to reduce delta range by per iteration, by default 0.9
-    metric_precision : Optional[int], optional
-        number of significant figures to round metrics to, by default SIGN_FIGS
-    modes_to_optimize : Optional[List[int]], optional
+    metric_precision : int, optional
+        number of significant figures to round metrics to, by default DEFUALT_SIGN_FIGS
+    modes_to_optimize : Tuple[int], optional
         list of modes to optimize, by default spherical_modes_first
-    starting_mirror_state : Optional[str], optional
-        the starting mirror state, either system flat or last optimized, by default "system flat"
-    save_dir_path : Optional[Path], optional
+    starting_mirror_state : str, optional
+        the starting mirror state, system flat or last optimized, default "system flat"
+    accept_all_changes: bool, optional
+        Whether to accept all optimal deltas, regardless of metric improvement
+    save_dir_path : Path, optional, by default None
         Path to save figures, by default None
-    save_prefix : Optional[str], optional
+    save_prefix : str, optional
         Path prefix to append for saving the AO mirror state, by default None
     verbose : Optional[bool], optional
         whether to print out updates, by default True
@@ -215,48 +235,83 @@ def run_ao_optimization(
     bool
         Indicates success or not
     """
-    
+    if verbose:
+        print(
+            "\n---------- Starting SensorlessAO ---------\n"
+        )
+    # Determine modes to optimize
+    if isinstance(modes_to_optimize, str):
+        if modes_to_optimize == "focusing only":
+            modes_to_optimize = focusing_modes
+        elif modes_to_optimize == "spherical only":
+            modes_to_optimize = spherical_modes
+        elif modes_to_optimize == "spherical first":
+            modes_to_optimize = spherical_modes_first
+        elif modes_to_optimize == "all modes":
+            modes_to_optimize = all_modes
+        elif modes_to_optimize == "stationary only":
+            modes_to_optimize = stationary_modes
+        else:
+            print(
+                "------- Warning -------"
+                f"\nAO modes to optimize {modes_to_optimize} not recognized."
+                "\nDefaulting to spherical modes."
+            )
+            modes_to_optimize = spherical_modes_first
+    else:
+        print(
+            "------- Warning -------"
+            "\nAO modes_to_optimize not a string. Defaulting to spherical modes."
+        )
+        modes_to_optimize = spherical_modes_first
+
     #---------------------------------------------#
     # Create hardware controller instances
     #---------------------------------------------#
+    
     opmNIDAQ_local = OPMNIDAQ.instance()
-    aoMirror_local = AOMirror.instance()
+    AOMirror_local = AOMirror.instance()
+    
+    if AOMirror is None or OPMNIDAQ is None:
+        raise ImportError("Required hardware modules not available.")   
+    
     mmc = CMMCorePlus.instance()
     
     # Enforce camera exposure
     mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
     mmc.waitForDevice("OrcaFusionBT")
     
+    # TODO: Setup Camera for linescanning
+    
     # get the current stage position
     stage_position = {
-        'z': mmc.getZPosition(),
-        'y': mmc.getYPosition(),
-        'x': mmc.getXPosition()
+        "z": mmc.getZPosition(),
+        "y": mmc.getYPosition(),
+        "x": mmc.getXPosition()
     }
     
     #---------------------------------------------#
-    # Setup metadata
+    # Setup metadata 
     #---------------------------------------------#
-    
     mode_deltas = [
-        (init_delta_range - k*init_delta_range*(1-delta_range_alpha_per_iter)) for k in range(num_iterations)
+        starting_coef_delta * (coef_delta_scale**k) for k in range(num_iterations)
     ]
     metadata = {
-        'starting_mirror_state':starting_mirror_state,
-        'stage_position':stage_position,
-        'opm_mode': daq_mode,
-        'metric_name': metric_to_use,
-        'num_iterations': num_iterations,
-        'num_mode_steps': num_mode_steps,
-        'mode_deltas': mode_deltas,
-        'modes_to_optimize': modes_to_optimize,
-        'channel_states': channel_states,
-        'channel_exposure_ms': exposure_ms,
-        'image_mirror_range_um': image_mirror_range_um
+        "starting_mirror_state":starting_mirror_state,
+        "stage_position":stage_position,
+        "opm_mode": daq_mode,
+        "metric_name": metric_to_use,
+        "num_iterations": num_iterations,
+        "num_mode_steps": num_mode_steps,
+        "mode_deltas": mode_deltas,
+        "modes_to_optimize": modes_to_optimize,
+        "channel_states": channel_states,
+        "channel_exposure_ms": exposure_ms,
+        "image_mirror_range_um": image_mirror_range_um
     }
     
     #---------------------------------------------#
-    # Setup lists for images / metrics / coefficients
+    # Setup tracking for images / metrics / coefficients
     #---------------------------------------------#
     
     """Definition of variables
@@ -265,11 +320,13 @@ def run_ao_optimization(
     all_optimal_metrics: ALL metrics obtained and kept when applying the optimal_delta. 
                          This list is appended after each mode. If no update is applied
                          the previous optimal metric is appended.
-    all_optimal_images: ALL images obtained and kept after apply the optimal_delta. If no update
-                        is applied, the last optimal image is appended. Does not reset.
-    current_optimal_metrics: Metrics obtained and kept when applying the optimal_delta. This
-                             list is reset each iteration and appended after each mode. If no 
-                             update is applied the previous optimal metric is appended. 
+    all_optimal_images: ALL images obtained and kept after apply the optimal_delta.
+                        If no update is applied, the last optimal image is appended. 
+                        Does not reset.
+    current_optimal_metrics: Metrics obtained and kept when applying the optimal_delta. 
+                             This list is reset each iteration and appended after each 
+                             mode. If no update is applied the previous optimal metric 
+                             is appended. 
     current_coeffs: Mirror mode coefficients updated when new mode deltas are accepted. 
                     If not update is applied, no chages are made. This list is reset at
                     the start of each iteration.    
@@ -288,33 +345,32 @@ def run_ao_optimization(
     #---------------------------------------------#
     # Set starting mode coeff
     #---------------------------------------------#
-    if DEBUGGING:
-        print(
-            'starting_mirror_state:', starting_mirror_state
-        )
-
+    
     if starting_mirror_state == "system flat":
-        aoMirror_local.apply_system_flat_voltage()
+        AOMirror_local.apply_system_flat_voltage()
         if verbose:
             print(
-                '--- AOmirror: Mirror set to system flat positions ----'
+                "\nStarting optimization with system flat voltage"
             )
-    elif starting_mirror_state == 'last optimized':
-        aoMirror_local.apply_last_optimized()
+    elif starting_mirror_state == "last optimized":
+        AOMirror_local.apply_optimized_voltage()
         if verbose:
             print(
-                '--- AOmirror: Mirror set to last optimized positions ----'
-                f'\n  mode coeffs: {aoMirror_local.current_coeffs}'
+                "\nStarting optimization with optimized voltage"
+                f"\nModal coefs: {AOMirror_local.current_coeffs}"
             )
     else:
-        print('Starting mirror state defualted to system flat')
-        aoMirror_local.apply_system_flat_voltage()
+        if verbose:
+            print(
+                "\nStarting mirror voltage defaulted to system flat"
+            )
+        AOMirror_local.apply_system_flat_voltage()
         
-    starting_coeffs = aoMirror_local.current_coeffs.copy()
+    starting_coeffs = AOMirror_local.current_coeffs.copy()
     
     if verbose:
         print(
-            f'\n AO optimization starting mirror modal amplitudes:\n{aoMirror_local.current_zernikes}'
+            f"\n AO optimization starting mirror modal amplitudes:\n{starting_coeffs}"
         )
         
     #---------------------------------------------#
@@ -342,24 +398,21 @@ def run_ao_optimization(
     
     if verbose:
         print(
-            f'+++++ Starting A.O. optimization ++++++'
-            f'\n   Metric: {metric_to_use}'            
+            "++++++++ Starting iterative sensorless AO loop ++++++++"           
         )
-
     try:
         starting_image = mmc.snap()
         starting_metric = get_metric(starting_image, metric_to_use)
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
     except Exception as e:
         print(
-            'Failed to get metric!'
-            f'{e}')
-        return
-
+            "------- ERROR! -------"
+            f"\nFailed to get starting metric! \n{e}"
+        )
+        return False
     
     # Start AO iterations 
     for k in range(num_iterations): 
-        # initialize current values
         if k==0:
             all_images.append(starting_image)
             all_metrics.append(starting_metric)
@@ -370,35 +423,31 @@ def run_ao_optimization(
             current_optimal_metrics = []
 
         # Get the current mirror state at the start of iteration
-        current_coeffs = aoMirror_local.current_coeffs.copy()
-        optimal_coeffs.append(aoMirror_local.current_coeffs.copy())
+        current_coeffs = AOMirror_local.current_coeffs.copy()
+        optimal_coeffs.append(AOMirror_local.current_coeffs.copy())
             
         if verbose:
             print(
-                '\n-------------------------------------------------------------------'
-                '\n-------------------------------------------------------------------'
-                f'\nAO iteration: {k+1} / {num_iterations}'
-                f'   Modal pertubation amplitude: {mode_deltas[k]:.3f}'
-                '\n-------------------------------------------------------------------'
-                '\n-------------------------------------------------------------------'
+                "\n\n-------------------------------------------------------------------"
+                f"\nOptimization iteration: {k+1} / {num_iterations}"
+                f"\nCoef pertubation amplitude: {mode_deltas[k]:.3f}"
+                "\n-------------------------------------------------------------------"
             )
 
         # Iterate over modes to optimize
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f'\n    ++ Perturbing mirror with Zernike mode: {mode+1} : {mode_names[mode]}\n ++'
-                    f'\n    ++ Modal pertubation amplitude: {mode_deltas[k]:.3} ++'
+                    f"\n\n+++++ Current Zernike mode: {mode+1}:{mode_names[mode]} +++++"
                     )
-                
             metrics = []
             deltas = np.linspace(-mode_deltas[k], mode_deltas[k], num_mode_steps)
+            mode_success = True
             for delta in deltas:
                 # Apply perturbation to the mirror
                 active_coeffs = current_coeffs.copy()
                 active_coeffs[mode] += delta
-                success = aoMirror_local.set_modal_coefficients(active_coeffs)
-                
+                success = AOMirror_local.set_modal_coefficients(active_coeffs)
                 if not(success):
                     metric = 0
                     image = np.zeros_like(starting_image)
@@ -407,7 +456,6 @@ def run_ao_optimization(
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
                     image = mmc.snap()
-                    
                     # Measure the image metric
                     try:
                         metric = get_metric(image, metric_to_use)
@@ -419,30 +467,47 @@ def run_ao_optimization(
                         success = False
                         
                     # Catch bad metric calculations
-                    if not(success) or metric==np.nan or metric==0:
-                        success = False
+                    if (not success) or np.isnan(metric) or (metric==0):
+                        mode_success = False
                         if verbose:
-                            print('\n    ---- Metric failed! ----')
-                                        
+                            print(
+                                "\n------- Metric failed! -------"
+                                f"\ndelta={delta:.4f}"
+                            )
                 if verbose:
-                    print(f'    + Delta={delta:.4f}, Metric = {metric:.4}, Success = {success} +')
+                    print(
+                        f"++++++++ Delta={delta:.4f}, Metric={metric:.4f}++++++++"
+                    )
             
             #---------------------------------------------#
             # Fit metrics to determine optimal metric
             # Skip if there were any problems in metrics
             #---------------------------------------------#   
-            if success:
+            if mode_success:
                 if k!=0 and len(current_optimal_metrics)==0:
-                    current_optimal_metrics.append(metrics[num_mode_steps//2])
+                    # TODO: Should we make sure each iteration starts from the best 
+                    # overall metric or the best measured this when d=0?
+                    # current_optimal_metrics.append(metrics[num_mode_steps//2])
+                    current_optimal_metrics.append(all_optimal_metrics[-1])
                 try:                  
                     # Are metrics monotonic, if so use the maximum
-                    is_increasing = all(x < y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
-                    is_decreasing = all(x > y for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:]))
+                    is_increasing = all(
+                        x < y for x, y in zip(
+                            np.asarray(metrics), np.asarray(metrics)[1:]
+                        )
+                    )
+                    is_decreasing = all(
+                        x > y for x, y in zip(
+                            np.asarray(metrics), np.asarray(metrics)[1:]
+                        )
+                    )
                     if is_increasing or is_decreasing:
                         optimal_delta = deltas[np.argmax(metrics)]
-                        print(
-                            f' --- Metrics increasing/decreasing using maximum: {optimal_delta} ---'
-                        )
+                        # optimal_delta = 0
+                        if verbose:
+                            print(
+                                "\n------- Metrics increasing/decreasing -------"
+                            )
                         # optimal_delta = 0
                     else:
                         # Fit and use the peak of quadratic fit
@@ -450,36 +515,43 @@ def run_ao_optimization(
                         a, b, c = popt
                         optimal_delta = -b / (2 * a)
                         
-                        if DEBUGGING:
-                            # NOTE: Our delta and booth's delta only match if 3 points are used
-                            booth_delta = -mode_deltas[k] * (metrics[2] - metrics[0]) / (2*metrics[0] + 2*metrics[2] - 4*metrics[1])
-                            optimal_delta = booth_delta
+                        if DEBUGGING and len(metrics)==3:
+                            # Used to validate our opt metric calc. Can be deleted?
+                            booth_delta = -mode_deltas[k]*(
+                                (metrics[2] - metrics[0]) / (
+                                    2*metrics[0] + 2*metrics[2] - 4*metrics[1]
+                                )
+                            )
+                            print(
+                                "\n------- Booth Metric comparison -------"
+                                f"\nBooth: {booth_delta:.4f}, Fit: {optimal_delta:.4f}"
+                            )
+                        # Reject if metrics have + curvature or too large of delta
+                        if a >=0:
+                            # TODO: Should we reject this test or take the max?
+                            optimal_delta = deltas[int(np.argmax(metrics))]
+                            # optimal_delta = 0
                             if verbose:
                                 print(
-                                    f'\n    ++   our delta: {optimal_delta}   ++'
-                                    f'\n    ++   Booth delta {booth_delta}   ++'
+                                    "\n------- Metrics have positive curvature! -------"
                                 )
-                                
-                        # Reject result if metrics have positive curvature or too large of delta
-                        if a >=0:
-                            optimal_delta = 0
-                            print(
-                                f' --- Metrics have positive curvature ---'
-                            )
                         elif np.abs(optimal_delta)>MAXIMUM_MODE_DELTA:
                             optimal_delta = 0
-                            print(
-                                ' --- Optimal delta is outside of range: {optimal_delta:.3f} ---'
-                            )
-                        
+                            if verbose:
+                                print(
+                                    "\n------- Optimal delta is too large! -------"
+                                )
                 except Exception as e:
                     optimal_delta = 0
                     if verbose:
-                        print(f' --- Exception in fit occurred! ---\n      e:{e}')
+                        print(
+                            "------- Exception in fit occurred! -------"
+                            f"\nexception:{e}"
+                        )
             else:
                 optimal_delta = 0
                 if verbose:
-                    print(' --- Error occurred in acquiring image or metric! ---')
+                    print("\n------- Error occured in metrics! -------")
            
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
@@ -489,48 +561,53 @@ def run_ao_optimization(
                 # remeasure metric to verify new position
                 active_coeffs = current_coeffs.copy() 
                 active_coeffs[mode] = active_coeffs[mode] + optimal_delta
-                _ = aoMirror_local.set_modal_coefficients(active_coeffs)
+                _ = AOMirror_local.set_modal_coefficients(active_coeffs)
 
                 # Acquire image and metric
                 if not opmNIDAQ_local.running():
-                        opmNIDAQ_local.start_waveform_playback()
+                    opmNIDAQ_local.start_waveform_playback()
                 optimal_image = mmc.snap()
                 optimal_metric = get_metric(optimal_image, metric_to_use)
                 optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
                     print(
-                        f'\n   ++ Optimal delta from fit: {optimal_delta:.4f} ++'
-                        f'\n   ++ Measured optimal metric: {optimal_metric:.4} ++'
+                        f"\n++++++ Optimal delta from fit: {optimal_delta:.4f} ++++++"
+                        f"\n++++++ Measured optimal metric: {optimal_metric:.5f} ++++++"
                     )
                 
                 # Check if the new metric is better than the current optimal metric
-                if optimal_metric >= current_optimal_metrics[-1]*METRIC_PERC_THRESHOLD:
-                    # Accept the change, and update current mode coeffs
+                # zero_metric_index = num_mode_steps // 2
+                # if optimal_metric >= metrics[zero_metric_index]*METRIC_PERC_THRESHOLD:
+                if accept_all_changes:
                     update = True
-                    current_coeffs[mode] = current_coeffs[mode] + optimal_delta
-                    all_optimal_images.append(optimal_image)
-                    all_optimal_metrics.append(optimal_metric)
-                    current_optimal_metrics.append(optimal_metric)
+                elif optimal_metric>=current_optimal_metrics[-1]*metric_update_threshold:
+                    update = True
                 else:
-                    # Reject the change, keep current mode coeffs
                     update = False
                     all_optimal_images.append(all_optimal_images[-1])
                     all_optimal_metrics.append(all_optimal_metrics[-1])
                     current_optimal_metrics.append(current_optimal_metrics[-1])
-                    
+
+                if update:
+                    # Accept the change, and update current mode coeffs
+                    current_coeffs[mode] = current_coeffs[mode] + optimal_delta
+                    all_optimal_images.append(optimal_image)
+                    all_optimal_metrics.append(optimal_metric)
+                    current_optimal_metrics.append(optimal_metric)
+
                 if verbose:
                     print(
-                        f'\n   ++ Current optimal metric: {current_optimal_metrics[-1]:.6f} ++'
+                        f"\n------- Current optimal metric: {current_optimal_metrics[-1]:.6f} -------"
                     )
             else:
                 update = False
             
             # Update the mirror to the current best state
-            _ = aoMirror_local.set_modal_coefficients(current_coeffs)   
+            _ = AOMirror_local.set_modal_coefficients(current_coeffs)   
              
             if verbose:
                 print(
-                    f'\n   ++ Was mirror updated: {update} ++'
+                    f"\n   ++ Was mirror updated: {update} ++"
                 )
                 
             """Loop back to top and do the next mode until all modes are done"""
@@ -540,7 +617,7 @@ def run_ao_optimization(
     #---------------------------------------------#
     # After all the iterations the mirror state will be optimized
     #---------------------------------------------# 
-    aoMirror_local.update_optimized_array()
+    AOMirror_local.update_optimized_array()
     if verbose:
         print(
             f"\n++++ Starting Zernike mode amplitude: ++++ \n{starting_coeffs}",
@@ -555,8 +632,8 @@ def run_ao_optimization(
             print(f"Saving AO results at:\n  {save_dir_path}\n")
         
         if save_prefix:
-            aoMirror_local.save_current_state(save_prefix)
-            aoMirror_local.save_positions_array(prefix=save_prefix)
+            AOMirror_local.save_current_state(save_prefix)
+            AOMirror_local.save_positions_array(prefix=save_prefix)
             
         all_images = np.asarray(all_images)
         all_metrics = np.asarray(all_metrics)
@@ -564,7 +641,7 @@ def run_ao_optimization(
         all_optimal_metrics = np.asarray(all_optimal_metrics)
         optimal_coeffs = np.asarray(optimal_coeffs)
         # TODO
-        # optimized_phase = aoMirror_local.get_current_phase()
+        # optimized_phase = AOMirror_local.get_current_phase()
         
         try:
             save_optimization_results(
@@ -596,19 +673,21 @@ def run_ao_optimization(
             )
         except Exception as e:
             print(
-                '\n  ----- Saving result had an exception! -----'
-                f'\n {e}'
+                "\n  ----- Saving result had an exception! -----"
+                f"\n {e}"
             )
-            
+        
+        return True
+    
 #-------------------------------------------------#
 # Plotting functions
 #-------------------------------------------------#
 
 def plot_zernike_coeffs(
-    optimal_coeffs: ArrayLike,
+    optimal_coeffs: NDArray,
     num_iterations: int,
-    zernike_mode_names: ArrayLike,
-    save_dir_path: Optional[Path] = None,
+    zernike_mode_names: NDArray,
+    save_dir_path: Path = None,
     show_fig: Optional[bool] = False,
     x_range = 0.1
 ) -> None:
@@ -616,10 +695,10 @@ def plot_zernike_coeffs(
 
     Parameters
     ----------
-    optimal_coeffs : ArrayLike
+    optimal_coeffs : NDArray
     num_iterations : int
-    zernike_mode_names : ArrayLike
-    save_dir_path : Optional[Path], optional
+    zernike_mode_names : NDArray
+    save_dir_path : Path, optional
         Path to save figure, by default None
     show_fig : Optional[bool], optional
         whether to display figure, by default False
@@ -629,7 +708,7 @@ def plot_zernike_coeffs(
     import matplotlib
     import matplotlib.pyplot as plt
     if not show_fig:
-        matplotlib.use('Agg')
+        matplotlib.use("Agg")
     from matplotlib.ticker import FormatStrFormatter
     
     plt.rcParams.update({
@@ -643,11 +722,11 @@ def plot_zernike_coeffs(
     
     # Create the plot
     fig, ax = plt.subplots(figsize=(7.5, 8))
-    ax.xaxis.set_major_formatter(FormatStrFormatter('%.2f'))
+    ax.xaxis.set_major_formatter(FormatStrFormatter("%.2f"))
     
     # Define colors and markers for each iteration
-    colors = ['b', 'g', 'r', 'c', 'm']  
-    markers = ['x', 'o', '^', 's', '*']  
+    colors = ["b", "g", "r", "c", "m"]  
+    markers = ["x", "o", "^", "s", "*"]  
 
     # populate plots
     for i in range(len(zernike_mode_names)):
@@ -660,24 +739,24 @@ def plot_zernike_coeffs(
                 marker=marker_style,
                 alpha=0.5
             )  
-        ax.axhline(y=i, linestyle="--", linewidth=1, color='k')
+        ax.axhline(y=i, linestyle="--", linewidth=1, color="k")
         
     # Plot a vertical line at 0 for reference
-    ax.axvline(0, color='k', linestyle='-', linewidth=1)
+    ax.axvline(0, color="k", linestyle="-", linewidth=1)
 
     # Customize the plot
     ax.set(
         yticks=np.round(np.arange(len(zernike_mode_names)),1),
         yticklabels=zernike_mode_names,
-        xlabel=r'$\vert Z_n \vert$',
-        title='Zernike Coefficients per Iteration',
+        xlabel=r"$\vert Z_n \vert$",
+        title="Zernike Coefficients per Iteration",
         xlim=(-x_range, x_range)
     )
 
     # Add a legend for time points
     ax.legend(
-        [f'Iter.: {i+1}' for i in range(num_iterations)], 
-        loc='upper right'
+        [f"Iter.: {i+1}" for i in range(num_iterations)], 
+        loc="upper right"
     )
 
     # Remove grid lines
@@ -692,22 +771,22 @@ def plot_zernike_coeffs(
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
 def plot_metric_progress(
-    all_metrics: ArrayLike,
-    num_iterations: float,
+    all_metrics: NDArray,
+    num_iterations: int,
     modes_to_optimize: List[int],
     zernike_mode_names: List[str],
-    save_dir_path: Optional[Path] = None,
+    save_dir_path: Path = None,
     show_fig: Optional[bool] = False
 ) -> None:
     """Plot the metric magnitude throughout optimization
 
     Parameters
     ----------
-    all_metrics : ArrayLike
+    all_metrics : NDArray
     num_iterations : float
     modes_to_optimize : List[int]
     zernike_mode_names : List[str]
-    save_dir_path : Optional[Path], optional
+    save_dir_path : Path, optional
         Path to save figure, by default None
     show_fig : Optional[bool], optional
         whether to display figure, by default False
@@ -715,7 +794,7 @@ def plot_metric_progress(
     import matplotlib.pyplot as plt
     if not show_fig:
         import matplotlib
-        matplotlib.use('Agg')
+        matplotlib.use("Agg")
         
     plt.rcParams.update({
         "font.size": 14,        # base font size
@@ -742,8 +821,8 @@ def plot_metric_progress(
     fig, ax = plt.subplots(figsize=(10, 6))
 
     # Define colors and markers for each iteration
-    colors = ['b', 'g', 'r', 'c', 'm']
-    markers = ['x', 'o', '^', 's', '*']
+    colors = ["b", "g", "r", "c", "m"]
+    markers = ["x", "o", "^", "s", "*"]
 
     # Loop over iterations and plot each series
     for ii in range(num_iterations):
@@ -758,8 +837,8 @@ def plot_metric_progress(
         )
 
     ax.set(
-        title='Metric Progress per Iteration',
-        ylabel='Metric',
+        title="Metric Progress per Iteration",
+        ylabel="Metric",
         xticks=np.arange(len(modes_to_use_names))
     )
     ax.set_xticklabels(modes_to_use_names, rotation=60, ha="right", fontsize=16) 
@@ -790,7 +869,7 @@ def plot_phase(phase: Dict,
     import matplotlib
     import matplotlib.pyplot as plt
     if not show_fig:
-        matplotlib.use('Agg')
+        matplotlib.use("Agg")
     # --- Set rcParams (this affects all plots until you change/reset it) ---
     plt.rcParams.update({
         "font.size": 14,        # base font size
@@ -802,15 +881,15 @@ def plot_phase(phase: Dict,
     })
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
-    vrange = np.max([np.abs(phase['min']), np.abs(phase['max'])])
+    vrange = np.max([np.abs(phase["min"]), np.abs(phase["max"])])
     im = ax.imshow(
-        phase['phase'],
-        cmap='seismic',
+        phase["phase"],
+        cmap="seismic",
         vmin=-vrange,
         vmax=vrange
     )
     cbar = plt.colorbar(im)
-    ax.set_title('Wavefront Phase')
+    ax.set_title("Wavefront Phase")
     ax.set_xticks([])
     ax.set_yticks([])
     plt.tight_layout()
@@ -852,13 +931,13 @@ def plot_2d_localization_fit_summary(
     import matplotlib.pyplot as plt
     from localize_psf.fit_psf import sxy2na
     from localize_psf.localize import plot_bead_locations
-    matplotlib.use('Agg')
+    matplotlib.use("Agg")
     
-    to_keep = fit_results['to_keep']
-    sxy = fit_results['fit_params'][to_keep, 4]
-    amp = fit_results['fit_params'][to_keep, 0]
-    bg = fit_results['fit_params'][to_keep, 6]
-    centers = fit_results['fit_params'][to_keep][:, (3, 2, 1)]
+    to_keep = fit_results["to_keep"]
+    sxy = fit_results["fit_params"][to_keep, 4]
+    amp = fit_results["fit_params"][to_keep, 0]
+    bg = fit_results["fit_params"][to_keep, 6]
+    centers = fit_results["fit_params"][to_keep][:, (3, 2, 1)]
     cx = centers[:,2]
     cy = centers[:,1]
 
@@ -880,17 +959,20 @@ def plot_2d_localization_fit_summary(
     figh_sum = plot_bead_locations(
         img,
         centers,
-        weights=[fit_results['fit_params'][to_keep, 4]],
-        color_lists=['autumn'],
+        weights=[fit_results["fit_params"][to_keep, 4]],
+        color_lists=["autumn"],
         color_limits=[[0.05,0.5]],
-        cbar_labels=[r'$\sigma_{xy}$'],
+        cbar_labels=[r"$\sigma_{xy}$"],
         title="Max intensity projection with Sxy",
         coords=coords_2d,
         gamma=0.5,
         axes=[ax_proj_sxy, ax_cmap_i_sxy, ax_cmap_sxy]
     )
+    sxy_na = sxy2na(0.473, np.median(sxy))
     ax_proj_sxy.set_title(
-        f"Sxy: mean={np.mean(sxy):.3f}, median={np.median(sxy):.3f}; NA (median):{sxy2na(0.473, np.median(sxy)):.2f}"
+        f"Sxy: mean={np.mean(sxy):.3f},"
+        f"median={np.median(sxy):.3f},"
+        f"NA (median):{sxy_na:.2f}"
     )
 
     # Create axes for plotting x, y specific results
@@ -965,13 +1047,13 @@ def plot_2d_localization_fit_summary(
 # Functions for preparing data
 #-------------------------------------------------#
 
-def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
+def get_image_center(image: NDArray, threshold: float) -> Tuple[int, int]:
     """
     Calculate the center of an image using a thresh-holded binary mask.
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         2D image array.
     threshold : float
         Intensity threshold for binarization.
@@ -990,16 +1072,16 @@ def get_image_center(image: ArrayLike, threshold: float) -> Tuple[int, int]:
     return center
 
 def get_cropped_image(
-    image: ArrayLike,
+    image: NDArray,
     crop_size: int,
     center: Tuple[int, int]
-) -> ArrayLike:
+) -> NDArray:
     """
     Extract a square region from an image centered at a given point.
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         Input 2D or 3D image.
     crop_size : int
         Half-width of the cropping region.
@@ -1008,19 +1090,27 @@ def get_cropped_image(
 
     Returns
     -------
-    cropped_image : ArrayLike
+    cropped_image : NDArray
         Cropped region from the input image.
     """
     if center is None:
         center = get_image_center(image,threshold=1000)
 
     if len(image.shape) == 3:
-        x_min, x_max = max(center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[1])
-        y_min, y_max = max(center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[2])
+        x_min, x_max = max(
+            center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[1]
+        )
+        y_min, y_max = max(
+            center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[2]
+        )
         cropped_image = image[:, x_min:x_max, y_min:y_max]
     else:
-        x_min, x_max = max(center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[0])
-        y_min, y_max = max(center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[1])
+        x_min, x_max = max(
+            center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[0]
+        )
+        y_min, y_max = max(
+            center[1] - crop_size, 0), min(center[1] + crop_size, image.shape[1]
+        )
         cropped_image = image[x_min:x_max, y_min:y_max]
 
     return cropped_image
@@ -1074,20 +1164,20 @@ def metric_r_power_integral(
     return float(weighted.sum() / mask.sum())
 
 def gauss2d(
-    coords_xy: ArrayLike,
+    coords_xy: NDArray,
     amplitude: float,
     center_x: float,
     center_y: float,
     sigma_x: float,
     sigma_y: float,
     offset: float
-) -> ArrayLike:
+) -> NDArray:
     """
     Generates a 2D Gaussian function for curve fitting.
 
     Parameters
     ----------
-    coords_xy : ArrayLike
+    coords_xy : NDArray
         Meshgrid coordinates (x, y).
     amplitude : float
         Peak intensity of the Gaussian.
@@ -1104,7 +1194,7 @@ def gauss2d(
 
     Returns
     -------
-    raveled_gauss2d : ArrayLike
+    raveled_gauss2d : NDArray
         Flattened 2D Gaussian function values.
     """
     x, y = coords_xy
@@ -1117,13 +1207,13 @@ def gauss2d(
 
     return raveled_gauss2d
 
-def otf_radius(img: ArrayLike, psf_radius_px: float) -> int:
+def compute_otf_support_px(img: NDArray, psf_radius_px: float) -> int:
     """
     Computes the optical transfer function (OTF) cutoff frequency.
 
     Parameters
     ----------
-    img : ArrayLike
+    img : NDArray
         2D image.
     psf_radius_px : float
         Estimated point spread function (PSF) radius in pixels.
@@ -1139,13 +1229,13 @@ def otf_radius(img: ArrayLike, psf_radius_px: float) -> int:
 
     return cutoff
 
-def normL2(x: ArrayLike) -> float:
+def normL2(x: NDArray) -> float:
     """
     Computes the L2 norm of an n-dimensional array.
 
     Parameters
     ----------
-    x : ArrayLike
+    x : NDArray
         Input array.
 
     Returns
@@ -1157,15 +1247,15 @@ def normL2(x: ArrayLike) -> float:
 
     return l2norm
 
-def shannon(spectrum_2d: ArrayLike, otf_radius: int = 100) -> float:
+def shannon(spectrum_2d: NDArray, otf_support_px: int = 100) -> float:
     """
     Computes the Shannon entropy of an image spectrum within a given OTF radius.
 
     Parameters
     ----------
-    spectrum_2d : ArrayLike
+    spectrum_2d : NDArray
         2D spectrum of an image (e.g., from DCT or FFT).
-    otf_radius : int, optional
+    otf_support_px : int, optional
         OTF support radius in pixels (default is 100).
 
     Returns
@@ -1177,40 +1267,45 @@ def shannon(spectrum_2d: ArrayLike, otf_radius: int = 100) -> float:
     y, x = np.ogrid[:h, :w]
 
     # Circular mask centered at (0,0) for DCT
-    support = (x**2 + y**2) < otf_radius**2
-
+    support = (x**2 + y**2) < otf_support_px**2
     spectrum_values = np.abs(spectrum_2d[support])
-    total_energy = np.sum(spectrum_values)
-
-    if total_energy == 0:
-        return 0  # Avoid division by zero
-
-    probabilities = spectrum_values / total_energy
-    entropy = -np.sum(probabilities * np.log2(probabilities, where=(probabilities > 0)))
-    metric = np.log10(entropy)
+    
+    # Calculate total energy
+    total_energy = spectrum_values.sum()
+    if total_energy <= 0:
+        return 0.0
+    
+    # Define probabilities
+    p = spectrum_values / total_energy
+    p = p[p>0]
+    
+    # Calculate entropy and metric
+    entropy = -np.sum(p * np.log2(p))
+    metric = np.log10(entropy) if entropy>0 else 0.0
+    
     return metric
 
-def dct_2d(image: ArrayLike, cutoff: int = 100) -> ArrayLike:
+def dct_2d(image: NDArray) -> NDArray:
     """
     Computes the 2D discrete cosine transform (DCT) of an image with a cutoff.
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         2D image array.
-    cutoff : int, optional
-        OTF radius cutoff in pixels (default is 100).
-
     Returns
     -------
-    dct_2d : ArrayLike
+    dct_2d : NDArray
         Transformed image using DCT.
     """
-    dct_2d = dct(dct(image.astype(np.float32), axis=0, norm='ortho'), axis=1, norm='ortho')
+    dct_2d = dct(
+        dct(image.astype(np.float32), axis=0, norm="ortho"),
+        axis=1, norm="ortho"
+    )
 
     return dct_2d
 
-def quadratic(x: float, a: float, b: float, c: float) -> ArrayLike:
+def quadratic(x: float | NDArray, a: float, b: float, c: float) -> float | NDArray:
     """
     Quadratic function evaluation at x.
 
@@ -1232,15 +1327,15 @@ def quadratic(x: float, a: float, b: float, c: float) -> ArrayLike:
     """
     return a * x**2 + b * x + c
 
-def quadratic_fit(x: ArrayLike, y: ArrayLike) -> Sequence[float]:
+def quadratic_fit(x: NDArray, y: NDArray) -> Sequence[float]:
     """
     Quadratic function for curve fitting.
 
     Parameters
     ----------
-    x : ArrayLike
+    x : NDArray
         1D x-axis data.
-    y : ArrayLike
+    y : NDArray
         1D y-axis data.
 
     Returns
@@ -1272,8 +1367,8 @@ def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
     roi_normalized = (roi - bg)/(peak - bg)
     roi_normalized = np.clip(roi_normalized, 0, 1)
     if debug_mode:
-        print('normalize_roi() values (low_percentile, background, peak):'
-              + str(bg_percentile) + ',  ' + "{0:2.3f}".format(bg) + ',  ' + "{0:2.3f}".format(peak))
+        print("normalize_roi() values (low_percentile, background, peak):"
+              + str(bg_percentile) + ",  " + "{0:2.3f}".format(bg) + ",  " + "{0:2.3f}".format(peak))
     return roi_normalized
 
 #-------------------------------------------------#
@@ -1330,11 +1425,11 @@ def localize_2d_img(
     coords_2d = get_coords(img.shape, (dxy, dxy))
                            
     # Set fit bounds and parameter filters
-    threshold = localize_psf_filters['threshold']
-    amp_bounds = localize_psf_filters['amp_bounds']
-    sxy_bounds = localize_psf_filters['sxy_bounds']
+    threshold = localize_psf_filters["threshold"]
+    amp_bounds = localize_psf_filters["amp_bounds"]
+    sxy_bounds = localize_psf_filters["sxy_bounds"]
     fit_dist_max_err = (0, dxy*2) 
-    fit_roi_size = (1, dxy*9, dxy*9)
+    fit_roi_size = (1, int(dxy*9), int(dxy*9))
     min_spot_sep = (0, dxy*5)
     dist_boundary_min = (0, 1.0)
         
@@ -1382,24 +1477,24 @@ def localize_2d_img(
 #-------------------------------------------------#
 
 def metric_brightness(
-    image: ArrayLike,
-    crop_size: Optional[int] = None,
+    image: NDArray,
+    crop_size: int = None,
     threshold: Optional[float] = 100,
     percentile: Optional[float] = None,
-    image_center: Optional[int] = None,
+    image_center: int = None,
     return_image: Optional[bool] = False
 ) -> float:
     """Compute weighted metric for 2D Gaussian.
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         2D image.
     threshold : float, optional
         Initial threshold to find spot (default is 100).
     crop_size_px : int, optional
         Crop size in pixels, one side (default is 20).
-    image_center : Optional[int], optional
+    image_center : int, optional
         Center of the image to crop (default is None).
     return_image : Optional[bool], optional
         Whether to return the cropped image (default is False).
@@ -1432,26 +1527,28 @@ def metric_brightness(
         return float(image_max)
 
 def metric_shannon_dct(
-    image: ArrayLike, 
+    image: NDArray, 
     psf_radius_px: float = 3,
-    crop_size: Optional[int] = None,
-    threshold: Optional[float] = None,
-    image_center: Optional[int] = None,
+    crop_size: int = None,
+    threshold: Optional[float] = 300,
+    image_center: int = None,
     return_image: Optional[bool] = False
 ) -> float:
     """Compute the Shannon entropy metric using DCT.
-
+    
+    NOTE: The shannon DCT calculation requires a square image!
+    
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         2D image.
     psf_radius_px : float, optional
         Estimated point spread function (PSF) radius in pixels (default: 3).
-    crop_size : Optional[int], optional
+    crop_size : int, optional
         Crop size for image (default: 501).
     threshold : Optional[float], optional
         Intensity threshold to find the center (default: 100).
-    image_center : Optional[int], optional
+    image_center : int, optional
         Custom image center (default: None).
     return_image : Optional[bool], optional
         Whether to return the image along with the metric (default: False).
@@ -1461,20 +1558,21 @@ def metric_shannon_dct(
     entropy_metric : float
         Shannon entropy metric.
     """
+    # TODO: Test changes!
     # Crop image if necessary
-    if not crop_size:
-        crop_size = min(image.shape)-1
+    if crop_size:
+        if image_center is None:
+            center = get_image_center(image, threshold)
+        else:
+            center = image_center
+            image = get_cropped_image(image, crop_size, center)
         
-    if image_center is None:
-        center = get_image_center(image, threshold)  # Ensure this function is defined
-    else:
-        center = image_center
-        # Crop image (ensure get_cropped_image is correctly implemented)
-        image = get_cropped_image(image, crop_size, center)
-    
+    # if not crop_size:
+    #     crop_size = min(image.shape)-1
+        
     # Compute the cutoff frequency based on OTF radius
-    cutoff = otf_radius(image, psf_radius_px)
-
+    cutoff = compute_otf_support_px(image, psf_radius_px)
+    
     # Compute DCT
     dct_result = dct_2d(image)
 
@@ -1487,23 +1585,23 @@ def metric_shannon_dct(
         return shannon_dct
 
 def metric_gauss2d(
-    image: ArrayLike,
-    crop_size: Optional[int] = None,
+    image: NDArray,
+    crop_size: int = None,
     threshold: Optional[float] = 1000,
-    image_center: Optional[int] = None,
+    image_center: int = None,
     return_image: Optional[bool]= False
 ) -> float:
     """Compute weighted metric for 2D gaussian.
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         2D image.
     threshold : float, optional
         Initial threshold to find spot (default is 100).
     crop_size_px : int, optional
         Crop size in pixels, one side (default is 20).
-    image_center : Optional[int], optional
+    image_center : int, optional
         Center of the image to crop (default is None).
     return_image : Optional[bool], optional
         Whether to return the cropped image (default is False).
@@ -1571,12 +1669,12 @@ def metric_gauss2d(
     else:
         return weighted_metric
 
-def metric_localize_gauss2d(image: ArrayLike) -> float:
+def metric_localize_gauss2d(image: NDArray) -> float:
     """TODO
 
     Parameters
     ----------
-    image : ArrayLike
+    image : NDArray
         _description_
 
     Returns
@@ -1589,7 +1687,7 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
             image, 
             0.115,
             {"threshold":1000,
-            "amp_bounds":(500, 30000),
+            "amp_bounds":(1000, 65000),
             "sxy_bounds":(0.100, 1.0)
             },
             save_dir_path = None,
@@ -1598,8 +1696,8 @@ def metric_localize_gauss2d(image: ArrayLike) -> float:
             verbose = False
             )
         
-        to_keep = fit_results['to_keep']
-        sxy = fit_results['fit_params'][to_keep, 4]
+        to_keep = fit_results["to_keep"]
+        sxy = fit_results["fit_params"][to_keep, 4]
         metric = 1.0 / np.median(sxy)
     except Exception as e:
         print(f"2d localization and fit exceptions: {e}")
@@ -1638,12 +1736,12 @@ def run_ao_grid_mapping(
     np.ndarray
         _description_
     """
-    aoMirror_local = AOMirror.instance()
+    AOMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
     
     stage_positions_array = np.array(
         [
-            (pos['z'], pos['y'], pos['x']) for pos in stage_positions
+            (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
         ]
     )
     # Extract unique positions along each axis
@@ -1657,7 +1755,8 @@ def run_ao_grid_mapping(
 
     if num_scan_positions==1:
         if len(scan_axis_positions)==1:
-            ao_scan_axis_positions = np.asarray(scan_axis_positions+100)
+            # TODO: Right now I am blindly adding 100um from scan start
+            ao_scan_axis_positions = np.asarray(scan_axis_positions + 100)
         else:
             ao_scan_axis_positions = np.asarray([np.mean(scan_axis_positions)])
     elif len(scan_axis_positions)==1:
@@ -1701,7 +1800,7 @@ def run_ao_grid_mapping(
 
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
-    starting_mirror_positions = aoMirror_local.current_voltage.copy()
+    starting_mirror_positions = AOMirror_local.current_voltage.copy()
     for z_idx in range(num_z_positions):
         for tile_idx in range(num_tile_positions):
             for scan_idx in range(num_scan_positions):
@@ -1723,8 +1822,8 @@ def run_ao_grid_mapping(
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
-    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, aoMirror_local.positions_modal_array.shape[1]))
-    ao_grid_wfc_positions = np.zeros((num_ao_pos, aoMirror_local.positions_voltage_array.shape[1]))
+    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, AOMirror_local.positions_modal_array.shape[1]))
+    ao_grid_wfc_positions = np.zeros((num_ao_pos, AOMirror_local.positions_voltage_array.shape[1]))
     
     # Run AO optimization for each stage position
     if verbose:
@@ -1733,11 +1832,11 @@ def run_ao_grid_mapping(
     if save_dir_path:
         # save stage positions
         import json
-        ao_positions_path = save_dir_path / Path('ao_stage_positions.json')
-        exp_positions_path = save_dir_path / Path('exp_stage_positions.json')
-        with open(ao_positions_path, 'w') as file:
+        ao_positions_path = save_dir_path / Path("ao_stage_positions.json")
+        exp_positions_path = save_dir_path / Path("exp_stage_positions.json")
+        with open(ao_positions_path, "w") as file:
                 json.dump(ao_stage_positions, file, indent=4)
-        with open(exp_positions_path, 'w') as file:
+        with open(exp_positions_path, "w") as file:
                 json.dump(stage_positions, file, indent=4)
                 
     # Visit AO stage positions and measure best WFC positions
@@ -1745,9 +1844,9 @@ def run_ao_grid_mapping(
         if verbose:
             print(f"\nMoving stage to: {ao_stage_positions[ao_pos_idx]}")
             
-        target_x = ao_stage_positions[ao_pos_idx]['x']
-        target_y = ao_stage_positions[ao_pos_idx]['y']
-        target_z = ao_stage_positions[ao_pos_idx]['z']
+        target_x = ao_stage_positions[ao_pos_idx]["x"]
+        target_y = ao_stage_positions[ao_pos_idx]["y"]
+        target_z = ao_stage_positions[ao_pos_idx]["z"]
         
         mmc.setPosition(np.round(target_z,2))
         mmc.waitForDevice(mmc.getFocusDevice())
@@ -1762,26 +1861,31 @@ def run_ao_grid_mapping(
             sleep(.5)
         
         if ao_pos_idx==0:
-            mirror_state = ao_dict['mirror_state']
+            if target_z == stage_z_positions[0]:
+                mirror_state = ao_dict["mirror_state"]
+            else:
+            # TODO: Don"t start from starting mirror positions for different z-distances.
+                mirror_state = ao_dict["mirror_state"]
         else:
-            mirror_state = 'last_optimized'
+            mirror_state = "last_optimized"
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
         run_ao_optimization(
             starting_mirror_state=mirror_state,
-            metric_to_use=ao_dict['metric'],
-            channel_states=ao_dict['channel_states'],
-            exposure_ms=ao_dict['exposure_ms'],
-            daq_mode=ao_dict['daq_mode'],
-            image_mirror_range_um=ao_dict['image_mirror_range_um'],
-            num_iterations=ao_dict['iterations'],
-            init_delta_range=ao_dict['modal_delta'],
-            delta_range_alpha_per_iter=ao_dict['modal_alpha'],
+            metric_to_use=ao_dict["metric"],
+            modes_to_optimize=ao_dict["modes_to_optimize"],
+            channel_states=ao_dict["channel_states"],
+            exposure_ms=ao_dict["exposure_ms"],
+            daq_mode=ao_dict["daq_mode"],
+            image_mirror_range_um=ao_dict["image_mirror_range_um"],
+            num_iterations=ao_dict["iterations"],
+            starting_coef_delta=ao_dict["modal_delta"],
+            coef_delta_scale=ao_dict["modal_alpha"],
             save_dir_path=current_save_dir,
             verbose=verbose
         )
-        ao_grid_wfc_coeffs[ao_pos_idx] = aoMirror_local.current_coeffs.copy()
-        ao_grid_wfc_positions[ao_pos_idx] = aoMirror_local.current_voltage.copy()
+        ao_grid_wfc_coeffs[ao_pos_idx] = AOMirror_local.current_coeffs.copy()
+        ao_grid_wfc_positions[ao_pos_idx] = AOMirror_local.current_voltage.copy()
 
     if verbose:
         print(
@@ -1790,12 +1894,12 @@ def run_ao_grid_mapping(
         )
         
     # Map ao_grid_wfc_coeffs to experiment stage positions.
-    position_wfc_coeffs = np.zeros(aoMirror_local.positions_modal_array.shape)
-    position_wfc_positions = np.zeros(aoMirror_local.positions_voltage_array.shape)
+    position_wfc_coeffs = np.zeros(AOMirror_local.positions_modal_array.shape)
+    position_wfc_positions = np.zeros(AOMirror_local.positions_voltage_array.shape)
         
     # Convert AO positions and stage positions into structured arrays for efficient lookup
-    ao_stage_positions_array = np.array([(pos['z'], pos['y'], pos['x']) for pos in ao_stage_positions])
-    stage_positions_array = np.array([(pos['z'], pos['y'], pos['x']) for pos in stage_positions])
+    ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
+    stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
 
     for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
         # Get matching target ao positions
@@ -1834,8 +1938,8 @@ def run_ao_grid_mapping(
                 f"\n\n ++++ AO grid position: {ao_stage_positions[ao_grid_idx]} ++++",
                 f"\n ++++ Exp. stage position: {stage_positions[pos_idx]} ++++"
             )
-    aoMirror_local.positions_modal_array = position_wfc_coeffs
-    aoMirror_local.positions_voltage_array = position_wfc_positions
+    AOMirror_local.positions_modal_array = position_wfc_coeffs
+    AOMirror_local.positions_voltage_array = position_wfc_positions
     
     if verbose:
         print("AO Grid complete!")
@@ -1846,11 +1950,11 @@ def run_ao_grid_mapping(
 #-------------------------------------------------#
 
 def save_optimization_results(
-    all_images: ArrayLike,
-    all_metrics: ArrayLike,
-    images_per_iteration: ArrayLike,
-    metrics_per_iteration: ArrayLike,
-    optimal_coeffs: ArrayLike,
+    all_images: NDArray,
+    all_metrics: NDArray,
+    images_per_iteration: NDArray,
+    metrics_per_iteration: NDArray,
+    optimal_coeffs: NDArray,
     modes_to_optimize: List[int],
     # optimized_phase: Dict,
     metadata: Dict,
@@ -1860,15 +1964,15 @@ def save_optimization_results(
 
     Parameters
     ----------
-    all_images : ArrayLike
+    all_images : NDArray
         all images acquired during optimization
-    all_metrics : ArrayLike
+    all_metrics : NDArray
         all metrics measured during optimization
-    images_per_iteration : ArrayLike
+    images_per_iteration : NDArray
         optimal images per interation, including the starting image
-    metrics_per_iteration : ArrayLike
+    metrics_per_iteration : NDArray
         optmial metrics per iteration, including the starting metric
-    optimal_coeffs : ArrayLike
+    optimal_coeffs : NDArray
         optimal coefficients per iteration
     modes_to_optimize : List[int]
         The modes optimized, in order
@@ -1878,7 +1982,7 @@ def save_optimization_results(
         zarr destination path
     """
 
-    # Create the Zarr directory if it doesn't exist
+    # Create the Zarr directory if it doesn"t exist
     store = zarr.DirectoryStore(str(save_dir_path / Path("ao_results.zarr")))
     root = zarr.group(store=store)
 
@@ -1907,15 +2011,15 @@ def load_optimization_results(results_path: Path):
     store = zarr.DirectoryStore(str(results_path))
     results = zarr.open(store)
     
-    all_images = results['all_images'][:]
-    all_metrics = results['all_metrics'][:]
-    images_per_iteration = results['images_per_iteration'][:]
-    metrics_per_iteration = results['metrics_per_iteration'][:]
-    optimal_coeffs = results['optimal_coeffs'][:]
-    # optimized_phase = results['optimized_phase'][:]
+    all_images = results["all_images"][:]
+    all_metrics = results["all_metrics"][:]
+    images_per_iteration = results["images_per_iteration"][:]
+    metrics_per_iteration = results["metrics_per_iteration"][:]
+    optimal_coeffs = results["optimal_coeffs"][:]
+    # optimized_phase = results["optimized_phase"][:]
 
-    modes_to_optimize = results['modes_to_optimize'][:]
-    zernike_mode_names = [name.decode("utf-8") for name in results['zernike_mode_names'][:]]
+    modes_to_optimize = results["modes_to_optimize"][:]
+    zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
     
     ao_results = {
         "all_images":all_images,
@@ -1932,11 +2036,11 @@ def load_optimization_results(results_path: Path):
     return ao_results
 
 #-------------------------------------------------#
-# Run to 'keeps mirror flat'
+# Run to "keeps mirror flat"
 #-------------------------------------------------#
 
 if __name__ == "__main__":
-    """Keeps the mirror in it's flat position
+    """Keeps the mirror in it"s flat position
     """
     wfc_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat")
     wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
