@@ -909,7 +909,12 @@ def setup_projection(
                     opm_events.append(ao_grid_event)
                 else:
                     opm_events.append(ao_optimize_event)
-        
+        # TEST
+        elif time_idx % 5 == 0:
+            # Run the AO
+            # NOTE this is a temporary solution for the 24hr timelapse instead of running every time point.
+            opm_events.append(ao_grid_event)
+
         #--------------------------------------------------------------------#
         # Create events to run each timepoint
         if 'timepoint' in o2o3_mode:
@@ -1327,7 +1332,10 @@ def setup_mirrorscan(
             f'\n  scan step (um): {scan_step_um}'
             f'\n  DAQ scan mode: {scan_mode}'
         )
-    
+    if time_interval==0:
+        print("not using daq")
+        need_to_setup_daq = False
+
     for time_idx in trange(n_time_steps, desc= 'Timepoints:', leave=True):
         #--------------------------------------------------------------------#
         # Run fluidics starting at the second timepoint if present
@@ -1337,7 +1345,7 @@ def setup_mirrorscan(
             
         #--------------------------------------------------------------------#
         # Create pause events starting at the second timepoint for timelapse acq.
-        elif (mda_time_plan is not None) and (time_idx>0):
+        elif (mda_time_plan is not None) and (time_idx>0) and (int(time_interval)>0):
             current_timepoint_event = create_timelapse_event(time_interval, n_time_steps, time_idx)
             opm_events.append(current_timepoint_event)
 
@@ -1379,10 +1387,10 @@ def setup_mirrorscan(
                 current_ao_optimize_event.action.data['AO']['output_path'] = current_ao_output_path
                 opm_events.append(current_ao_optimize_event)
                 
-        if 'none' in ao_mode:
+        if 'none' in ao_mode and (time_interval>0):
             current_mirror_coeffs = AOmirror_setup.current_coeffs.copy()
             ao_mirror_update_event = create_ao_mirror_update_event(mirror_coeffs=current_mirror_coeffs)
-            opm_events.append(ao_mirror_update_event)     
+            opm_events.append(ao_mirror_update_event)
                    
         #--------------------------------------------------------------------#    
         # iterate over stage positions
@@ -1434,9 +1442,13 @@ def setup_mirrorscan(
             #----------------------------------------------------------------#
             
             if interleaved_acq:
-                # Update daq state to sequence all channels
-                opm_events.append(MDAEvent(**daq_event.model_dump()))
-                
+                print("Setting up interleaved acquisition mode for mirror scan")
+                if time_idx==0:
+                    # Update daq state to sequence all channels
+                    opm_events.append(MDAEvent(**daq_event.model_dump()))
+                if need_to_setup_daq:
+                    opm_events.append(MDAEvent(**daq_event.model_dump()))
+
                 # Create image event for current t / p / c / scan idx
                 for scan_idx in range(n_scan_steps):
                     current_chan_idx = 0 

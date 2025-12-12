@@ -26,10 +26,7 @@ except Exception:
 DEBUGGING = False
 
 # Metric global parameters
-# METRIC_PRECISION = 5
-METRIC_PERC_THRESHOLD = 0.99999 # Works for metrics ~100
 MAXIMUM_MODE_DELTA = 0.5
-ACCEPT_ALL_CHANGES = False
 DEFUALT_PSF_RADIUS_PX = 3
 DEFUALT_SIGN_FIGS = 6
 
@@ -76,8 +73,6 @@ mode_names = [
 ]
 
 
-# TODO: Update other scripts for starting_coef_delta -> starting_coef_delta
-# TODO: Update other scripts for coef_delta_scale -> coef_delta_scale
 # TODO: Implement Fourier ratio metric
 
 #-------------------------------------------------#
@@ -189,7 +184,7 @@ def run_ao_optimization(
     modes_to_optimize: str = "spherical first",
     starting_mirror_state: str = "system flat",
     accept_all_changes: bool = False,
-    metric_update_threshold: float = 0.98,
+    metric_update_threshold: float = 0.9999,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
     verbose: bool = True,
@@ -579,8 +574,10 @@ def run_ao_optimization(
                 # zero_metric_index = num_mode_steps // 2
                 # if optimal_metric >= metrics[zero_metric_index]*METRIC_PERC_THRESHOLD:
                 if accept_all_changes:
+                    print(f"accepting all changes!:{accept_all_changes}")
                     update = True
                 elif optimal_metric>=current_optimal_metrics[-1]*metric_update_threshold:
+                    print(f"using metric threshold!: {current_optimal_metrics[-1]}, {current_optimal_metrics[-1]*metric_update_threshold}")
                     update = True
                 else:
                     update = False
@@ -607,7 +604,7 @@ def run_ao_optimization(
              
             if verbose:
                 print(
-                    f"\n   ++ Was mirror updated: {update} ++"
+                    f"\n-------  ++ Was mirror updated: {update} ++  -------"
                 )
                 
             """Loop back to top and do the next mode until all modes are done"""

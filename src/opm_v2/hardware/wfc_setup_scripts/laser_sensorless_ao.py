@@ -569,7 +569,6 @@ if __name__ == "__main__":
         interaction_matrix_file_path = wfc_correction_file_path,
         system_flat_file_path= wfc_flat_file_path,
         output_path=ao_mirror_output_path,
-        control_mode='modal',
         mirror_flat_file_path=None,
         coeff_file_path=None,
         n_modes = 32,

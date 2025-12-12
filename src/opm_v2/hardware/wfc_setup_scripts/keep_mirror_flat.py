@@ -3,6 +3,7 @@ Set the AO mirror positions while script is running
 """
 
 from pathlib import Path
+
 from opm_v2.hardware.AOMirror import AOMirror
 
 # WFC configuration paths
@@ -26,7 +27,6 @@ ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
                     system_flat_file_path = wfc_flat_file_path,
                     mirror_flat_file_path = None,
                     coeff_file_path = None,
-                    control_mode= 'voltage',
                     output_path = mirror_state_output_path,
                     n_modes = 32,
                     modes_to_ignore = [])

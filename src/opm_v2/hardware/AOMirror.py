@@ -7,7 +7,7 @@ import numpy as np
 import wavekit_py as wkpy
 from numpy.typing import ArrayLike, NDArray
 
-DEBUGGING = True
+DEBUGGING = False
 
 # TODO: Test effect of tilt filtering
 # TODO: Test the effect of wait_after_move, adding a pause on top of temperization
@@ -149,6 +149,11 @@ class AOMirror:
             nb_zernike_coefs_total=self._n_modes,
             coefs_to_filter=self._ignored_modes,
             projection_pupil=wkpy.ZernikePupil_t(center, radius),
+        )
+        self.modal_coeff.set_data(
+            coef_array = np.zeros(n_modes),
+            index_array = self._mode_indices,
+            pupil = self.pupil
         )
 
         # ---------------------------------------------#
@@ -410,7 +415,7 @@ class AOMirror:
         )
         # Apply mirror voltage
         success = self.set_mirror_voltage(self.system_flat_voltage)
-
+        self._update_current_state()
         if DEBUGGING:
             voltage_success = np.allclose(
                 self.current_voltage, self.system_flat_voltage, atol=1e-5
@@ -431,7 +436,7 @@ class AOMirror:
         )
         # Apply mirror voltage
         success = self.set_mirror_voltage(self.optimized_voltages)
-
+        self._update_current_state()
         if DEBUGGING:
             modal_success = np.allclose(
                 self.current_coeffs, self.optimized_modal_coefs, atol=1e-5
@@ -523,7 +528,7 @@ class AOMirror:
             print(
                 "------- AOmirror -------\n"
                 f"Setting mirror voltage, success: {success}:\n"
-                f"Current=Requested: {voltage_success}"
+                f"Current=Requested: {voltage_success}\n"
                 f"Current voltages: {self.current_voltage}"
             )
 

@@ -147,8 +147,7 @@ def main() -> None:
         system_flat_file_path = Path(config["AOMirror"]["wfc_flat_path"]),
         n_modes = 32,
         n_positions=1,
-        modes_to_ignore = [],
-        control_mode='modal'
+        modes_to_ignore = []
     )
     
     opmAOmirror.apply_system_flat_voltage()
@@ -326,7 +325,7 @@ def main() -> None:
         if 'system' in ao_mirror_state:
             AOMirror_update.apply_system_flat_voltage()
         elif 'optimized' in ao_mirror_state:
-            AOMirror_update.apply_last_optimized()
+            AOMirror_update.apply_optimized_voltage()
         
         if DEBUGGING:
             print(f'\n++++ Mirror state updated to: {ao_mirror_state} ++++')
