@@ -430,6 +430,7 @@ class OPMSettings(QWidget):
         )
         self.spbx_405_exp = self.create_dbspinbox(
             max=1000,
+            precision=2,
             connect_to_fn=self.update_405_state
         )
         self.chx_405_state = QCheckBox()
@@ -455,6 +456,7 @@ class OPMSettings(QWidget):
                 self.update_488_state]
         )
         self.spbx_488_exp = self.create_dbspinbox(
+            precision=2,
             max=1000,
             connect_to_fn=self.update_488_state
         )
@@ -482,6 +484,7 @@ class OPMSettings(QWidget):
                 self.update_561_state]
         )
         self.spbx_561_exp = self.create_dbspinbox(
+            precision=2,
             max=1000,
             connect_to_fn=self.update_561_state
         )
@@ -509,6 +512,7 @@ class OPMSettings(QWidget):
                 self.update_638_state]
         )
         self.spbx_638_exp = self.create_dbspinbox(
+            precision=2,
             max=1000,
             connect_to_fn=self.update_638_state
         )
@@ -536,6 +540,7 @@ class OPMSettings(QWidget):
                 self.update_705_state]
         )
         self.spbx_705_exp = self.create_dbspinbox(
+            precision=2,
             max=1000,
             connect_to_fn=self.update_705_state
         )        
@@ -933,6 +938,7 @@ if __name__ ==  '__main__':
     
     def signal_recieved(key=None, value=None):
         print('signal triggered')
+        print('value')
     window.settings_changed.connect(signal_recieved)
     
     sys.exit(app.exec())
