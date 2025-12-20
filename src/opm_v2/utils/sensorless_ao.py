@@ -184,7 +184,9 @@ def run_ao_optimization(
     modes_to_optimize: str = "spherical first",
     starting_mirror_state: str = "system flat",
     accept_all_changes: bool = False,
-    metric_update_threshold: float = 0.9999,
+    compare_to_optimal: bool = False,
+    compare_to_zero_metric: bool = False,
+    metric_update_threshold: float = 1.01,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
     verbose: bool = True,
@@ -218,6 +220,10 @@ def run_ao_optimization(
         the starting mirror state, system flat or last optimized, default "system flat"
     accept_all_changes: bool, optional
         Whether to accept all optimal deltas, regardless of metric improvement
+    compare_to_optimal: bool, optional
+        Whether to compare to current optimal metric
+    compare_to_zero_metric: bool, optional
+        Whether to compare to zero delta metric
     save_dir_path : Path, optional, by default None
         Path to save figures, by default None
     save_prefix : str, optional
@@ -232,7 +238,7 @@ def run_ao_optimization(
     """
     if verbose:
         print(
-            "\n---------- Starting SensorlessAO ---------\n"
+            "\n++++++++++++++++ RUNNING SENSORLESS AO ++++++++++++++++\n"
         )
     # Determine modes to optimize
     if isinstance(modes_to_optimize, str):
@@ -248,18 +254,26 @@ def run_ao_optimization(
             modes_to_optimize = stationary_modes
         else:
             print(
-                "------- Warning -------"
+                "------- WARNING -------"
                 f"\nAO modes to optimize {modes_to_optimize} not recognized."
                 "\nDefaulting to spherical modes."
             )
             modes_to_optimize = spherical_modes_first
     else:
         print(
-            "------- Warning -------"
+            "------- WARNING -------"
             "\nAO modes_to_optimize not a string. Defaulting to spherical modes."
         )
         modes_to_optimize = spherical_modes_first
-
+    
+    # If none of the thresholds are selected defualt to one
+    if sum([accept_all_changes, compare_to_optimal, compare_to_zero_metric])==0:
+        print(
+            "------- WARNING -------"
+            "\nUsing default metric comparison: Zero metric"
+        )
+        compare_to_zero_metric = True
+        
     #---------------------------------------------#
     # Create hardware controller instances
     #---------------------------------------------#
@@ -336,7 +350,6 @@ def run_ao_optimization(
     current_optimal_metrics = []
     current_coeffs = []
     optimal_coeffs = []
-    
     #---------------------------------------------#
     # Set starting mode coeff
     #---------------------------------------------#
@@ -345,18 +358,21 @@ def run_ao_optimization(
         AOMirror_local.apply_system_flat_voltage()
         if verbose:
             print(
+                "------- INFO -------"
                 "\nStarting optimization with system flat voltage"
             )
     elif starting_mirror_state == "last optimized":
         AOMirror_local.apply_optimized_voltage()
         if verbose:
             print(
+                "------- INFO -------"
                 "\nStarting optimization with optimized voltage"
-                f"\nModal coefs: {AOMirror_local.current_coeffs}"
+                f"\nModal coefs: \n{AOMirror_local.current_coeffs.copy()}"
             )
     else:
         if verbose:
             print(
+                "------- INFO -------"
                 "\nStarting mirror voltage defaulted to system flat"
             )
         AOMirror_local.apply_system_flat_voltage()
@@ -365,7 +381,8 @@ def run_ao_optimization(
     
     if verbose:
         print(
-            f"\n AO optimization starting mirror modal amplitudes:\n{starting_coeffs}"
+            "------- INFO -------"
+            f"\n AO optimization starting mirror modal amplitudes: \n{starting_coeffs}"
         )
         
     #---------------------------------------------#
@@ -393,7 +410,7 @@ def run_ao_optimization(
     
     if verbose:
         print(
-            "++++++++ Starting iterative sensorless AO loop ++++++++"           
+            "\n++++++++ STARTING SENSORLESS AO LOOP ++++++++\n" 
         )
     try:
         starting_image = mmc.snap()
@@ -401,7 +418,7 @@ def run_ao_optimization(
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
     except Exception as e:
         print(
-            "------- ERROR! -------"
+            "------- ERROR -------"
             f"\nFailed to get starting metric! \n{e}"
         )
         return False
@@ -425,15 +442,15 @@ def run_ao_optimization(
             print(
                 "\n\n-------------------------------------------------------------------"
                 f"\nOptimization iteration: {k+1} / {num_iterations}"
-                f"\nCoef pertubation amplitude: {mode_deltas[k]:.3f}"
-                "\n-------------------------------------------------------------------"
+                f"\nCoeff pertubation amplitude: {mode_deltas[k]:.3f}"
+                "\n-------------------------------------------------------------------\n"
             )
 
         # Iterate over modes to optimize
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f"\n\n+++++ Current Zernike mode: {mode+1}:{mode_names[mode]} +++++"
+                    f"\n\n+ Current Zernike mode: {mode+1}:{mode_names[mode]} +\n\n"
                     )
             metrics = []
             deltas = np.linspace(-mode_deltas[k], mode_deltas[k], num_mode_steps)
@@ -466,12 +483,12 @@ def run_ao_optimization(
                         mode_success = False
                         if verbose:
                             print(
-                                "\n------- Metric failed! -------"
-                                f"\ndelta={delta:.4f}"
+                                "------- Metric failed! -------"
+                                f"\ndelta={delta:.4f}\n"
                             )
                 if verbose:
                     print(
-                        f"++++++++ Delta={delta:.4f}, Metric={metric:.4f}++++++++"
+                        f"++++++++ Delta={delta:.4f}, Metric={metric:.4f}++++++++\n"
                     )
             
             #---------------------------------------------#
@@ -481,11 +498,12 @@ def run_ao_optimization(
             if mode_success:
                 if k!=0 and len(current_optimal_metrics)==0:
                     # TODO: Should we make sure each iteration starts from the best 
-                    # overall metric or the best measured this when d=0?
+                    #       overall metric or the best measured this when d=0?
                     # current_optimal_metrics.append(metrics[num_mode_steps//2])
                     current_optimal_metrics.append(all_optimal_metrics[-1])
                 try:                  
                     # Are metrics monotonic, if so use the maximum
+                    # TODO: Should we use the max or accept no changes?
                     is_increasing = all(
                         x < y for x, y in zip(
                             np.asarray(metrics), np.asarray(metrics)[1:]
@@ -497,11 +515,12 @@ def run_ao_optimization(
                         )
                     )
                     if is_increasing or is_decreasing:
-                        optimal_delta = deltas[np.argmax(metrics)]
-                        # optimal_delta = 0
+                        # optimal_delta = deltas[np.argmax(metrics)]
+                        optimal_delta = 0
                         if verbose:
                             print(
-                                "\n------- Metrics increasing/decreasing -------"
+                                "------- WARNING -------"
+                                "\n Metrics increasing/decreasing\n"
                             )
                         # optimal_delta = 0
                     else:
@@ -518,7 +537,8 @@ def run_ao_optimization(
                                 )
                             )
                             print(
-                                "\n------- Booth Metric comparison -------"
+                                "------- INFO -------"
+                                "\n Booth Metric comparison"
                                 f"\nBooth: {booth_delta:.4f}, Fit: {optimal_delta:.4f}"
                             )
                         # Reject if metrics have + curvature or too large of delta
@@ -528,29 +548,40 @@ def run_ao_optimization(
                             # optimal_delta = 0
                             if verbose:
                                 print(
-                                    "\n------- Metrics have positive curvature! -------"
+                                    "------- WARNING -------"
+                                    "\n Metrics have positive curvature!"
                                 )
-                        elif np.abs(optimal_delta)>MAXIMUM_MODE_DELTA:
-                            optimal_delta = 0
-                            if verbose:
-                                print(
-                                    "\n------- Optimal delta is too large! -------"
-                                )
+                        else:
+                            # Clip optimal delta at the edge of sampled range
+                            optimal_delta = np.clip(optimal_delta, deltas.min(), deltas.max())
+                        # elif np.abs(optimal_delta)>MAXIMUM_MODE_DELTA:
+                        #     optimal_delta = 0
+                        #     if verbose:
+                        #         print(
+                        #             "------- WARNING -------"
+                        #             "\n Optimal delta is too large!"
+                        #         )
                 except Exception as e:
                     optimal_delta = 0
                     if verbose:
                         print(
-                            "------- Exception in fit occurred! -------"
-                            f"\nexception:{e}"
+                            "------- WARNING -------"
+                            "\n Exception in fit occurred!"
+                            f"\n exception:{e}"
                         )
             else:
                 optimal_delta = 0
                 if verbose:
-                    print("\n------- Error occured in metrics! -------")
+                    print(
+                        "------- WARNING -------"
+                        "\nError occured in metrics!"
+                    )
            
             #---------------------------------------------#
             # Apply the kept optimized mirror modal coeffs
             #---------------------------------------------# 
+            # TODO: Should we be re-measuring the metric after finding opt delta?
+            current_opt_metric = current_optimal_metrics[-1]
             
             if optimal_delta!=0:
                 # remeasure metric to verify new position
@@ -566,39 +597,63 @@ def run_ao_optimization(
                 optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
                     print(
-                        f"\n++++++ Optimal delta from fit: {optimal_delta:.4f} ++++++"
-                        f"\n++++++ Measured optimal metric: {optimal_metric:.5f} ++++++"
+                        f"\n++++ Optimal delta from fit: {optimal_delta:.4f} ++++"
+                        f"\n++++ Measured optimal metric: {optimal_metric:.5f} ++++\n"
                     )
                 
-                # Check if the new metric is better than the current optimal metric
-                # zero_metric_index = num_mode_steps // 2
-                # if optimal_metric >= metrics[zero_metric_index]*METRIC_PERC_THRESHOLD:
+                # NOTE: There are 3 variations of accepting a change,
+                #       1. Accept all changes
+                #       2. Accept change if better than current opt.
+                #       3. Accept change if better than 0 delta metric
+                zero_metric_index = num_mode_steps // 2
+                current_zero_metric = metrics[zero_metric_index]*metric_update_threshold
+                current_opt_metric_thresh = current_opt_metric*metric_update_threshold
                 if accept_all_changes:
-                    print(f"accepting all changes!:{accept_all_changes}")
                     update = True
-                elif optimal_metric>=current_optimal_metrics[-1]*metric_update_threshold:
-                    print(f"using metric threshold!: {current_optimal_metrics[-1]}, {current_optimal_metrics[-1]*metric_update_threshold}")
-                    update = True
-                else:
-                    update = False
-                    all_optimal_images.append(all_optimal_images[-1])
-                    all_optimal_metrics.append(all_optimal_metrics[-1])
-                    current_optimal_metrics.append(current_optimal_metrics[-1])
-
-                if update:
-                    # Accept the change, and update current mode coeffs
-                    current_coeffs[mode] = current_coeffs[mode] + optimal_delta
-                    all_optimal_images.append(optimal_image)
-                    all_optimal_metrics.append(optimal_metric)
-                    current_optimal_metrics.append(optimal_metric)
-
+                    if DEBUGGING:
+                        "------- INFO -------"
+                        print(f"accepting all changes!:{accept_all_changes}")
+                elif compare_to_optimal:
+                    if optimal_metric>=current_opt_metric_thresh:
+                        update = True
+                    if DEBUGGING:
+                        print(
+                            "------- INFO -------"
+                            "Using optimal metric!:"
+                            f"{current_opt_metric},{current_opt_metric_thresh}"
+                        )
+                    else:
+                        update = False
+                elif compare_to_zero_metric:
+                    if optimal_metric >= current_zero_metric:
+                        update = True
+                        if DEBUGGING:
+                            print(
+                                "------- INFO -------"
+                                "Using Zero metric threshold!:"
+                                f"{current_opt_metric},{current_zero_metric}"
+                            )
+                    else:
+                        update = False
                 if verbose:
                     print(
-                        f"\n------- Current optimal metric: {current_optimal_metrics[-1]:.6f} -------"
+                        "------- INFO -------"
+                        f"\nCurrent optimal metric: {current_optimal_metrics[-1]:.5f}\n"
                     )
             else:
                 update = False
             
+            # Update lists depending on update status
+            if update:
+                current_coeffs[mode] = current_coeffs[mode] + optimal_delta
+                all_optimal_images.append(optimal_image)
+                all_optimal_metrics.append(optimal_metric)
+                current_optimal_metrics.append(optimal_metric)
+            else:
+                all_optimal_images.append(all_optimal_images[-1])
+                all_optimal_metrics.append(all_optimal_metrics[-1])
+                current_optimal_metrics.append(current_opt_metric)
+                
             # Update the mirror to the current best state
             _ = AOMirror_local.set_modal_coefficients(current_coeffs)   
              
@@ -617,18 +672,25 @@ def run_ao_optimization(
     AOMirror_local.update_optimized_array()
     if verbose:
         print(
-            f"\n++++ Starting Zernike mode amplitude: ++++ \n{starting_coeffs}",
-            f"\n++++ Final optimized Zernike mode amplitude: ++++ \n{current_coeffs}"
+            "\n SENSORLESS AO COMPLETE:\n"
+            f"\n Starting Zernike mode amplitude: ++++ \n{starting_coeffs}",
+            f"\n Final optimized Zernike mode amplitude: ++++ \n{current_coeffs}"
             )
     
     # Stop the DAQ programming
     opmNIDAQ_local.stop_waveform_playback()
     
     if save_dir_path:
+        if not(save_dir_path.exists()):
+            save_dir_path.mkdir(exist_ok=True)
+            
         if verbose:
-            print(f"Saving AO results at:\n  {save_dir_path}\n")
+            print(
+                "------- INFO -------"
+                f"\nSaving AO results at:\n{save_dir_path}")
         
         if save_prefix:
+            # Option to save the mirror state using the builtin functions
             AOMirror_local.save_current_state(save_prefix)
             AOMirror_local.save_positions_array(prefix=save_prefix)
             
@@ -670,7 +732,8 @@ def run_ao_optimization(
             )
         except Exception as e:
             print(
-                "\n  ----- Saving result had an exception! -----"
+                "------- WARNING -------"
+                "\n Saving result had an exception!"
                 f"\n {e}"
             )
         
@@ -1093,6 +1156,7 @@ def get_cropped_image(
     if center is None:
         center = get_image_center(image,threshold=1000)
 
+    # TODO: Validate Cropping, is it x,y or y,x
     if len(image.shape) == 3:
         x_min, x_max = max(
             center[0] - crop_size, 0), min(center[0] + crop_size, image.shape[1]
@@ -1198,7 +1262,10 @@ def gauss2d(
     raveled_gauss2d = (
         offset +
         amplitude * np.exp(
-            -(((x - center_x)**2 / (2 * sigma_x**2)) + ((y - center_y)**2 / (2 * sigma_y**2)))
+            -(
+                ((x - center_x)**2 / (2 * sigma_x**2)) 
+              + ((y - center_y)**2 / (2 * sigma_y**2))
+            )
         )
     ).ravel()
 
@@ -1221,7 +1288,7 @@ def compute_otf_support_px(img: NDArray, psf_radius_px: float) -> int:
         OTF cutoff frequency in pixels.
     """
     w = min(img.shape)
-    psf_radius_px = max(1, np.ceil(psf_radius_px))  # clip all PSF radii below 1 px to 1.
+    psf_radius_px = max(1, np.ceil(psf_radius_px))  # clip all PSF radii below 1 px to 1
     cutoff = np.ceil(w / (2 * psf_radius_px)).astype(int)
 
     return cutoff
@@ -1347,7 +1414,8 @@ def quadratic_fit(x: NDArray, y: NDArray) -> Sequence[float]:
 
 def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
     """
-    Normalize input image (roi) to [0,1] between the defined (low) percentile and the maximum.
+    Normalize input image (roi) to [0,1] between the defined 
+    (low) percentile and the maximum.
 
     Parameters
     ----------
@@ -1364,8 +1432,12 @@ def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
     roi_normalized = (roi - bg)/(peak - bg)
     roi_normalized = np.clip(roi_normalized, 0, 1)
     if debug_mode:
-        print("normalize_roi() values (low_percentile, background, peak):"
-              + str(bg_percentile) + ",  " + "{0:2.3f}".format(bg) + ",  " + "{0:2.3f}".format(peak))
+        print(
+        "normalize_roi() values (low_percentile, background, peak):"
+        + str(bg_percentile) 
+        + ",  " + "{0:2.3f}".format(bg) + ",  "
+        + "{0:2.3f}".format(peak)
+        )
     return roi_normalized
 
 #-------------------------------------------------#
@@ -1394,7 +1466,7 @@ def localize_2d_img(
     dxy : _type_
         _description_
     localize_psf_filters : dict, optional
-        _description_, by default { "threshold":3000, "amp_bounds":(1000, 30000), "sxy_bounds":(0.100, 1.0) }
+        _description_, has default
     save_dir_path : Path, optional
         _description_, by default None
     label : str, optional
@@ -1562,7 +1634,7 @@ def metric_shannon_dct(
             center = get_image_center(image, threshold)
         else:
             center = image_center
-            image = get_cropped_image(image, crop_size, center)
+        image = get_cropped_image(image, crop_size, center)
         
     # if not crop_size:
     #     crop_size = min(image.shape)-1
@@ -1616,11 +1688,11 @@ def metric_gauss2d(
             center = get_image_center(image, threshold)
         else:
             center = image_center
-        # crop image
         image = get_cropped_image(image, crop_size, center)
         
     # normalize image 0-1
-    image = image / np.max(image) # normalize_roi(image, bg_percentile=25.0)
+    image = image / np.max(image) 
+    # normalize_roi(image, bg_percentile=25.0)
     image = image.astype(np.float32)
     
     # create coord. grid for fitting 
@@ -1632,7 +1704,7 @@ def metric_gauss2d(
     initial_guess = (image.max(), image.shape[1] // 2, 
                      image.shape[0] // 2, 3, 3, image.min())
     fit_bounds = [[0,0,0,1.0,1.0,0],
-                  [1.5,image.shape[1],image.shape[0],100,100,5000]]
+                  [1.5,image.shape[1],image.shape[0],100,100,10]]
     try:
         popt, pcov = curve_fit(
             gauss2d, 
@@ -1645,15 +1717,28 @@ def metric_gauss2d(
         
         amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
 
-        weighted_metric = (1 - np.abs((sigma_x-sigma_y) / (sigma_x+sigma_y))) + 1 / (sigma_x+sigma_y)  + np.exp(-1 * (sigma_x+sigma_y-1)**2)
-        # weighted_metric = np.exp(-1 * np.abs(sigma_x - sigma_y)) + 2 / (sigma_y + sigma_x)
-
+        weighted_metric = (
+            (1 - np.abs((sigma_x-sigma_y) / (sigma_x+sigma_y))) 
+            + 1 / (sigma_x+sigma_y)  + np.exp(-1 * (sigma_x+sigma_y-1)**2)
+        )
+        
+        # weighted_metric = (
+            # np.exp(-1 * np.abs(sigma_x - sigma_y)) 
+            # + 2 / (sigma_y + sigma_x)
+        # )
         # SJS: From old laser_optmization code 
-        # weighted_metric = (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y)))* (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
+        # weighted_metric = (
+            # (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y))) 
+            # * (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
+        # )
         # weight_amp = 0
         # weight_sigma_x = 2
         # weight_sigma_y = 2
-        # weighted_metric = weight_amp * amplitude + weight_sigma_x / sigma_x + weight_sigma_y / sigma_y + np.exp(-1*(sigma_x+sigma_y-4)**2)
+        # weighted_metric = (
+            # weight_amp * amplitude 
+            # + weight_sigma_x / sigma_x + weight_sigma_y / sigma_y 
+            # + np.exp(-1*(sigma_x+sigma_y-4)**2)
+        # )
         
         if (weighted_metric <= 0) or (weighted_metric > 100):
             weighted_metric = 1e-12 
@@ -1746,7 +1831,7 @@ def run_ao_grid_mapping(
     scan_axis_positions = np.unique(stage_positions_array[:, 2])
 
     stage_z_positions = np.unique(
-        stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][:, 0]
+        stage_positions_array[stage_positions_array[:,2] == scan_axis_positions[0]][:,0]
     )
     num_z_positions = stage_z_positions.shape[0]
 
@@ -1797,11 +1882,15 @@ def run_ao_grid_mapping(
 
     # compile AO stage positions to visit, visit XY positions before stepping in Z
     ao_stage_positions = []
-    starting_mirror_positions = AOMirror_local.current_voltage.copy()
+    # starting_mirror_positions = AOMirror_local.current_voltage.copy()
+    # TODO: Set to starting mirror positions 
+    #       or refer to z-plane correction at each z plane.
     for z_idx in range(num_z_positions):
         for tile_idx in range(num_tile_positions):
             for scan_idx in range(num_scan_positions):
-                scan_pos_filter = np.ceil(ao_scan_axis_positions[scan_idx] - stage_positions_array[:, 2])==1
+                scan_pos_filter = np.ceil(
+                    ao_scan_axis_positions[scan_idx] - stage_positions_array[:, 2]
+                )==1
                 
                 if not any(scan_pos_filter):
                     z_tile_positions = stage_z_positions
@@ -1819,8 +1908,12 @@ def run_ao_grid_mapping(
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
-    ao_grid_wfc_coeffs = np.zeros((num_ao_pos, AOMirror_local.positions_modal_array.shape[1]))
-    ao_grid_wfc_positions = np.zeros((num_ao_pos, AOMirror_local.positions_voltage_array.shape[1]))
+    ao_grid_wfc_coeffs = np.zeros(
+        (num_ao_pos, AOMirror_local.positions_modal_array.shape[1])
+    )
+    ao_grid_wfc_positions = np.zeros(
+        (num_ao_pos, AOMirror_local.positions_voltage_array.shape[1])
+    )
     
     # Run AO optimization for each stage position
     if verbose:
@@ -1847,13 +1940,17 @@ def run_ao_grid_mapping(
         
         mmc.setPosition(np.round(target_z,2))
         mmc.waitForDevice(mmc.getFocusDevice())
-        
         mmc.setXYPosition(
             np.round(float(target_x),2),
             np.round(float(target_y),2)
         )
         current_x, current_y = mmc.getXYPosition()
-        while not(np.isclose(current_x, target_x, 0., 1.0)) or not(np.isclose(current_y, target_y, 0., 1.0)):
+        
+        while not(
+            np.isclose(current_x, target_x, 0., 1.0)
+        ) or not(
+            np.isclose(current_y, target_y, 0., 1.0)
+        ):
             current_x, current_y = mmc.getXYPosition()
             sleep(.5)
         
@@ -1861,7 +1958,7 @@ def run_ao_grid_mapping(
             if target_z == stage_z_positions[0]:
                 mirror_state = ao_dict["mirror_state"]
             else:
-            # TODO: Don"t start from starting mirror positions for different z-distances.
+            # TODO: Don"t start from starting mirror positions for different z-distances
                 mirror_state = ao_dict["mirror_state"]
         else:
             mirror_state = "last_optimized"
@@ -1893,10 +1990,12 @@ def run_ao_grid_mapping(
     # Map ao_grid_wfc_coeffs to experiment stage positions.
     position_wfc_coeffs = np.zeros(AOMirror_local.positions_modal_array.shape)
     position_wfc_positions = np.zeros(AOMirror_local.positions_voltage_array.shape)
-        
-    # Convert AO positions and stage positions into structured arrays for efficient lookup
-    ao_stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions])
-    stage_positions_array = np.array([(pos["z"], pos["y"], pos["x"]) for pos in stage_positions])
+    ao_stage_positions_array = np.array(
+        [(pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions]
+    )
+    stage_positions_array = np.array(
+        [(pos["z"], pos["y"], pos["x"]) for pos in stage_positions]
+    )
 
     for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
         # Get matching target ao positions
@@ -1986,12 +2085,18 @@ def save_optimization_results(
     # Create datasets in the Zarr store
     root.create_dataset("all_images", data=all_images, overwrite=True)
     root.create_dataset("all_metrics", data=all_metrics, overwrite=True)
-    root.create_dataset("images_per_iteration", data=images_per_iteration, overwrite=True)
-    root.create_dataset("metrics_per_iteration", data=metrics_per_iteration, overwrite=True)
+    root.create_dataset(
+        "images_per_iteration", data=images_per_iteration, overwrite=True
+    )
+    root.create_dataset(
+        "metrics_per_iteration", data=metrics_per_iteration, overwrite=True
+    )
     root.create_dataset("optimal_coeffs", data=optimal_coeffs, overwrite=True)
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
     # root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
-    root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True)
+    root.create_dataset(
+        "zernike_mode_names", data=np.array(mode_names, dtype="S"), overwrite=True
+    )
     root.attrs.update(metadata)
     
     return
@@ -2016,7 +2121,9 @@ def load_optimization_results(results_path: Path):
     # optimized_phase = results["optimized_phase"][:]
 
     modes_to_optimize = results["modes_to_optimize"][:]
-    zernike_mode_names = [name.decode("utf-8") for name in results["zernike_mode_names"][:]]
+    zernike_mode_names = [
+        name.decode("utf-8") for name in results["zernike_mode_names"][:]
+    ]
     
     ao_results = {
         "all_images":all_images,
@@ -2039,17 +2146,29 @@ def load_optimization_results(results_path: Path):
 if __name__ == "__main__":
     """Keeps the mirror in it"s flat position
     """
-    wfc_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat")
-    wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc")
-    haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat")
-    wfc_flat_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\flat_actuator_positions.wcs")
-    wfc_calibrated_flat_path = Path(r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250215_tilted_brightness_laser_actuator_positions.wcs")
+    wfc_config_file_path = Path(
+        r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat"
+    )
+    wfc_correction_file_path = Path(
+        r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\correction_data_backup_starter.aoc"
+    )
+    haso_config_file_path = Path(
+        r"C:\Users\qi2lab\Documents\github\opm_ao\Configuration Files\WFS_HASO4_VIS_7635.dat"
+    )
+    wfc_flat_file_path = Path(
+        r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\flat_actuator_positions.wcs"
+    )
+    wfc_calibrated_flat_path = Path(
+        r"C:\Users\qi2lab\Documents\github\opm_ao\OUT_FILES\20250215_tilted_brightness_laser_actuator_positions.wcs"
+    )
 
     # ao_mirror puts the mirror in the flat_position state to start.
-    ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
-                         haso_config_file_path = haso_config_file_path,
-                         interaction_matrix_file_path = wfc_correction_file_path,
-                         system_flat_file_path = wfc_calibrated_flat_path)
-    
+    ao_mirror = AOMirror(
+        wfc_config_file_path = wfc_config_file_path,
+        haso_config_file_path = haso_config_file_path,
+        interaction_matrix_file_path = wfc_correction_file_path,
+        system_flat_file_path = wfc_calibrated_flat_path
+    )
+
     input("Press enter to exit . . . ")
     ao_mirror = None
