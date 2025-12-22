@@ -272,7 +272,9 @@ class OPMNIDAQ:
             Projection mirror calibration in V/um
         """
         
-        if not hasattr(self, "_projection_mirror_calibration") or self._projection_mirror_calibration is None:
+        if not hasattr(
+            self, "_projection_mirror_calibration"
+        ) or self._projection_mirror_calibration is None:
             self._projection_mirror_calibration = value
         else:
             self._projection_mirror_calibration = value
@@ -632,7 +634,6 @@ class OPMNIDAQ:
             # Collect one frame for each scan position
             n_voltage_steps = int(self._image_scan_steps)
             self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
-            self.samples_per_do_ch = 2*n_voltage_steps*self._n_active_channels
             
             # Generate values for DO
             _do_waveform = np.zeros((self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8)
@@ -647,20 +648,24 @@ class OPMNIDAQ:
                 _do_waveform[-1, :] = 0
                 
             #-----------------------------------------------------#
-            # Create ao waveform, scan the image mirror voltage, keep the projection mirror neutral            
+            # Create ao waveform, scan the image mirror voltage, keep the projection mirror neutral
             # This array is written for both AO channels
             _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
             
             # Generate image scanning mirror voltage steps
             max_volt = self._image_mirror_min_volt + self._image_axis_range_volts
-            scan_mirror_volts = np.linspace(self._image_mirror_min_volt, max_volt, n_voltage_steps)
+            scan_mirror_volts = np.linspace(
+                self._image_mirror_min_volt, max_volt, n_voltage_steps
+            )
             
             # Set the last time point (when exp is off) to the first mirror positions.
             _ao_waveform[0:2*self._n_active_channels - 1, 0] = scan_mirror_volts[0]
             
             if len(scan_mirror_volts) > 1:
                 # (2 * # active channels) voltage values for all other frames
-                _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(scan_mirror_volts[1:], np.ones(2 * self._n_active_channels))
+                _ao_waveform[2*self._n_active_channels - 1:-1, 0] = np.kron(
+                    scan_mirror_volts[1:], np.ones(2 * self._n_active_channels)
+                )
             
             # set back to initial value at end
             _ao_waveform[-1,0] = scan_mirror_volts[0]
@@ -827,8 +832,10 @@ class OPMNIDAQ:
                         self.samples_per_do_ch
                     )
                 elif self.scan_type=="projection":
-                    # NOTE: 'projection' mode can be interweaved as the AO channels are triggered by the change in DO lines!
-                    # Configure to run on internal clock, _ao_waveform has shape dictated by camera exposure
+                    # NOTE: 'projection' mode can be interweaved as the AO channels are
+                    #       triggered by the change in DO lines!
+                    # Configure to run on internal clock, ao_waveform has shape dictated
+                    # by camera exposure
                     self._task_ao.CfgSampClkTiming(
                         "",
                         self._daq_sample_rate_hz,  # Define how fast the samples are output

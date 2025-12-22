@@ -140,6 +140,8 @@ def create_ao_optimize_event(
                     'readout_ms': float(ao_config['readout_ms']),
                     'apply_existing': bool(False),
                     'pos_idx': int(0),
+                    'scan_idx': int(0),
+                    'time_idx': int(0),
                     'output_path':output_dir_path
                 },
                 'Camera' : {
@@ -275,8 +277,8 @@ def create_ao_mirror_update_event(
                 name='AO-mirrorUpdate',
                 data = {
                     'AOmirror' : {
-                        'coefficients' : mirror_coeffs.tolist() if mirror_coeffs is not None else None,
-                        'voltages' : mirror_positions.tolist() if mirror_positions is not None else None,
+                        'coefficients' : mirror_coeffs.tolist(),
+                        'voltages' : mirror_positions.tolist(),
                     }
                 }
             )
@@ -444,7 +446,9 @@ def create_stage_event(stage_position:Dict) -> MDAEvent:
     )
     return stage_event
 
-def create_asi_scan_setup_event(start_mm: float, end_mm: float, speed_mm_s:float) -> MDAEvent:
+def create_asi_scan_setup_event(start_mm: float,
+                                end_mm: float, 
+                                speed_mm_s:float) -> MDAEvent:
     """Create a custom event that sets the ASI controller up for stage scan
     NOTE: positions are in mm and rounded to 2
     
