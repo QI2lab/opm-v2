@@ -56,7 +56,7 @@ class OPMEngine(MDAEngine):
         """
         self.start_time = perf_counter()
         self.elapsed_time = 0
-        self._mmc.setCircularBufferMemoryFootprint(16000)
+        self._mmc.setCircularBufferMemoryFootprint(96000)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -626,5 +626,6 @@ class OPMEngine(MDAEngine):
         if self.AOMirror.output_path:
             self.AOMirror.save_positions_array()
         self._mmc.clearCircularBuffer()
+        self._mmc.setCircularBufferMemoryFootprint(16000)
         
         super().teardown_sequence(sequence)
