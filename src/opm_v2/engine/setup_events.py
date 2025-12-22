@@ -219,10 +219,8 @@ def stage_positions_from_grid(
     
     return stage_positions
 
-
 def populate_opm_metadata(
     daq_mode: str,
-    mirror_step: float,
     channel_states: list,
     channel_exposures_ms: list,
     laser_powers: list,
@@ -242,7 +240,8 @@ def populate_opm_metadata(
     camera_mirror_orientation: str,
     stage_position: dict,
     mirror_voltage: float = None,
-    image_mirror_range_um: float = None,
+    image_mirror_range_um: float = None,    
+    mirror_step: float = None,
 ):
     # Assign the DAQ-image mode specific variables
     image_mirror_position = float(mirror_voltage) if mirror_voltage else None
@@ -1321,7 +1320,8 @@ def setup_mirrorscan(
             print(
                 "AF mode is set to timepoint, but 0 interval selected, running at start"
             )
-            
+    else:
+        need_to_setup_daq = True
     #----------------------------------------------------------------#
     # Generate xyz stage positions
     if mda_grid_plan is not None:
@@ -1819,6 +1819,10 @@ def setup_stagescan(
     # Generate xyz stage positions
     stage_positions = []
     
+    if mda_grid_plan is None:
+        print("No grid plan selected!")
+        return None, None
+        
     # grab grid plan extents
     min_y_pos = mda_grid_plan['bottom']
     max_y_pos = mda_grid_plan['top']

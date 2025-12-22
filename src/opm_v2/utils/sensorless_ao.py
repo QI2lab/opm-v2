@@ -186,7 +186,7 @@ def run_ao_optimization(
     accept_all_changes: bool = False,
     compare_to_optimal: bool = False,
     compare_to_zero_metric: bool = False,
-    metric_update_threshold: float = 1.01,
+    metric_update_threshold: float = 1.0,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
     verbose: bool = True,
@@ -280,7 +280,8 @@ def run_ao_optimization(
     
     opmNIDAQ_local = OPMNIDAQ.instance()
     AOMirror_local = AOMirror.instance()
-    
+    AOMirror_local.output_path = save_dir_path
+
     if AOMirror is None or OPMNIDAQ is None:
         raise ImportError("Required hardware modules not available.")   
     
@@ -689,6 +690,8 @@ def run_ao_optimization(
                 "------- INFO -------"
                 f"\nSaving AO results at:\n{save_dir_path}")
         
+        # TODO: TEMP
+        save_prefix = "ao_optimized"
         if save_prefix:
             # Option to save the mirror state using the builtin functions
             AOMirror_local.save_current_state(save_prefix)

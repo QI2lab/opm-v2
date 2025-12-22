@@ -278,7 +278,6 @@ def create_ao_mirror_update_event(
                 data = {
                     'AOmirror' : {
                         'coefficients' : mirror_coeffs.tolist(),
-                        'voltages' : mirror_positions.tolist(),
                     }
                 }
             )
