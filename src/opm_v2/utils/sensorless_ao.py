@@ -33,9 +33,15 @@ DEFUALT_SIGN_FIGS = 6
 # Modes to optimize lists
 focusing_modes = [2,7,14,23]
 spherical_modes = [7,14,23]
-spherical_modes_first =  [7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31]
-all_modes = [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
-stationary_modes = [3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31]
+spherical_modes_first =  [
+    7,14,23,3,4,5,6,8,9,10,11,12,13,15,16,17,18,19,20,21,22,24,25,26,27,28,29,30,31
+]
+all_modes = [
+    0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+]
+stationary_modes = [
+    3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31
+]
 
 mode_names = [
     "Vert. Tilt",
@@ -340,8 +346,8 @@ def run_ao_optimization(
     current_coeffs: Mirror mode coefficients updated when new mode deltas are accepted. 
                     If not update is applied, no chages are made. This list is reset at
                     the start of each iteration.    
-    optimal_coeffs: The mirror coefficients at the end of each iteration. Includes the
-                    starting mode coefficients. Includes the starting coefficients.
+    optimal_coeffs: The mirror coefficients at the end of each iteration.
+    starting_coeffs: Mirror coefficients at the start of optimization
     active_coeffs: An array that holds temporary mirror coefficients that are applied. 
     """
     all_images = []
@@ -351,6 +357,7 @@ def run_ao_optimization(
     current_optimal_metrics = []
     current_coeffs = []
     optimal_coeffs = []
+    starting_coeffs = None
     #---------------------------------------------#
     # Set starting mode coeff
     #---------------------------------------------#
@@ -437,7 +444,6 @@ def run_ao_optimization(
 
         # Get the current mirror state at the start of iteration
         current_coeffs = AOMirror_local.current_coeffs.copy()
-        optimal_coeffs.append(AOMirror_local.current_coeffs.copy())
             
         if verbose:
             print(
@@ -451,7 +457,7 @@ def run_ao_optimization(
         for mode in modes_to_optimize:
             if verbose:
                 print(
-                    f"\n\n+ Current Zernike mode: {mode+1}:{mode_names[mode]} +\n\n"
+                    f"\n+ Current Zernike mode: {mode+1}:{mode_names[mode]} +\n"
                     )
             metrics = []
             deltas = np.linspace(-mode_deltas[k], mode_deltas[k], num_mode_steps)
@@ -473,10 +479,9 @@ def run_ao_optimization(
                     try:
                         metric = get_metric(image, metric_to_use)
                         metric = round_to_sigfigs(metric, metric_precision)
-                        metrics.append(metric)
-                        all_metrics.append(metric)
-                        all_images.append(image)
                     except Exception:
+                        metric = 0
+                        image = np.zeros_like(starting_image)
                         success = False
                         
                     # Catch bad metric calculations
@@ -487,9 +492,14 @@ def run_ao_optimization(
                                 "------- Metric failed! -------"
                                 f"\ndelta={delta:.4f}\n"
                             )
+                            
+                # Update all metrics / images 
+                metrics.append(metric)
+                all_metrics.append(metric)
+                all_images.append(image)
                 if verbose:
                     print(
-                        f"++++++++ Delta={delta:.4f}, Metric={metric:.4f}++++++++\n"
+                        f"      Delta={delta:.4f}, Metric={metric:.4f}"
                     )
             
             #---------------------------------------------#
@@ -554,7 +564,9 @@ def run_ao_optimization(
                                 )
                         else:
                             # Clip optimal delta at the edge of sampled range
-                            optimal_delta = np.clip(optimal_delta, deltas.min(), deltas.max())
+                            optimal_delta = np.clip(
+                                optimal_delta, deltas.min(), deltas.max()
+                            )
                         # elif np.abs(optimal_delta)>MAXIMUM_MODE_DELTA:
                         #     optimal_delta = 0
                         #     if verbose:
@@ -598,8 +610,8 @@ def run_ao_optimization(
                 optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
                     print(
-                        f"\n++++ Optimal delta from fit: {optimal_delta:.4f} ++++"
-                        f"\n++++ Measured optimal metric: {optimal_metric:.5f} ++++\n"
+                        f"\n    Optimal delta from fit: {optimal_delta:.4f}"
+                        f"\n    Measured optimal metric: {optimal_metric:.5f}\n"
                     )
                 
                 # NOTE: There are 3 variations of accepting a change,
@@ -657,7 +669,8 @@ def run_ao_optimization(
                 
             # Update the mirror to the current best state
             _ = AOMirror_local.set_modal_coefficients(current_coeffs)   
-             
+            optimal_coeffs.append(AOMirror_local.current_coeffs.copy())
+
             if verbose:
                 print(
                     f"\n-------  ++ Was mirror updated: {update} ++  -------"
@@ -702,6 +715,7 @@ def run_ao_optimization(
         all_optimal_images = np.asarray(all_optimal_images)
         all_optimal_metrics = np.asarray(all_optimal_metrics)
         optimal_coeffs = np.asarray(optimal_coeffs)
+        starting_coeffs = np.asarray(starting_coeffs)
         # TODO
         # optimized_phase = AOMirror_local.get_current_phase()
         
@@ -711,6 +725,7 @@ def run_ao_optimization(
                 all_metrics=all_metrics,
                 images_per_iteration=all_optimal_images,
                 metrics_per_iteration=all_optimal_metrics,
+                starting_coeffs=starting_coeffs,
                 optimal_coeffs=optimal_coeffs,
                 # optimized_phase=optimized_phase,
                 modes_to_optimize=modes_to_optimize,
@@ -750,6 +765,7 @@ def plot_zernike_coeffs(
     optimal_coeffs: NDArray,
     num_iterations: int,
     zernike_mode_names: NDArray,
+    starting_coeffs: None,
     save_dir_path: Path = None,
     show_fig: Optional[bool] = False,
     x_range = 0.1
@@ -791,7 +807,17 @@ def plot_zernike_coeffs(
     colors = ["b", "g", "r", "c", "m"]  
     markers = ["x", "o", "^", "s", "*"]  
 
-    # populate plots
+    # Plot the starting Coeffs
+    if starting_coeffs is not None:
+        for i in range(len(zernike_mode_names)):
+            ax.scatter(
+                starting_coeffs[i],
+                s=140,
+                marker="o",
+                color="k",
+                alpha=0.5
+            )
+    # Plot the coeffs at the end of each iteration    
     for i in range(len(zernike_mode_names)):
         for j in range(num_iterations):
             marker_style = markers[j % len(markers)]
@@ -803,7 +829,7 @@ def plot_zernike_coeffs(
                 alpha=0.5
             )  
         ax.axhline(y=i, linestyle="--", linewidth=1, color="k")
-        
+    
     # Plot a vertical line at 0 for reference
     ax.axvline(0, color="k", linestyle="-", linewidth=1)
 
@@ -868,7 +894,9 @@ def plot_metric_progress(
         "legend.fontsize": 14   # legend size
     })
     num_modes = len(modes_to_optimize)
-    samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
+    samples_per_mode = np.ceil(
+        (len(all_metrics)-1) // num_iterations / len(modes_to_optimize)
+    ).astype(int)
     modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
 
     # Ignore starting metric
@@ -2053,6 +2081,7 @@ def save_optimization_results(
     all_metrics: NDArray,
     images_per_iteration: NDArray,
     metrics_per_iteration: NDArray,
+    starting_coeffs: NDArray,
     optimal_coeffs: NDArray,
     modes_to_optimize: List[int],
     # optimized_phase: Dict,
@@ -2060,6 +2089,9 @@ def save_optimization_results(
     save_dir_path: Path
 ) -> None:
     """Save the results from running AO-optimize
+
+    NOTE: images_per_iteration has been changed to optimal images
+    NOTE: Likewise for metrics_per_iteration
 
     Parameters
     ----------
@@ -2094,6 +2126,7 @@ def save_optimization_results(
     root.create_dataset(
         "metrics_per_iteration", data=metrics_per_iteration, overwrite=True
     )
+    root.create_dataset("starting_coeffs", data=starting_coeffs, overwrite=True)
     root.create_dataset("optimal_coeffs", data=optimal_coeffs, overwrite=True)
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
     # root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
@@ -2121,6 +2154,7 @@ def load_optimization_results(results_path: Path):
     images_per_iteration = results["images_per_iteration"][:]
     metrics_per_iteration = results["metrics_per_iteration"][:]
     optimal_coeffs = results["optimal_coeffs"][:]
+    starting_coeffs = results["starting_coeffs"][:]
     # optimized_phase = results["optimized_phase"][:]
 
     modes_to_optimize = results["modes_to_optimize"][:]
@@ -2134,6 +2168,7 @@ def load_optimization_results(results_path: Path):
         "metrics_per_iteration":metrics_per_iteration,
         "images_per_iteration":images_per_iteration,
         "optimal_coeffs":optimal_coeffs,
+        "starting_coeffs":starting_coeffs,
         "modes_to_optimize":modes_to_optimize,
         # "optimized_phase":optimized_phase,
         "mode_names":zernike_mode_names,

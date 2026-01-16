@@ -5,7 +5,9 @@ import numpy as np
 
 
 showfig = False
-root_dir = Path("/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_AO_ao_results")
+root_dir = Path(
+    "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/after_adding_IB_wAO_ao_results"
+)
 
 import zarr
 
@@ -31,23 +33,23 @@ for _d in root_dir.iterdir():
         "mode_names":zernike_mode_names,
     }
     ao_results.update(results.attrs)
-    
     """
+
 # Combine grid data to take place of iterations
 if 'grid' in _d.name:
     optimal_coeffs = []
     all_metrics = []
     for ao_results in grid_results:
-        
         zernike_mode_names = ao_results['mode_names']
         modes_to_optimize = ao_results['modes_to_optimize']
+        optimal_coeffs = ao_results['optimal_coeffs']
         save_dir_path = None
         showfig = True
         
         ao.plot_metric_progress(
             all_metrics = all_metrics,
             modes_to_optimize = modes_to_optimize,
-            num_iterations = optimal_coeffs.shape[1],
+            num_iterations = optimal_coeffs.shape[1]-1,
             zernike_mode_names = zernike_mode_names,
             save_dir_path = root_dir,
             show_fig = True,
