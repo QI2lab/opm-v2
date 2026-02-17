@@ -727,7 +727,7 @@ def setup_projection(
     """
     
     AOmirror_setup = AOMirror.instance()
-
+    timepoint_interval = 6
     #--------------------------------------------------------------------#
     # Compile acquisition settings from configuration
     #--------------------------------------------------------------------#
@@ -834,11 +834,11 @@ def setup_projection(
         if 'grid' in ao_mode:
             ao_output_dir = output.parent / Path(f'{output.stem}_ao_grid_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_grid_event = create_ao_grid_event(config, None)
+            ao_grid_event = create_ao_grid_event(config, ao_output_dir)
         else:
-            ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_optimize_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_optimize_event = create_ao_optimize_event(config, None)
+            ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
         
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
@@ -957,37 +957,37 @@ def setup_projection(
                 opm_events.append(o2o3_event)
             if 'start' in ao_mode:
                 if 'grid' in ao_mode:
-                    ao_grid_path = ao_output_dir / Path('start_ao_grid')
                     curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                    curr_ao_grid_event.action.data['AO']['output_path'] = ao_grid_path
                     opm_events.append(ao_grid_event)
                 else:
-                    ao_opt_path = ao_output_dir / Path('start_ao_optimize')
                     curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                    curr_ao_opt_event.action.data['AO']['output_path'] = ao_opt_path
                     opm_events.append(curr_ao_opt_event)
         
         #--------------------------------------------------------------------#
         # Create events to run each timepoint
         if 'timepoint' in o2o3_mode:
-            opm_events.append(o2o3_event)          
+            if time_idx % timepoint_interval == 0: # NOTE: SJS Modified to run every X timepoints
+                opm_events.append(o2o3_event)          
             
         # NOTE: Projection mode does not currently sequence over time points, 
         #       To do so we need to disable the AO mirror updates, and
         #       only select 1 stage position.
         # TODO add option to set N timepoints
         if 'timepoint' in ao_mode:
-            # if time_idx % 5 == 0:
-            if 'grid' in ao_mode:
-                current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_grid')
-                curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                curr_ao_grid_event.action.data['AO']['output_path'] = current_ao_dir
-                opm_events.append(curr_ao_grid_event)
-            else:
-                current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_optimize')
-                curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                curr_ao_opt_event.action.data['AO']['output_path'] = current_ao_dir
-                opm_events.append(curr_ao_opt_event)
+            if time_idx % timepoint_interval == 0: # NOTE: SJS Modified to run every X timepoints
+                if 'grid' in ao_mode:
+                    current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_grid')
+                    current_ao_dir.mkdir(exist_ok=True)
+                    curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
+                    curr_ao_grid_event.action.data['AO']['output_path'] = current_ao_dir
+                    opm_events.append(curr_ao_grid_event)
+                else:
+                    current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_optimize')
+                    current_ao_dir.mkdir(exist_ok=True)
+                    curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
+                    curr_ao_opt_event.action.data['AO']['output_path'] = current_ao_dir
+                    opm_events.append(curr_ao_opt_event)
+                
         if 'none' in ao_mode and (time_interval>0):
             ao_mirror_update_event = create_ao_mirror_update_event(
                 mirror_coeffs=AOmirror_setup.current_coeffs.copy()
@@ -997,11 +997,6 @@ def setup_projection(
         #--------------------------------------------------------------------#    
         # iterate over stage positions
         for pos_idx in range(n_stage_positions):
-            # Move stage to position
-            if need_to_setup_stage and pos_idx>0:      
-                stage_event = create_stage_event(stage_positions[pos_idx])
-                opm_events.append(stage_event)
-                
             #----------------------------------------------------------------#
             # Create mirror state update events for 'start' and 'time-point' ao modes
             if ('start' in ao_mode) or ('timepoint' in ao_mode):
@@ -1016,6 +1011,10 @@ def setup_projection(
                 opm_events.append(current_ao_event)
                 
             #----------------------------------------------------------------#
+            # Move stage to position
+            opm_events.append(create_stage_event(stage_positions[pos_idx]))
+
+            #----------------------------------------------------------------#
             # Create 'xyz' optimization events 
             if 'xyz' in o2o3_mode:
                 opm_events.append(o2o3_event)
@@ -1024,6 +1023,7 @@ def setup_projection(
                 # Run the ao optmization at the first time-point for each position
                 if time_idx==0:
                     current_ao_dir = ao_output_dir / Path(f'pos_{pos_idx}_ao_results')
+                    current_ao_dir.mkdir(exist_ok=True)
                     current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
                     current_ao_event.action.data['AO']['output_path'] = current_ao_dir
                     current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
@@ -1272,11 +1272,11 @@ def setup_mirrorscan(
         if 'grid' in ao_mode:
             ao_output_dir = output.parent / Path(f'{output.stem}_ao_grid_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_grid_event = create_ao_grid_event(config, None)
+            ao_grid_event = create_ao_grid_event(config, ao_output_dir)
         else:
-            ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_optimize_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_optimize_event = create_ao_optimize_event(config, None)
+            ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if 'none' not in o2o3_mode:
@@ -1414,14 +1414,10 @@ def setup_mirrorscan(
                 opm_events.append(o2o3_event)
             if 'start' in ao_mode:
                 if 'grid' in ao_mode:
-                    ao_grid_path = ao_output_dir / Path('start_ao_grid')
                     curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                    curr_ao_grid_event.action.data['AO']['output_path'] = ao_grid_path
                     opm_events.append(ao_grid_event)
                 else:
-                    ao_opt_path = ao_output_dir / Path('start_ao_optimize')
                     curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                    curr_ao_opt_event.action.data['AO']['output_path'] = ao_opt_path
                     opm_events.append(curr_ao_opt_event)
 
         #--------------------------------------------------------------------#
@@ -1432,11 +1428,13 @@ def setup_mirrorscan(
         if 'timepoint' in ao_mode:
             if 'grid' in ao_mode:
                 current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_grid')
+                current_ao_dir.mkdir(exist_ok=True)
                 curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
                 curr_ao_grid_event.action.data['AO']['output_path'] = current_ao_dir
                 opm_events.append(curr_ao_grid_event)
             else:
                 current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_optimize')
+                current_ao_dir.mkdir(exist_ok=True)
                 curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
                 curr_ao_opt_event.action.data['AO']['output_path'] = current_ao_dir
                 opm_events.append(curr_ao_opt_event)
@@ -1477,6 +1475,7 @@ def setup_mirrorscan(
                 # Run the ao optimization at the first time-point for each position
                 if time_idx==0:
                     current_ao_dir = ao_output_dir / Path(f'pos_{pos_idx}_ao_results')
+                    current_ao_dir.mkdir(exist_ok=True)
                     current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
                     current_ao_event.action.data['AO']['output_path'] = current_ao_dir
                     current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)
@@ -1778,11 +1777,11 @@ def setup_stagescan(
         if 'grid' in ao_mode:
             ao_output_dir = output.parent / Path(f'{output.stem}_ao_grid_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_grid_event = create_ao_grid_event(config, None)
+            ao_grid_event = create_ao_grid_event(config, ao_output_dir)
         else:
-            ao_output_dir = output.parent / Path(f'{output.stem}_ao_results')
+            ao_output_dir = output.parent / Path(f'{output.stem}_ao_optmize_results')
             ao_output_dir.mkdir(exist_ok=True)
-            ao_optimize_event = create_ao_optimize_event(config, None)
+            ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
                 
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
@@ -2085,14 +2084,10 @@ def setup_stagescan(
                 opm_events.append(o2o3_event)
             if 'start' in ao_mode:
                 if 'grid' in ao_mode:
-                    ao_grid_path = ao_output_dir / Path('start_ao_grid')
                     curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                    curr_ao_grid_event.action.data['AO']['output_path'] = ao_grid_path
                     opm_events.append(ao_grid_event)
                 else:
-                    ao_opt_path = ao_output_dir / Path('start_ao_optimize')
                     curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                    curr_ao_opt_event.action.data['AO']['output_path'] = ao_opt_path
                     opm_events.append(curr_ao_opt_event)
         
         #--------------------------------------------------------------------#
@@ -2103,12 +2098,14 @@ def setup_stagescan(
         if 'timepoint' in ao_mode:
             if 'grid' in ao_mode:
                 current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_grid')
+                current_ao_dir.mkdir(exist_ok=True)
                 curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
                 curr_ao_grid_event.action.data['AO']['output_path'] = current_ao_dir
                 curr_ao_grid_event.action.data['AO']['time_idx'] = time_idx
                 opm_events.append(curr_ao_grid_event)
             else:
                 current_ao_dir = ao_output_dir / Path(f'time_{time_idx}_ao_optimize')
+                current_ao_dir.mkdir(exist_ok=True)
                 curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
                 curr_ao_opt_event.action.data['AO']['output_path'] = current_ao_dir
                 curr_ao_opt_event.action.data['AO']['time_idx'] = time_idx
@@ -2158,6 +2155,7 @@ def setup_stagescan(
                             current_ao_dir = ao_output_dir / Path(
                                 f'pos_{pos_idx}_ao_results'
                             )
+                            current_ao_dir.mkdir(exist_ok=True)
                             current_ao_event=MDAEvent(**ao_optimize_event.model_dump())
                             current_ao_event.action.data['AO']['output_path'] = current_ao_dir
                             current_ao_event.action.data['AO']['pos_idx'] = int(pos_idx)

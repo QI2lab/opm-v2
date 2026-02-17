@@ -23,7 +23,7 @@ except Exception:
     AOMirror = None
     OPMNIDAQ = None
     
-DEBUGGING = False
+DEBUGGING = True
 
 # Metric global parameters
 MAXIMUM_MODE_DELTA = 0.5
@@ -188,10 +188,10 @@ def run_ao_optimization(
     coef_delta_scale: float = 0.9,
     metric_precision: int = DEFUALT_SIGN_FIGS,
     modes_to_optimize: str = "spherical first",
-    starting_mirror_state: str = "system flat",
+    starting_mirror_state: str = "last optimized",
     accept_all_changes: bool = False,
     compare_to_optimal: bool = False,
-    compare_to_zero_metric: bool = False,
+    compare_to_zero_metric: bool = True,
     metric_update_threshold: float = 1.0,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
@@ -273,13 +273,16 @@ def run_ao_optimization(
         modes_to_optimize = spherical_modes_first
     
     # If none of the thresholds are selected defualt to one
-    if sum([accept_all_changes, compare_to_optimal, compare_to_zero_metric])==0:
-        print(
-            "------- WARNING -------"
-            "\nUsing default metric comparison: Zero metric"
-        )
-        compare_to_zero_metric = True
-        
+    # if sum([accept_all_changes, compare_to_optimal, compare_to_zero_metric])==0:
+    #     print(
+    #         "------- WARNING -------"
+    #         "\nUsing default metric comparison: Zero metric"
+    #     )
+    #     compare_to_zero_metric = True
+    # else:
+    print(
+        "------- INFO -------\n"
+        f"AO metric comparison settings: all:{accept_all_changes}, opt:{compare_to_optimal}, zero:{compare_to_zero_metric}\n")
     #---------------------------------------------#
     # Create hardware controller instances
     #---------------------------------------------#
@@ -361,15 +364,14 @@ def run_ao_optimization(
     #---------------------------------------------#
     # Set starting mode coeff
     #---------------------------------------------#
-    
-    if starting_mirror_state == "system flat":
+    if "flat" in starting_mirror_state:
         AOMirror_local.apply_system_flat_voltage()
         if verbose:
             print(
                 "------- INFO -------"
                 "\nStarting optimization with system flat voltage"
             )
-    elif starting_mirror_state == "last optimized":
+    elif "optimized" in starting_mirror_state:
         AOMirror_local.apply_optimized_voltage()
         if verbose:
             print(
@@ -624,33 +626,33 @@ def run_ao_optimization(
                 if accept_all_changes:
                     update = True
                     if DEBUGGING:
-                        "------- INFO -------"
+                        "------- INFO -------\n"
                         print(f"accepting all changes!:{accept_all_changes}")
                 elif compare_to_optimal:
-                    if optimal_metric>=current_opt_metric_thresh:
+                    if optimal_metric >= current_opt_metric_thresh:
                         update = True
-                    if DEBUGGING:
-                        print(
-                            "------- INFO -------"
-                            "Using optimal metric!:"
-                            f"{current_opt_metric},{current_opt_metric_thresh}"
-                        )
                     else:
                         update = False
+                    if DEBUGGING:
+                        print(
+                            "------- INFO -------\n"
+                            "Using optimal metric!:"
+                            f"{optimal_metric},{current_opt_metric_thresh}"
+                        )
                 elif compare_to_zero_metric:
                     if optimal_metric >= current_zero_metric:
                         update = True
-                        if DEBUGGING:
-                            print(
-                                "------- INFO -------"
-                                "Using Zero metric threshold!:"
-                                f"{current_opt_metric},{current_zero_metric}"
-                            )
                     else:
                         update = False
+                    if DEBUGGING:
+                        print(
+                            "------- INFO -------\n"
+                            "Using Zero metric threshold!:"
+                            f"{optimal_metric},{current_zero_metric}"
+                        )
                 if verbose:
                     print(
-                        "------- INFO -------"
+                        "------- INFO -------\n"
                         f"\nCurrent optimal metric: {current_optimal_metrics[-1]:.5f}\n"
                     )
             else:
@@ -734,6 +736,7 @@ def run_ao_optimization(
             )        
             plot_zernike_coeffs(
                 optimal_coeffs=optimal_coeffs,
+                starting_coeffs=starting_coeffs,
                 num_iterations=num_iterations,
                 zernike_mode_names=mode_names,
                 save_dir_path=save_dir_path,
@@ -810,23 +813,34 @@ def plot_zernike_coeffs(
     # Plot the starting Coeffs
     if starting_coeffs is not None:
         for i in range(len(zernike_mode_names)):
+            if i==0:
+                label_str = "Starting Coeffs"
+            else:
+                label_str = None
             ax.scatter(
-                starting_coeffs[i],
+                starting_coeffs[i], i,
                 s=140,
-                marker="o",
+                marker="*",
                 color="k",
-                alpha=0.5
+                label=label_str,
+                # alpha=0.5
             )
+        
     # Plot the coeffs at the end of each iteration    
     for i in range(len(zernike_mode_names)):
         for j in range(num_iterations):
+            if i==0:
+                label_str = f"Iter.: {j+1}"
+            else:
+                label_str = None
             marker_style = markers[j % len(markers)]
             ax.scatter(
                 optimal_coeffs[j, i], i, 
                 color=colors[j % len(colors)],
                 s=125, 
                 marker=marker_style,
-                alpha=0.5
+                alpha=0.5,
+                label=label_str
             )  
         ax.axhline(y=i, linestyle="--", linewidth=1, color="k")
     
@@ -843,10 +857,7 @@ def plot_zernike_coeffs(
     )
 
     # Add a legend for time points
-    ax.legend(
-        [f"Iter.: {i+1}" for i in range(num_iterations)], 
-        loc="upper right"
-    )
+    ax.legend(loc="upper right")
 
     # Remove grid lines
     ax.grid(False)
@@ -1479,14 +1490,14 @@ def localize_2d_img(
     img, 
     dxy,
     localize_psf_filters = {
-        "threshold":3000,
-        "amp_bounds":(1000, 30000),
+        "threshold":300,
+        "amp_bounds":(200, 50000),
         "sxy_bounds":(0.100, 1.0)
     },
     save_dir_path: Path = None,
     label: str = "", 
     showfig: bool = False,
-    verbose: bool = False
+    verbose: bool = True
 ):
     """TODO
 
@@ -1523,14 +1534,17 @@ def localize_2d_img(
     model = gaussian3d_psf_model() 
     coords_3d = get_coords((1,)+img.shape, (1, dxy, dxy))
     coords_2d = get_coords(img.shape, (dxy, dxy))
-                           
+
+    print(img.shape)
+    print(dxy)
     # Set fit bounds and parameter filters
     threshold = localize_psf_filters["threshold"]
     amp_bounds = localize_psf_filters["amp_bounds"]
     sxy_bounds = localize_psf_filters["sxy_bounds"]
     fit_dist_max_err = (0, dxy*2) 
     fit_roi_size = (1, int(dxy*9), int(dxy*9))
-    min_spot_sep = (0, dxy*5)
+    # fit_roi_size = (1, 9, 9)
+    min_spot_sep = (0, 1)
     dist_boundary_min = (0, 1.0)
         
     param_filter = get_param_filter(
@@ -1541,7 +1555,6 @@ def localize_2d_img(
         dist_boundary_min=dist_boundary_min,
         sigma_bounds=((0,sxy_bounds[0]),(1,sxy_bounds[1]))
         )
-        
     # Run localization function
     _, r, _ = localize_beads_generic(
         img,
@@ -1558,15 +1571,15 @@ def localize_2d_img(
         use_gpu_filter=False,
         return_filtered_images=False,
         fit_filtered_images=False,
-        verbose=verbose
+        verbose=True
         )
-    
+    save_dir_path = Path(r"E:\optimize_now")
     if save_dir_path:
         plot_2d_localization_fit_summary(
             r, 
             img,
             coords_2d, 
-            save_dir_path / Path(f"localize_psf_summary_{label}.png"),
+            save_dir_path,
             showfig
             )
         
@@ -1799,9 +1812,9 @@ def metric_localize_gauss2d(image: NDArray) -> float:
         fit_results = localize_2d_img(
             image, 
             0.115,
-            {"threshold":1000,
-            "amp_bounds":(1000, 65000),
-            "sxy_bounds":(0.100, 1.0)
+            {"threshold":200,
+            "amp_bounds":(100, 65000),
+            "sxy_bounds":(0.100, 2.0)
             },
             save_dir_path = None,
             label = "", 
@@ -1828,7 +1841,7 @@ def run_ao_grid_mapping(
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
     save_dir_path: Path = None,
-    verbose: bool = False,
+    verbose: bool = True,
 ) -> bool:
     """Given a set of stage positions, generate a grid to run A.O.
     then interpolate to stage positions.
@@ -1849,6 +1862,12 @@ def run_ao_grid_mapping(
     np.ndarray
         _description_
     """
+    if verbose:
+        print(
+            "\n++++++++++++++++ RUNNING SENSORLESS GRID AO ++++++++++++++++\n",
+            f"\nAO save directory: {save_dir_path}",
+            f"\nNumber of experiment stage positions: {len(stage_positions)}\n"
+        )
     AOMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
     
@@ -1948,22 +1967,36 @@ def run_ao_grid_mapping(
     
     # Run AO optimization for each stage position
     if verbose:
-        print(f"\nGenerating AO map, number positions = {num_ao_pos}:")
+        print(
+            "---------------- AO GRID GENERATION ---------------",
+            f"\nNumber of positions for AO GRID: {num_ao_pos}",
+            f"\nNum. AO unique Z positions: {num_z_positions}",
+            f"\nNum. AO Tile positions (Y): {num_tile_positions}",
+            f"\nNum. AO Scan positions (X): {num_scan_positions}\n",
+            )
     
-    if save_dir_path:
-        # save stage positions
-        import json
-        ao_positions_path = save_dir_path / Path("ao_stage_positions.json")
-        exp_positions_path = save_dir_path / Path("exp_stage_positions.json")
-        with open(ao_positions_path, "w") as file:
-                json.dump(ao_stage_positions, file, indent=4)
-        with open(exp_positions_path, "w") as file:
-                json.dump(stage_positions, file, indent=4)
+    if save_dir_path is None:
+        save_dir_path = Path("E:\optimize_now\grid_ao_optimizeNOW")
+        save_dir_path.mkdir(exist_ok=True)
+
+    print(
+        "---------------- AO Save path ---------------"
+        f"\nSaving AO grid mapping data to: {save_dir_path} \n")
+    # save stage positions
+    import json
+    ao_positions_path = save_dir_path / Path("ao_stage_positions.json")
+    exp_positions_path = save_dir_path / Path("exp_stage_positions.json")
+    with open(ao_positions_path, "w") as file:
+            json.dump(ao_stage_positions, file, indent=4)
+    with open(exp_positions_path, "w") as file:
+            json.dump(stage_positions, file, indent=4)
                 
     # Visit AO stage positions and measure best WFC positions
+    if verbose:
+        print("\n\nStarting AO grid optimization . . .")
     for ao_pos_idx in range(num_ao_pos):
         if verbose:
-            print(f"\nMoving stage to: {ao_stage_positions[ao_pos_idx]}")
+            print(f"+++ \nMoving stage to position {ao_pos_idx+1}/{num_ao_pos}: \n{ao_stage_positions[ao_pos_idx]}+++")
             
         target_x = ao_stage_positions[ao_pos_idx]["x"]
         target_y = ao_stage_positions[ao_pos_idx]["y"]
@@ -1993,8 +2026,10 @@ def run_ao_grid_mapping(
                 mirror_state = ao_dict["mirror_state"]
         else:
             mirror_state = "last_optimized"
+        
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
+
         run_ao_optimization(
             starting_mirror_state=mirror_state,
             metric_to_use=ao_dict["metric"],
@@ -2014,8 +2049,7 @@ def run_ao_grid_mapping(
 
     if verbose:
         print(
-            "Optimization complete!",
-            "\n Mapping AO grid positions to experimental stage positions. .  ."
+            "\n++++++++++++++++ AO GRID OPTIMIZATION COMPLETE ++++++++++++++++\n"
         )
         
     # Map ao_grid_wfc_coeffs to experiment stage positions.
@@ -2069,7 +2103,7 @@ def run_ao_grid_mapping(
     AOMirror_local.positions_voltage_array = position_wfc_positions
     
     if verbose:
-        print("AO Grid complete!")
+        print("\nAO grid mapping complete. Mirror positions array updated.")
     return True
 
 #-------------------------------------------------#

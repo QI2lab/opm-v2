@@ -1,13 +1,33 @@
 from pathlib import Path
+
 import matplotlib.pyplot as plt
-from opm_v2.utils import sensorless_ao as ao
 import numpy as np
 import zarr
 
+from opm_v2.utils import sensorless_ao as ao
 
 showfig = True
+
+root_dir = Path(r"E:\20260127_Tetrahymena\20260126_151627_tetra_mirror_scan_withAO\tetra_mirror_scan_withAO.zarr")
+root_dir = Path(r"E:\20260129_Autophagy\20260129_135513_timelapse\timelapse.zarr")
+
+grid_mode = False
+time_points = 0
+positions = 0
+
+ao_results_paths = list(root_dir.parent.rglob("ao_results.zarr"))
+
+# TODO Not robust for multi-position/timepoint experiments
+if "start" or "time" in ao_results_paths[0].name:
+    time_points = len(ao_results_paths)
+if "grid" in ao_results_paths[0].name:
+    grid_mode = True
+if "pos" in ao_results_paths[0].name:
+    positions = len(ao_results_paths)
+
+
 data_path = Path(
-    r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/20251222_125338_ao_optimizeNOW/ao_results.zarr'
+    r"E:\20260127_Tetrahymena\20260126_151627_tetra_mirror_scan_withAO\tetra_mirror_scan_withAO_ao_results\start_ao_optimize\ao_results.zarr"
     # "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/20251222_130948_ao_optimizeNOW/ao_results.zarr"
 )
 
@@ -18,6 +38,7 @@ all_metrics = results['all_metrics']
 metrics_per_iteration = results['metrics_per_iteration']
 images_per_iteration = results['images_per_iteration']
 
+starting_coeffs = results['starting_coeffs']
 optimal_coeffs = results['optimal_coeffs']
 modes_to_optimize = results['modes_to_optimize']
 zernike_mode_names = results['mode_names']
@@ -62,6 +83,7 @@ ao.plot_metric_progress(
 )
 
 ao.plot_zernike_coeffs(
+    starting_coeffs=starting_coeffs,
     optimal_coeffs=optimal_coeffs,
     num_iterations=num_iterations,
     zernike_mode_names=zernike_mode_names,
@@ -74,6 +96,7 @@ ao.plot_zernike_coeffs(
 
 import matplotlib.pyplot as plt
 from matplotlib.widgets import Slider
+
 
 def show_inter_plot(images,
                     norm: bool = True):

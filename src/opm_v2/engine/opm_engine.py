@@ -75,6 +75,7 @@ class OPMEngine(MDAEngine):
                 data_dict["Camera"]["camera_crop"][2],
                 data_dict["Camera"]["camera_crop"][3],
             )
+
         if setting=="DAQ":
             exposure_ms = np.max(data_dict["Camera"]["exposure_channels"])
         else:
@@ -85,7 +86,8 @@ class OPMEngine(MDAEngine):
             np.round(float(exposure_ms),2)
         )
         self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-    
+        self._mmc.getROI()
+        
     def configure_lasers(self, data_dict: dict, setting: str):
         """Set laser powers
 
@@ -96,10 +98,15 @@ class OPMEngine(MDAEngine):
         """
         if not(setting=="AO") and not(setting=="DAQ") and not(setting=="AO_grid"):
             raise Exception("Engine laser configuration missing setting")
-
-        for chan_idx, chan_bool in enumerate(
+        if setting=="AO_grid":
+            enumerator = enumerate(
+            data_dict["AO"]["ao_dict"]["channel_states"]
+        )
+        else:
+            enumerator = enumerate(
             data_dict[setting]["channel_states"]
-        ):
+        )
+        for chan_idx, chan_bool in enumerator:
             laser_name = str(self._config["Lasers"]["laser_names"][chan_idx])   
             if chan_bool:
                 if setting=="DAQ":
@@ -132,8 +139,9 @@ class OPMEngine(MDAEngine):
         """
         self.start_time = perf_counter()
         self.elapsed_time = 0
-        # self._mmc.setCircularBufferMemoryFootprint(96000)
-        self._mmc.setCircularBufferMemoryFootprint(16000)
+        # TODO
+        self._mmc.setCircularBufferMemoryFootprint(32000)
+        # self._mmc.setCircularBufferMemoryFootprint(16000)
         super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -345,7 +353,7 @@ class OPMEngine(MDAEngine):
                     self.configure_camera(data_dict)
                     # Set laser powers
                     self.configure_lasers(data_dict, setting="AO")
-                                              
+                    
             elif action_name == "AO-grid":
                 #--------------------------------------------------------#
                 # apply optimized position
@@ -401,6 +409,12 @@ class OPMEngine(MDAEngine):
                         laser_blanking = bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms = exposure_ms
                     )
+                    # # Setup camera in progressive scan mode
+                    # self._mmc.setProperty(
+                    #     str(self._config["Camera"]["camera_id"]), 
+                    #     "SENSOR MODE",
+                    #     "PROGRESSIVE", 
+                    # )
                 elif str(data_dict["DAQ"]["mode"]) == "mirror":
                     self.opmDAQ.set_acquisition_params(
                         scan_type = "mirror",
@@ -514,8 +528,9 @@ class OPMEngine(MDAEngine):
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         save_dir_path=data_dict["AO"]["output_path"],
-                        compare_to_optimal=False, # TODO: Add to opm widget
-                        compare_to_zero_metric=True,
+                        # compare_to_optimal=None, # TODO: Add to opm widget
+                        # compare_to_zero_metric=None,
+                        # accept_all_changes=None,
                         verbose=DEBUGGING
                     )
                     if pos_idx is not None:
@@ -631,6 +646,7 @@ class OPMEngine(MDAEngine):
         if self.AOMirror.output_path:
             self.AOMirror.save_positions_array()
         self._mmc.clearCircularBuffer()
+        # TODO
         # self._mmc.setCircularBufferMemoryFootprint(16000)
         
         super().teardown_sequence(sequence)
