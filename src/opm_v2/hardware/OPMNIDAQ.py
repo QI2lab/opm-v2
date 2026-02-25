@@ -17,11 +17,12 @@ Change Log:
 
 """
 
-import PyDAQmx as daqmx
 import ctypes as ct
-import numpy as np
-from typing import Sequence
 import warnings
+from typing import Sequence
+
+import numpy as np
+import PyDAQmx as daqmx
 
 # Suppress warning for stoping AO waveform before all samples are sent
 warnings.filterwarnings("ignore", category=daqmx.DAQmxFunctions.StoppedBeforeDoneWarning)
@@ -602,6 +603,7 @@ class OPMNIDAQ:
             # Generate image scanning mirror voltage steps
             image_mirror_max_volts = self._image_mirror_min_volt + self._image_axis_range_volts
             image_mirror_sweep_volts = np.linspace(self._image_mirror_min_volt, image_mirror_max_volts, n_voltage_steps-1)
+            # TODO: add return sweep to reset the projection mirror...
             # image_mirror_return_volts = np.linspace(image_mirror_max_volts, self._image_mirror_min_volt, n_return_steps)
             # image_mirror_volts = np.concatenate(
             #     (image_mirror_sweep_volts,

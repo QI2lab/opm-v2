@@ -10,6 +10,8 @@ numba_logger.setLevel(logging.WARNING)
 logger = logging.getLogger("pymmcore-plus")
 logger.setLevel(logging.DEBUG)  # Allow DEBUG and INFO messages in principle
 
+logging.raiseExceptions = False
+
 # Create and add a filter to suppress WARNING and above
 class BelowWarningFilter(logging.Filter):
     def filter(self, record):

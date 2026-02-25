@@ -12,21 +12,15 @@ wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\op
 haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat")
 mirror_state_output_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files')
 
-# WFC positions file
-# wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files\20250826_laser_tilted_curvature_closed_loop_output.wcs')
-# wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files\20250826_laser_tilted_curvature_with_tilt_closed_loop_output.wcs')
-# wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files\20250826_laser_tilted_no_curvature_closed_loop_output.wcs')
-# wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files\20250826_laser_tilted_no_curvature_with_tilt_closed_loop_output.wcs')
+# WFC positions file path
 # wfc_flat_file_path = None # Use None for flat (zero) positions
-# wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_setup_scripts\20250827_141952_laser_brightness_brightness_from_wfs_opt_using_max\20250827_brightness_from_wfs_opt_max_wfc_voltage.wcs')
-wfc_flat_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_setup_scripts\20250827_153811_laser_brightness_brightness_from_wfs_opt_using_max\20250827_brightness_from_wfs_opt_max_wfc_voltage.wcs')
+wfc_flat_file_path = Path(r"E:\Alignment\20260224_Re_tilt\ao_optimizations\20260224_151426_no_O1_O2_O3_optimal\ao_optimized_wfc_voltage.wcs")
+
 # Load ao_mirror controller using the given positions file
 ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
                     haso_config_file_path = haso_config_file_path,
                     interaction_matrix_file_path = wfc_correction_file_path,
                     system_flat_file_path = wfc_flat_file_path,
-                    mirror_flat_file_path = None,
-                    coeff_file_path = None,
                     output_path = mirror_state_output_path,
                     n_modes = 32,
                     modes_to_ignore = [])

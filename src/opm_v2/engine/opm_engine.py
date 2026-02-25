@@ -38,8 +38,8 @@ class OPMEngine(MDAEngine):
         use_hardware_sequencing: bool = True
     ) -> None:
 
-        super().__init__(mmc, use_hardware_sequencing)
-
+        super().__init__(mmc, use_hardware_sequencing=use_hardware_sequencing, restore_initial_state=False)
+        self._mmc = mmc
         self.opmDAQ = OPMNIDAQ.instance()
         self.AOMirror = AOMirror.instance()
         self.execute_stage_scan = False
@@ -526,11 +526,10 @@ class OPMEngine(MDAEngine):
                         starting_coef_delta=float(data_dict["AO"]["modal_delta"]),
                         coef_delta_scale=float(data_dict["AO"]["modal_alpha"]),
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
+                        averaged_frames=int(data_dict["AO"]["averaged_frames"]),
                         image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         save_dir_path=data_dict["AO"]["output_path"],
-                        # compare_to_optimal=None, # TODO: Add to opm widget
-                        # compare_to_zero_metric=None,
-                        # accept_all_changes=None,
+                        mode_acceptance=data_dict["AO"]["metric_acceptance"],
                         verbose=DEBUGGING
                     )
                     if pos_idx is not None:

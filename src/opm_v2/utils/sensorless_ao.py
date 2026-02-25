@@ -121,7 +121,7 @@ def get_metric(
         elif "gauss_2d" in metric_to_use:
             metric = metric_gauss2d(image)
         elif "brightness" in metric_to_use:
-            metric = metric_brightness(image)
+            metric = metric_brightness(image, percentile=99)
         elif "fourier_ratio" in metric_to_use:
             metric = metric_shannon_dct(image, psf_radius_px) #TODO
     except Exception as e:
@@ -189,9 +189,8 @@ def run_ao_optimization(
     metric_precision: int = DEFUALT_SIGN_FIGS,
     modes_to_optimize: str = "spherical first",
     starting_mirror_state: str = "last optimized",
-    accept_all_changes: bool = False,
-    compare_to_optimal: bool = False,
-    compare_to_zero_metric: bool = True,
+    mode_acceptance: str = "zero",
+    averaged_frames: int = 50,
     metric_update_threshold: float = 1.0,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
@@ -280,9 +279,21 @@ def run_ao_optimization(
     #     )
     #     compare_to_zero_metric = True
     # else:
+    accept_all_changes = False
+    compare_to_optimal = False
+    compare_to_zero_metric = False
+    if "all" in mode_acceptance:
+        accept_all_changes = True
+    elif "zero" in mode_acceptance:
+        compare_to_zero_metric = True
+    elif "optimal" in mode_acceptance:
+        compare_to_optimal = True
+    else:
+        compare_to_optimal = True
     print(
         "------- INFO -------\n"
-        f"AO metric comparison settings: all:{accept_all_changes}, opt:{compare_to_optimal}, zero:{compare_to_zero_metric}\n")
+        f"AO metric comparison settings: all:{accept_all_changes}, opt:{compare_to_optimal}, zero:{compare_to_zero_metric}\n"
+    )
     #---------------------------------------------#
     # Create hardware controller instances
     #---------------------------------------------#
@@ -350,7 +361,8 @@ def run_ao_optimization(
                     If not update is applied, no chages are made. This list is reset at
                     the start of each iteration.    
     optimal_coeffs: The mirror coefficients at the end of each iteration.
-    starting_coeffs: Mirror coefficients at the start of optimization
+    starting_coeffs: Mirror coefficients at the start of optimization.
+    update_status: A list of bools indicating whether the optimal delta for each mode was accepted or not.
     active_coeffs: An array that holds temporary mirror coefficients that are applied. 
     """
     all_images = []
@@ -360,11 +372,12 @@ def run_ao_optimization(
     current_optimal_metrics = []
     current_coeffs = []
     optimal_coeffs = []
+    update_status = []
     starting_coeffs = None
     #---------------------------------------------#
     # Set starting mode coeff
     #---------------------------------------------#
-    if "flat" in starting_mirror_state:
+    if "system" in starting_mirror_state:
         AOMirror_local.apply_system_flat_voltage()
         if verbose:
             print(
@@ -377,6 +390,22 @@ def run_ao_optimization(
             print(
                 "------- INFO -------"
                 "\nStarting optimization with optimized voltage"
+                f"\nModal coefs: \n{AOMirror_local.current_coeffs.copy()}"
+            )
+    elif "factory" in starting_mirror_state:
+        AOMirror_local.apply_factory_flat_voltage()
+        if verbose:
+            print(
+                "------- INFO -------"
+                "\nStarting optimization with factory flat voltage"
+                f"\nModal coefs: \n{AOMirror_local.current_coeffs.copy()}"
+            )
+    elif "zeros" in starting_mirror_state:
+        AOMirror_local.apply_zeros_voltage()
+        if verbose:
+            print(
+                "------- INFO -------"
+                "\nStarting optimization with zeros voltage"
                 f"\nModal coefs: \n{AOMirror_local.current_coeffs.copy()}"
             )
     else:
@@ -423,7 +452,14 @@ def run_ao_optimization(
             "\n++++++++ STARTING SENSORLESS AO LOOP ++++++++\n" 
         )
     try:
-        starting_image = mmc.snap()
+        if "brightness" in metric_to_use:
+            images = []
+            for ii in range(20):
+                images.append(mmc.snap())
+            image_stack = np.stack(images, axis=0).astype(np.float32)
+            starting_image = np.mean(image_stack, axis=0)
+        else:
+            starting_image = mmc.snap()
         starting_metric = get_metric(starting_image, metric_to_use)
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
     except Exception as e:
@@ -476,7 +512,15 @@ def run_ao_optimization(
                     # Acquire image
                     if not opmNIDAQ_local.running():
                         opmNIDAQ_local.start_waveform_playback()
-                    image = mmc.snap()
+                        
+                    if "brightness" in metric_to_use:
+                        images = []
+                        for ii in range(20):
+                            images.append(mmc.snap())
+                        image_stack = np.stack(images, axis=0).astype(np.float32)
+                        image = np.mean(image_stack, axis=0)
+                    else:
+                        image = mmc.snap()
                     # Measure the image metric
                     try:
                         metric = get_metric(image, metric_to_use)
@@ -549,11 +593,11 @@ def run_ao_optimization(
                                     2*metrics[0] + 2*metrics[2] - 4*metrics[1]
                                 )
                             )
-                            print(
-                                "------- INFO -------"
-                                "\n Booth Metric comparison"
-                                f"\nBooth: {booth_delta:.4f}, Fit: {optimal_delta:.4f}"
-                            )
+                            # print(
+                            #     "------- INFO -------"
+                            #     "\n Booth Metric comparison"
+                            #     f"\nBooth: {booth_delta:.4f}, Fit: {optimal_delta:.4f}"
+                            # )
                         # Reject if metrics have + curvature or too large of delta
                         if a >=0:
                             # TODO: Should we reject this test or take the max?
@@ -607,7 +651,14 @@ def run_ao_optimization(
                 # Acquire image and metric
                 if not opmNIDAQ_local.running():
                     opmNIDAQ_local.start_waveform_playback()
-                optimal_image = mmc.snap()
+                if "brightness" in metric_to_use:
+                    images = []
+                    for ii in range(20):
+                        images.append(mmc.snap())
+                    image_stack = np.stack(images, axis=0).astype(np.float32)
+                    optimal_image = np.mean(image_stack, axis=0)
+                else:
+                    optimal_image = mmc.snap()
                 optimal_metric = get_metric(optimal_image, metric_to_use)
                 optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
@@ -637,7 +688,7 @@ def run_ao_optimization(
                         print(
                             "------- INFO -------\n"
                             "Using optimal metric!:"
-                            f"{optimal_metric},{current_opt_metric_thresh}"
+                            f"opt:{optimal_metric},opt_thresh:  {current_opt_metric_thresh}"
                         )
                 elif compare_to_zero_metric:
                     if optimal_metric >= current_zero_metric:
@@ -648,13 +699,8 @@ def run_ao_optimization(
                         print(
                             "------- INFO -------\n"
                             "Using Zero metric threshold!:"
-                            f"{optimal_metric},{current_zero_metric}"
+                            f"opt:{optimal_metric},zero:{current_zero_metric}"
                         )
-                if verbose:
-                    print(
-                        "------- INFO -------\n"
-                        f"\nCurrent optimal metric: {current_optimal_metrics[-1]:.5f}\n"
-                    )
             else:
                 update = False
             
@@ -673,11 +719,14 @@ def run_ao_optimization(
             _ = AOMirror_local.set_modal_coefficients(current_coeffs)   
             optimal_coeffs.append(AOMirror_local.current_coeffs.copy())
 
+            # Update the update status list
+            update_status.append(update)
             if verbose:
                 print(
-                    f"\n-------  ++ Was mirror updated: {update} ++  -------"
+                    f"\n-------  ++ Was mirror updated: {update} ++  -------",
+                    f"Current optimal metric: {current_optimal_metrics[-1]:.5f}",
+                    sep="\n"
                 )
-                
             """Loop back to top and do the next mode until all modes are done"""
                         
         """Loop back to top and do the next iteration"""
@@ -718,6 +767,7 @@ def run_ao_optimization(
         all_optimal_metrics = np.asarray(all_optimal_metrics)
         optimal_coeffs = np.asarray(optimal_coeffs)
         starting_coeffs = np.asarray(starting_coeffs)
+        update_status = np.asarray(update_status)
         # TODO
         # optimized_phase = AOMirror_local.get_current_phase()
         
@@ -729,6 +779,7 @@ def run_ao_optimization(
                 metrics_per_iteration=all_optimal_metrics,
                 starting_coeffs=starting_coeffs,
                 optimal_coeffs=optimal_coeffs,
+                update_status=update_status,
                 # optimized_phase=optimized_phase,
                 modes_to_optimize=modes_to_optimize,
                 metadata=metadata,
@@ -1374,7 +1425,9 @@ def shannon(spectrum_2d: NDArray, otf_support_px: int = 100) -> float:
 
     # Circular mask centered at (0,0) for DCT
     support = (x**2 + y**2) < otf_support_px**2
-    spectrum_values = np.abs(spectrum_2d[support])
+    # Exclude DC component at (0,0)
+    support[0,0] = False  
+    spectrum_values = np.abs(spectrum_2d[support])**2
     
     # Calculate total energy
     total_energy = spectrum_values.sum()
@@ -1535,8 +1588,6 @@ def localize_2d_img(
     coords_3d = get_coords((1,)+img.shape, (1, dxy, dxy))
     coords_2d = get_coords(img.shape, (dxy, dxy))
 
-    print(img.shape)
-    print(dxy)
     # Set fit bounds and parameter filters
     threshold = localize_psf_filters["threshold"]
     amp_bounds = localize_psf_filters["amp_bounds"]
@@ -1812,8 +1863,8 @@ def metric_localize_gauss2d(image: NDArray) -> float:
         fit_results = localize_2d_img(
             image, 
             0.115,
-            {"threshold":200,
-            "amp_bounds":(100, 65000),
+            {"threshold":1000,
+            "amp_bounds":(1000, 65000),
             "sxy_bounds":(0.100, 2.0)
             },
             save_dir_path = None,
@@ -2117,6 +2168,7 @@ def save_optimization_results(
     metrics_per_iteration: NDArray,
     starting_coeffs: NDArray,
     optimal_coeffs: NDArray,
+    update_status: NDArray,
     modes_to_optimize: List[int],
     # optimized_phase: Dict,
     metadata: Dict,
@@ -2160,8 +2212,9 @@ def save_optimization_results(
     root.create_dataset(
         "metrics_per_iteration", data=metrics_per_iteration, overwrite=True
     )
-    root.create_dataset("starting_coeffs", data=starting_coeffs, overwrite=True)
     root.create_dataset("optimal_coeffs", data=optimal_coeffs, overwrite=True)
+    root.create_dataset("starting_coeffs", data=starting_coeffs, overwrite=True)
+    root.create_dataset("update_status", data=update_status, overwrite=True)
     root.create_dataset("modes_to_optimize", data=modes_to_optimize, overwrite=True)
     # root.create_dataset("optimized_phase", data=optimized_phase, overwrite=True)
     root.create_dataset(

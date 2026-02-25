@@ -200,10 +200,7 @@ class OPMSettings(QWidget):
             width=125,
             connect_to_fn=self.update_config
         )        
-        self.layout_ao_mirror = QHBoxLayout()
-        self.layout_ao_mirror.addWidget(QLabel('AO Mirror State:'))
-        self.layout_ao_mirror.addWidget(self.cmbx_ao_mirror)
-        
+    
         self.cmbx_ao_metric = self.create_combobox(
             items=self.config['OPM']['ao_metrics'],
             width=125,
@@ -214,6 +211,19 @@ class OPMSettings(QWidget):
         self.layout_ao_metric.addWidget(QLabel('Metric:'))
         self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
 
+        self.layout_ao_mirror = QHBoxLayout()
+        self.layout_ao_mirror.addWidget(QLabel('AO Mirror State:'))
+        self.layout_ao_mirror.addWidget(self.cmbx_ao_mirror)
+        
+        self.cmbx_ao_accept = self.create_combobox(
+            items=self.config['OPM']['ao_comparison_mode'],
+            width=125,
+            connect_to_fn=self.update_config
+        )        
+        self.layout_ao_accept = QHBoxLayout()
+        self.layout_ao_accept.addWidget(QLabel('AO Metric Accept:'))
+        self.layout_ao_accept.addWidget(self.cmbx_ao_accept)
+        
         self.cmbx_ao_modes = self.create_combobox(
             items=self.config['OPM']['ao_modes_to_optimize'],
             width=125,
@@ -273,6 +283,16 @@ class OPMSettings(QWidget):
         self.layout_metric_prec.addWidget(QLabel('Metric precision:'))
         self.layout_metric_prec.addWidget(self.spbx_metric_precision)
         
+        self.spbx_averaged_frames = self.create_spinbox(
+            value=self.config['acq_config']['AO']['averaged_frames'],
+            min=1,
+            max=100,
+            connect_to_fn=self.update_config
+        )        
+        self.layout_averaged_frames = QHBoxLayout()
+        self.layout_averaged_frames.addWidget(QLabel('Averaged frames:'))
+        self.layout_averaged_frames.addWidget(self.spbx_averaged_frames)
+
         self.spbx_num_scan_positions = self.create_spinbox(
             value=MIN_AO_POSITIONS,
             min=MIN_AO_POSITIONS,
@@ -318,6 +338,7 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_ao_mirror)
         self.layout_ao_main.addLayout(self.layout_ao_mode)
         self.layout_ao_main.addLayout(self.layout_ao_metric)
+        self.layout_ao_main.addLayout(self.layout_ao_accept)
         self.layout_ao_main.addLayout(self.layout_ao_modes)
         self.layout_ao_main.addLayout(self.layout_ao_daq_mode)
         self.layout_ao_main.addLayout(self.layout_ao_active_channel)
@@ -328,6 +349,7 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_mode_delta)
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
         self.layout_ao_main.addLayout(self.layout_metric_prec)
+        self.layout_ao_main.addLayout(self.layout_averaged_frames)
         self.layout_ao_main.addLayout(self.layout_num_scan_positions)
         self.layout_ao_main.addLayout(self.layout_num_tile_positions)
         self.layout_ao_main.addLayout(self.layout_camera_mode)
@@ -342,6 +364,7 @@ class OPMSettings(QWidget):
             {'AO':{
                     'metric': self.cmbx_ao_metric,
                     'modes_to_optimize': self.cmbx_ao_modes,
+                    'metric_acceptance':self.cmbx_ao_accept,
                     'mode_delta': self.spbx_mode_delta,
                     'mode_alpha': self.spbx_mode_alpha,
                     'num_iterations': self.spbx_num_iterations,
@@ -355,7 +378,8 @@ class OPMSettings(QWidget):
                     'metric_precision': self.spbx_metric_precision,
                     'mirror_state': self.cmbx_ao_mirror,
                     'lightsheet_mode': self.cmbx_ao_camera_mode,
-                    'readout_ms': self.spbx_readout_time
+                    'readout_ms': self.spbx_readout_time,
+                    'averaged_framed': self.spbx_averaged_frames
                     }  
                 }
         )
@@ -914,13 +938,19 @@ class OPMSettings(QWidget):
         config['acq_config']['fluidics'] = self.cmbx_fluidics_mode.currentText()
         config['acq_config']['AO']['daq_mode'] = self.cmbx_ao_daq_mode.currentText()
         config['acq_config']['AO']['metric'] = self.cmbx_ao_metric.currentText()
-        
-        if self.cmbx_fluidics_mode.currentText()=='on':
+        # config['acq_config']['AO']['mode_accept'] = self.cmbx_ao_accept.currentText()
+
+        if self.cmbx_laser_blanking.currentText() == "on":
             laser_blanking = True
         else:
             laser_blanking = False
+
+        if self.cmbx_fluidics_mode.currentText()=='on':
+            laser_blanking = True
+        
         for _mode in config['OPM']['imaging_modes'][:-1]:
             config['acq_config'][_mode+'_scan']['laser_blanking'] = laser_blanking
+        config["NIDAQ"]["laser_blanking"] = laser_blanking
 
         self.config = config
                

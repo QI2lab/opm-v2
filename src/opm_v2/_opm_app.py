@@ -298,6 +298,7 @@ def main() -> None:
             channel_states=_channel_states,
             image_mirror_range_um=_image_mirror_range_um,
             exposure_ms=_exposure_ms,
+            laser_blanking=config["NIDAQ"]["laser_blanking"]
         )
         
         if DEBUGGING:
@@ -307,6 +308,7 @@ def main() -> None:
                 f"\n    channel_states: {_channel_states}",
                 f"\n    image_mirror_range_um: {_image_mirror_range_um}",
                 f"\n    exposure_ms: {_exposure_ms}",
+                f"\n    laser blanking:{config["NIDAQ"]["laser_blanking"]}"
             )
         
         if restart_sequence:
@@ -326,6 +328,10 @@ def main() -> None:
             AOMirror_update.apply_system_flat_voltage()
         elif 'optimized' in ao_mirror_state:
             AOMirror_update.apply_optimized_voltage()
+        elif "factory" in ao_mirror_state:
+            AOMirror_update.apply_factory_flat_voltage()
+        elif "zeros" in ao_mirror_state:
+            AOMirror_update.apply_zeros_voltage()
         
         if DEBUGGING:
             print(f'\n++++ Mirror state updated to: {ao_mirror_state} ++++')
