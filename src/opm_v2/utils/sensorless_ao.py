@@ -121,7 +121,7 @@ def get_metric(
         elif "gauss_2d" in metric_to_use:
             metric = metric_gauss2d(image)
         elif "brightness" in metric_to_use:
-            metric = metric_brightness(image, percentile=99)
+            metric = metric_brightness(image, percentile=None)
         elif "fourier_ratio" in metric_to_use:
             metric = metric_shannon_dct(image, psf_radius_px) #TODO
     except Exception as e:

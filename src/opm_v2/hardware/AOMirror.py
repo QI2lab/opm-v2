@@ -374,12 +374,12 @@ class AOMirror:
         self.current_voltage = np.array(
             self.wfc.get_current_positions(), dtype=np.float32, copy=True
         )
-        print(
-            "AOmirror: Updated current state arrays:\n"
-            f"current coeff reference: {self.zero_coeff_state}"
-            f"current_coeffs: {self.current_coeffs}\n"
-            f"current_voltages: {self.current_voltage}"
-        )
+        # print(
+        #     "AOmirror: Updated current state arrays:\n"
+        #     f"current coeff reference: {self.zero_coeff_state}"
+        #     f"current_coeffs: {self.current_coeffs}\n"
+        #     f"current_voltages: {sum(self.current_voltage):.4f}"
+        # )
         if DEBUGGING:
             print(
                 "------- AOmirror -------\n"
@@ -431,11 +431,9 @@ class AOMirror:
         )
         # Apply mirror voltage
         success = self.set_mirror_voltage(self.factory_flat_voltage)
-        self._update_current_state()
         self.zero_coeff_state = "factory_flat"
-        print(
-            "Applied factory_flat_voltage voltage"
-        )
+        self._update_current_state()
+        
         if DEBUGGING:
             voltage_success = np.allclose(
                 self.current_voltage, self.factory_flat_voltage, atol=1e-5
@@ -456,16 +454,13 @@ class AOMirror:
         )
         # Apply mirror voltage
         success = self.set_mirror_voltage(self.zeros_voltage)
-        self._update_current_state()
         self.zero_coeff_state = "zeros_voltage"
-        print(
-            "Applied zeros_voltage voltage"
-        )
+        self._update_current_state()
+
         if DEBUGGING:
             voltage_success = np.allclose(
                 self.current_voltage, self.zeros_voltage, atol=1e-5
             )
-
             print(
                 "------- AOmirror -------\n"
                 "Applied zeros_voltage voltage:\n"
@@ -482,11 +477,9 @@ class AOMirror:
         )
         # Apply mirror voltage
         success = self.set_mirror_voltage(self.system_flat_voltage)
-        self._update_current_state()
         self.zero_coeff_state = "system_flat"
-        print(
-            "Applied system_flat_voltage voltage"
-        )
+        self._update_current_state()
+        
         if DEBUGGING:
             voltage_success = np.allclose(
                 self.current_voltage, self.system_flat_voltage, atol=1e-5
@@ -638,28 +631,33 @@ class AOMirror:
         amps : NDArray
             Flatten array of Zernike mode amplitudes
         """
-        print(
-            "Setting mirror modal coefficients with amps:\n"
-            f"{amps}\n"
-            f"Current modal coefficients before setting: {self.current_coeffs}\n"
-            f"current zero_coeff_state: {self.zero_coeff_state}"
-        )
+        # print(
+        #     "Setting mirror modal coefficients with amps:\n"
+        #     f"{amps}\n"
+        #     f"Current modal coefficients before setting: {self.current_coeffs}\n"
+        #     f"current zero_coeff_state: {self.zero_coeff_state}"
+        # )
 
-        # Set mirror in reference flat state
+        # Set mirror in reference flat state, zero coeffs reference point
         if self.zero_coeff_state == "system_flat":
             self.apply_system_flat_voltage()
+            reference_voltage = self.system_flat_voltage
         elif self.zero_coeff_state == "factory_flat":
             self.apply_factory_flat_voltage()
+            reference_voltage = self.factory_flat_voltage
         elif self.zero_coeff_state == "zeros_voltage":
             self.apply_zeros_voltage()
+            reference_voltage = self.zeros_voltage
+        else:
+            raise ValueError("Invalid zero_coeff_state, cannot set modal coefficients!")    
 
         # Validate amplitude array
         amps = np.asarray(amps, dtype=np.float32)
         if amps.shape != (self._n_modes,):
             raise ValueError("amps must be shape (n_modes,)")
 
-        if np.all(np.abs(amps) < 1e-12):
-            return self.apply_system_flat_voltage()
+        # if np.all(np.abs(amps) < 1e-10):
+        #     return self.apply_system_flat_voltage()
 
         # update modal_coef model
         self.modal_coeff.set_coefs_values(
@@ -675,7 +673,7 @@ class AOMirror:
             delta_slopes=haso_slopes
         )
         # New voltage relative from system flat
-        new_voltage = self.system_flat_voltage + np.asarray(deltas)
+        new_voltage = reference_voltage + np.asarray(deltas)
         success = self.set_mirror_voltage(new_voltage)
 
         if not success:
