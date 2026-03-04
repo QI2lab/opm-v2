@@ -386,6 +386,8 @@ def run_ao_optimization(
         "num_mode_samples": num_mode_samples,
         "mode_deltas": list(mode_deltas),
         "modes_to_optimize": list(modes_to_optimize),
+        "modes_to_optimize_names": [mode_names[i] for i in modes_to_optimize],
+        "mode_acceptance": mode_acceptance,
         "channel_states": channel_states,
         "channel_exposure_ms": exposure_ms,
         "image_mirror_range_um": image_mirror_range_um
@@ -822,7 +824,7 @@ def plot_zernike_coeffs(
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
 
-def plot_metric_progress(
+def plot_metric_progress_depr(
     all_metrics: NDArray,
     num_iterations: int,
     modes_to_optimize: List[int],
@@ -896,6 +898,104 @@ def plot_metric_progress(
         xticks=np.arange(len(modes_to_use_names))
     )
     ax.set_xticklabels(modes_to_use_names, rotation=60, ha="right", fontsize=16) 
+    ax.legend()
+    plt.tight_layout()
+    
+    if show_fig:
+        plt.show()
+    if save_dir_path:
+        fig.savefig(save_dir_path / Path("ao_metrics.png"))
+        
+def plot_metric_progress(
+    ao_results: dict,
+    zernike_mode_names: List[str],
+    display_optimal: bool = True,
+    display_zero: bool = True,
+    save_dir_path: Path = None,
+    show_fig: Optional[bool] = False
+) -> None:
+    """Plot the metric magnitude throughout optimization
+
+    Parameters
+    ----------
+    all_metrics : NDArray
+    num_iterations : float
+    modes_to_optimize : List[int]
+    zernike_mode_names : List[str]
+    save_dir_path : Path, optional
+        Path to save figure, by default None
+    show_fig : Optional[bool], optional
+        whether to display figure, by default False
+    """
+    import matplotlib.pyplot as plt
+    if not show_fig:
+        import matplotlib
+        matplotlib.use("Agg")
+        
+    plt.rcParams.update({
+        "font.size": 14,        # base font size
+        "axes.titlesize": 18,   # title size
+        "axes.labelsize": 15,   # x/y label size
+        "xtick.labelsize": 15,  # x-tick label size
+        "ytick.labelsize": 15,  # y-tick label size
+        "legend.fontsize": 14   # legend size
+    })
+    metadata = ao_results["metadata"]
+    num_mode_samples = int(metadata["num_mode_samples"])
+    num_iterations = int(metadata["num_iterations"])
+    metric_name = str(metadata["metric_name"])
+    modes_to_optimize = metadata["modes_to_optimize"]
+    num_modes = len(modes_to_optimize)
+    try:
+        mode_names = metadata["modes_to_optimize_names"]
+    except Exception:
+        mode_names = [zernike_mode_names[i] for i in modes_to_optimize]
+    
+    # Load metrics, ignore the starting metric
+    metrics = np.array(ao_results["all_metrics"][1:])
+    optimal_metrics = np.array(ao_results["optimal_metrics"])
+    
+    # Reshape into: (iterations, modes, samples+1) +1 for optimal image
+    optimal_metrics_by_iteration = optimal_metrics.reshape(num_iterations, num_modes)
+    metrics_by_iteration = metrics.reshape(num_iterations, num_modes, num_mode_samples+1)
+    zero_metrics_by_iteration = metrics_by_iteration[:, :, int(num_mode_samples//2)]
+    
+    # Create the plot
+    fig, ax = plt.subplots(figsize=(10, 6))
+
+    # Define colors and markers for each iteration
+    colors = ["b", "g", "r", "c", "m"]
+    markers = ["x", "o", "^", "s", "*"]
+
+    # Loop over iterations and plot each series
+    for ii in range(num_iterations):
+        if display_zero:
+            ax.plot(
+                np.linspace(0, num_modes-1, num_modes),
+                zero_metrics_by_iteration[ii],
+                color=colors[ii],
+                label=f"\u0394=0, iteration {ii}", 
+                marker=markers[ii],
+                linestyle="--", 
+                linewidth=1
+            )
+        if display_optimal:
+            ax.plot(
+                np.linspace(0, num_modes-1, num_modes),
+                optimal_metrics_by_iteration[ii],
+                color=colors[ii],
+                label=f"optimal iteration {ii}", 
+                marker=markers[ii],
+                linestyle="-", 
+                linewidth=1
+            )
+
+    ax.set(
+        title="Metric Progress per Iteration",
+        ylabel=metric_name,
+        xticks=np.arange(len(mode_names))
+    )
+    ax.set_xticklabels(mode_names, rotation=60, ha="right", fontsize=16) 
     ax.legend()
     plt.tight_layout()
     
