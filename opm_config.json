@@ -54,10 +54,11 @@
             "all modes",
             "focusing only",
             "spherical only",
-            "stationary only"
+            "stationary only",
+            "high order first"
         ],
         "ao_mirror_states": [
-            "system correction",
+            "system flat",
             "last optimized",
             "factory flat",
             "zeros"
@@ -82,7 +83,7 @@
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WaveFrontCorrector_mirao52-e_0329.dat",
         "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/202508026_tilted_interaction_matrix.aoc",
         "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path": "E:/optimize_now/20260224_173534_ao_optimizeNOW/ao_optimized_wfc_voltage.wcs"
+        "wfc_flat_path": "E:/optimize_now/20260227_162459_ao_optimizeNOW/ao_optimized_wfc_voltage.wcs"
     },
     "Camera": {
         "camera_id": "OrcaFusionBT",
@@ -142,7 +143,7 @@
             "center_x": 1149.0,
             "center_y": 1160.0,
             "crop_x": 1900.0,
-            "crop_y": 512.0
+            "crop_y": 128.0
         },
         "O2O3-autofocus": {
             "O3_stage_name": "MCL NanoDrive Z Stage",
@@ -151,15 +152,16 @@
             "o2o3_mode": "none"
         },
         "AO": {
-            "mirror_state": "zeros",
+            "mirror_state": "last optimized",
             "metric": "brightness",
-            "mode_delta": 0.35,
-            "mode_alpha": 0.5,
+            "mode_delta": 0.05,
+            "mode_alpha": 0.75,
             "num_iterations": 2,
+            "num_mode_samples": 5,
             "image_mirror_range_um": 150.0,
             "active_channel_id": "405nm",
-            "active_channel_power": 3.0,
-            "exposure_ms": 12.0,
+            "active_channel_power": 5.0,
+            "exposure_ms": 10.0,
             "ao_mode": "optimize now",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
@@ -168,10 +170,10 @@
             "lightsheet_mode": "on",
             "readout_ms": 4.868,
             "metric_precision": 3,
-            "modes_to_optimize": "spherical first",
+            "modes_to_optimize": "high order first",
             "metric_acceptance": "zero",
-            "averaged_frames": 50,
-            "averaged_framed": 50
+            "num_averaged_frames": 50,
+            "averaged_framed": 60
         },
         "timelapse": {
             "channel_states": [

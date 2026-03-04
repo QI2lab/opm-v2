@@ -169,7 +169,8 @@ class OPMSettings(QWidget):
         self.layout_active_channel_power.addWidget(self.spbx_active_channel_power)
                 
         self.spbx_ao_exposure = self.create_dbspinbox(
-            min = 5,
+            value = self.config['acq_config']['AO']['exposure_ms'],
+            min = 2,
             max = 1000,
             connect_to_fn=self.update_config
         )
@@ -179,6 +180,7 @@ class OPMSettings(QWidget):
 
         self.spbx_ao_mirror_range = self.create_dbspinbox(
             value=int(self.config['acq_config']['AO']['image_mirror_range_um']),
+            min=5,
             max=250,
             connect_to_fn=self.update_config
         )        
@@ -245,6 +247,7 @@ class OPMSettings(QWidget):
         
         self.spbx_num_iterations = self.create_spinbox(
             value=self.config['acq_config']['AO']['num_iterations'],
+            min=1,
             max=10,
             connect_to_fn=self.update_config
         )
@@ -252,6 +255,16 @@ class OPMSettings(QWidget):
         self.layout_num_iterations.addWidget(QLabel('Number of iterations:'))
         self.layout_num_iterations.addWidget(self.spbx_num_iterations)
         
+        self.spbx_num_mode_samples = self.create_spinbox(
+            value=self.config['acq_config']['AO']['num_mode_samples'],
+            min=3,
+            max=10,
+            connect_to_fn=self.update_config
+        )
+        self.layout_num_mode_samples = QHBoxLayout()
+        self.layout_num_mode_samples.addWidget(QLabel('Number of Samples:'))
+        self.layout_num_mode_samples.addWidget(self.spbx_num_mode_samples)
+
         self.spbx_mode_delta = self.create_dbspinbox(
             value=self.config['acq_config']['AO']['mode_delta'],
             max=1.0,
@@ -284,7 +297,7 @@ class OPMSettings(QWidget):
         self.layout_metric_prec.addWidget(self.spbx_metric_precision)
         
         self.spbx_averaged_frames = self.create_spinbox(
-            value=self.config['acq_config']['AO']['averaged_frames'],
+            value=self.config['acq_config']['AO']['num_averaged_frames'],
             min=1,
             max=100,
             connect_to_fn=self.update_config
@@ -346,6 +359,7 @@ class OPMSettings(QWidget):
         self.layout_ao_main.addLayout(self.layout_ao_exposure)     
         self.layout_ao_main.addLayout(self.layout_ao_mirror_range)
         self.layout_ao_main.addLayout(self.layout_num_iterations)
+        self.layout_ao_main.addLayout(self.layout_num_mode_samples)
         self.layout_ao_main.addLayout(self.layout_mode_delta)
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
         self.layout_ao_main.addLayout(self.layout_metric_prec)
@@ -368,6 +382,7 @@ class OPMSettings(QWidget):
                     'mode_delta': self.spbx_mode_delta,
                     'mode_alpha': self.spbx_mode_alpha,
                     'num_iterations': self.spbx_num_iterations,
+                    'num_mode_samples': self.spbx_num_mode_samples,
                     'num_scan_positions': self.spbx_num_scan_positions,
                     'num_tile_positions': self.spbx_num_tile_positions,
                     'image_mirror_range_um': self.spbx_ao_mirror_range,
