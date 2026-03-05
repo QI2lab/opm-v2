@@ -38,7 +38,9 @@
         "ao_metrics": [
             "DCT",
             "localize_gauss_2d",
-            "brightness"
+            "gauss_2d",
+            "brightness",
+            "fourier_ratio"
         ],
         "ao_modes": [
             "none",
@@ -88,8 +90,8 @@
     "Camera": {
         "camera_id": "OrcaFusionBT",
         "exposure_ms": 50.0,
-        "roi_center_x": 1148,
-        "roi_center_y": 1150,
+        "roi_center_x": 1123,
+        "roi_center_y": 1137,
         "roi_crop_x": 1900,
         "roi_crop_y": 512,
         "line_readout_ms": 0.4
@@ -137,11 +139,11 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
+        "opm_mode": "mirror",
         "fluidics": "none",
         "camera_roi": {
-            "center_x": 1149.0,
-            "center_y": 1160.0,
+            "center_x": 1123.0,
+            "center_y": 1137.0,
             "crop_x": 1900.0,
             "crop_y": 128.0
         },
@@ -152,17 +154,17 @@
             "o2o3_mode": "none"
         },
         "AO": {
-            "mirror_state": "last optimized",
-            "metric": "brightness",
-            "mode_delta": 0.05,
-            "mode_alpha": 0.75,
-            "num_iterations": 2,
+            "mirror_state": "system flat",
+            "metric": "DCT",
+            "mode_delta": 0.12,
+            "mode_alpha": 0.65,
+            "num_iterations": 3,
             "num_mode_samples": 5,
-            "image_mirror_range_um": 150.0,
+            "image_mirror_range_um": 50.0,
             "active_channel_id": "405nm",
-            "active_channel_power": 5.0,
-            "exposure_ms": 10.0,
-            "ao_mode": "optimize now",
+            "active_channel_power": 90.0,
+            "exposure_ms": 20.0,
+            "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
             "save_dir_path": "e:/optimize_now",
@@ -170,29 +172,29 @@
             "lightsheet_mode": "on",
             "readout_ms": 4.868,
             "metric_precision": 3,
-            "modes_to_optimize": "high order first",
+            "modes_to_optimize": "spherical first",
             "metric_acceptance": "zero",
             "num_averaged_frames": 50,
-            "averaged_framed": 60
+            "averaged_framed": 50
         },
         "timelapse": {
             "channel_states": [
                 false,
-                false,
+                true,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 1.0,
-                40.0,
+                50.0,
                 50.0,
                 12.0,
                 50.0
             ],
             "channel_exposures_ms": [
                 8.0,
-                10.0,
+                30.0,
                 20.0,
                 40.0,
                 20.0
@@ -201,28 +203,28 @@
         "mirror_scan": {
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
-            "scan_range_um": 0.0,
-            "scan_step_size_um": 0.4,
+            "scan_range_um": 60.0,
+            "scan_step_size_um": 0.2,
             "z_axis_overlap": 0.2,
             "tile_axis_overlap": 0.2,
             "laser_blanking": true,
             "channel_states": [
                 false,
-                false,
+                true,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
+                50.0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
+                30.0,
                 0,
                 0,
                 0
@@ -232,7 +234,7 @@
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
             "coverslip_max_dz": 2.0,
-            "scan_step_size_um": 0.4,
+            "scan_step_size_um": 0.2,
             "stage_scan_range_um": 1000.0,
             "scan_axis_overlap_um": 40,
             "z_axis_overlap": 0.2,
@@ -242,21 +244,21 @@
             "laser_blanking": true,
             "channel_states": [
                 false,
-                false,
+                true,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
+                50.0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
+                30.0,
                 0,
                 0,
                 0
@@ -267,26 +269,26 @@
             "camera_readout_ms": 4.867647,
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
-            "scan_range_um": 170.0,
+            "scan_range_um": 100.0,
             "tile_axis_overlap": 0.2,
             "laser_blanking": true,
             "channel_states": [
                 false,
-                false,
+                true,
                 false,
                 false,
                 false
             ],
             "channel_powers": [
                 0,
-                0,
+                50.0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0,
+                30.0,
                 0,
                 0,
                 0

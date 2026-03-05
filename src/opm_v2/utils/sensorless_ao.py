@@ -532,6 +532,7 @@ def run_ao_optimization(
                         if a >=0:
                             # optimal_delta = deltas[int(np.argmax(metrics))]
                             optimal_delta = 0
+                            optimal_image = np.zeros_like(starting_image)
                             if verbose:
                                 print(
                                     "\n------- WARNING -------"
@@ -545,6 +546,7 @@ def run_ao_optimization(
                         )
                 except Exception as e:
                     optimal_delta = 0
+                    optimal_image = np.zeros_like(starting_image)
                     if verbose:
                         print(
                             "\n------- WARNING -------"
@@ -552,6 +554,8 @@ def run_ao_optimization(
                         )
             else:
                 optimal_delta = 0
+                optimal_metric = np.nan
+                optimal_image = np.zeros_like(starting_image)
                 if verbose:
                     print(
                         "\n------- WARNING -------"
@@ -621,9 +625,11 @@ def run_ao_optimization(
                     optimal_images.append(starting_image)
                     optimal_metrics.append(starting_metric)
                 else:
-                    optimal_images.append(optimal_images[-1])
-                    optimal_metrics.append(current_opt_metric)
-                    iteration_optimal_metrics.append(current_opt_metric)
+                    optimal_image = optimal_images[-1]
+                    optimal_metric = current_opt_metric
+                    optimal_images.append(optimal_image)
+                    optimal_metrics.append(optimal_metric)
+                    iteration_optimal_metrics.append(optimal_metric)
             all_images.append(optimal_image)
             all_metrics.append(optimal_metric)
             optimal_coeffs.append(current_coeffs.copy())
@@ -1751,7 +1757,7 @@ def metric_shannon_dct(
 
 def metric_gauss2d(
     image: NDArray,
-    crop_size: int = None,
+    crop_size: int = 56,
     threshold: Optional[float] = 1000,
     image_center: int = None,
     return_image: Optional[bool]= False
