@@ -222,22 +222,28 @@ def create_ao_grid_event(
                     'num_tile_positions':ao_config['num_tile_positions'],
                     'output_path': output_dir_path,
                     'apply_ao_map': bool(False),
-                    'pos_idx':int(0),
+                    'pos_idx': int(0),
+                    'scan_idx': int(0),
+                    'time_idx': int(0),
                     'ao_dict': {
-                        'mirror_state': str(ao_config['mirror_state']),
-                        'daq_mode': str(ao_config['daq_mode']),
                         'channel_states': channel_states,
                         'channel_powers' : channel_powers,
+                        'mirror_state': str(ao_config['mirror_state']),
+                        'metric_acceptance': str(ao_config['metric_acceptance']),
+                        'daq_mode': str(ao_config['daq_mode']),
                         'exposure_ms': float(ao_config['exposure_ms']),
                         'modal_delta': float(ao_config['mode_delta']),
                         'metric_precision':int(ao_config['metric_precision']),
+                        'num_averaged_frames': int(ao_config['num_averaged_frames']),
                         'modal_alpha':float(ao_config['mode_alpha']),                        
                         'iterations': int(ao_config['num_iterations']),
+                        'num_mode_samples': int(ao_config['num_mode_samples']),
                         'metric': str(ao_config['metric']),
                         'modes_to_optimize': str(ao_config['modes_to_optimize']),
                         'image_mirror_range_um' : ao_config['image_mirror_range_um'],
                         'lightsheet_mode': str(ao_config['lightsheet_mode']),
                         'readout_ms': float(ao_config['readout_ms']),
+                        'apply_existing': bool(False),
                     }
                 },
                 'Camera' : {
@@ -280,7 +286,7 @@ def create_ao_mirror_update_event(
                 name='AO-mirrorUpdate',
                 data = {
                     'AOmirror' : {
-                        'coefficients' : mirror_coeffs.tolist(),
+                        'modal_coeffs' : mirror_coeffs.tolist(),
                     }
                 }
             )

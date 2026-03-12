@@ -297,7 +297,7 @@ class OPMSettings(QWidget):
         self.layout_metric_prec.addWidget(self.spbx_metric_precision)
         
         self.spbx_averaged_frames = self.create_spinbox(
-            value=self.config['acq_config']['AO']['num_averaged_frames'],
+            value=1,
             min=1,
             max=100,
             connect_to_fn=self.update_config
@@ -394,7 +394,7 @@ class OPMSettings(QWidget):
                     'mirror_state': self.cmbx_ao_mirror,
                     'lightsheet_mode': self.cmbx_ao_camera_mode,
                     'readout_ms': self.spbx_readout_time,
-                    'averaged_framed': self.spbx_averaged_frames
+                    'num_averaged_frames': self.spbx_averaged_frames
                     }  
                 }
         )

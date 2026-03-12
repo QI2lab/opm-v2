@@ -14,11 +14,7 @@ mirror_state_output_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\op
 
 # WFC positions file path
 # wfc_flat_file_path = None # Use None for flat (zero) positions
-wfc_flat_file_path = Path(r"E:\Alignment\20250225_Retilt\new_wfc_files\20260225_162414_ao_optimizeNOW\ao_optimized_wfc_voltage.wcs")
-to_test = Path(r"E:/optimize_now/20260227_142620_ao_optimizeNOW/ao_optimized_wfc_voltage.wcs")
-'''
-"E:\optimize_now\20260227_181414_ao_optimizeNOW\ao_optimized_wfc_voltage.wcs"
-'''
+wfc_flat_file_path = Path(r"E:/optimize_now/current_now/optimized_wfc_voltage.wcs")
 
 # Load ao_mirror controller using the given positions file
 ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,

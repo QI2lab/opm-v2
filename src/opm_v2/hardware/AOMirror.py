@@ -8,12 +8,6 @@ import numpy as np
 import wavekit_py as wkpy
 from numpy.typing import ArrayLike, NDArray
 
-logging.basicConfig(
-    filename="ao_mirror.log",        # File to save logs
-    level=logging.INFO,        # Minimum log level to record
-    format="%(asctime)s - %(levelname)s - %(message)s"
-)
-
 DEBUGGING = False
 
 # TODO: Test effect of tilt filtering
@@ -84,7 +78,7 @@ class AOMirror:
         modes_to_ignore: List[int] | None = None,
         n_modes: int = 32,
         tilt_filtering: bool = False,
-        mirror_settle_ms: float = 100.0,
+        mirror_settle_ms: float = 50.0,
         wait_after_move: bool = False,
         output_path: Path | None = None,
     ):
@@ -165,11 +159,17 @@ class AOMirror:
 
         # ---------------------------------------------#
         # Set up wfc positions and mirror position tracking
+        # - Reference state and voltage for applying modal coeffs from
+        # - system flat, loaded from file
+        # - factory flat, loaded from wfc set
+        # - zeros, set by applying 0V to each actuator
+        # - Track the optimized mirror coeffs and voltage, apply voltages!
+        # - Track positions arrays for coeffs and voltage, apply voltages!
         # ---------------------------------------------#
+        
         # init the reference state variables
         self._reference_state = None
         self._ref_voltage = np.zeros(self.n_actuators)
-        self._ref_modal_coefs = np.zeros(self._n_modes)
 
         # Get the system flat voltage from file
         if self._system_flat_file_path is not None:
@@ -191,11 +191,8 @@ class AOMirror:
         # Setup arrays for tracking applied mirror voltages and Zernike amplitudes
         self._current_coeffs = np.zeros(self._n_modes, dtype=np.float32)
         self._current_voltage = self.system_flat_voltage.copy()
-        # TODO: Update to be a dict of mode name: amplitude for current modal coefficients
-        self._current_zernikes = {} 
 
         # Setup the arrays to hold optimized values. 
-        # Used to switch states and start corrections from an optimized position.
         self._optimized_modal_coefs = self._current_coeffs.copy()
         self._optimized_voltage = self._current_voltage.copy()
 
@@ -205,7 +202,9 @@ class AOMirror:
 
         # Start mirror at system flat voltage
         self.apply_system_flat_voltage()
+        self.update_optimized_array()
 
+        print(f"system_flat_voltage: {self.system_flat_voltage}")
         # Define mode names matching the mirror modes
         self.mode_names = [
             "Vert. Tilt",  # 0
@@ -358,10 +357,7 @@ class AOMirror:
         """Get the difference between current and flat mirror positions."""
         return self._deltas
 
-    @property # TODO: Is this useful?
-    def coeff_deltas(self) -> NDArray:
-        """Get the difference between current and flat modal coefficients."""
-        return self._current_coeffs - self._ref_modal_coefs
+
     
     def __del__(self):
         """Disconnect from mirror on close"""
@@ -371,7 +367,7 @@ class AOMirror:
         """Ensure mirror positions are within safe voltage limits."""
         if volts.shape != (self.n_actuators,):
             print(
-                "------- AOmirror -------\n"
+                "------- AOmirror VOLTAGE ERROR -------\n"
                 f"Voltage validation: Volts array must have shape = {self.n_actuators}"
             )
             return False
@@ -383,7 +379,24 @@ class AOMirror:
             return False
         else:
             return True
-
+    
+    def _verify_current_voltage(self, volts: NDArray, tolerance:int=0.001) -> bool:
+        """Validate the current mirror state matches the requested volts."""
+        success = np.allclose(
+                self.current_voltage, volts, rtol=tolerance, atol=0
+            )
+        if success:
+            return success
+        else:
+            print(
+                "------- AOmirror: VOLTAGE ERROR -------",
+                f"Requested mirror voltage: {volts}",
+                f"Current voltage: {self.current_voltage}",
+                f"Current ref state: {self._reference_state}",
+                sep="\n"
+            )
+            return False
+        
     # -------------------------------------------------#
     # Method for updating and saving mirror reference states,
     # used for applying modal coefficients
@@ -394,23 +407,15 @@ class AOMirror:
         if state == "system_flat":
             self._reference_state = "system_flat"
             self._ref_voltage = self.system_flat_voltage.copy()
-            self._ref_modal_coefs = np.zeros(self._n_modes)
         elif state == "factory_flat":
             self._reference_state = "factory_flat"
             self._ref_voltage = self.factory_flat_voltage.copy()
-            self._ref_modal_coefs = np.zeros(self._n_modes)
         elif state == "zeros_voltage":
             self._reference_state = "zeros_voltage"
             self._ref_voltage = self.zeros_voltage.copy()
-            self._ref_modal_coefs = np.zeros(self._n_modes)
-        elif state == "optimized":
-            self._reference_state = "optimized"
-            self._ref_voltage = self.system_flat_voltage.copy()
-            # self._ref_voltage = self.optimized_voltage.copy() # TODO
-            self._ref_modal_coefs = self.optimized_modal_coefs.copy()
         else:
             raise ValueError(
-                "Invalid reference state, must be 'system_flat', 'factory_flat', or 'zeros_voltage' or 'optimized'!"
+                "Invalid reference state, must be 'system_flat', 'factory_flat', or 'zeros_voltage'!"
             )
 
     # -------------------------------------------------#
@@ -445,6 +450,7 @@ class AOMirror:
         idx : int
             stage positions array index
         """
+        self._update_current_state()
         self.positions_modal_array[idx, :] = self.current_coeffs.copy()
         self.positions_voltage_array[idx, :] = self.current_voltage.copy()
 
@@ -458,6 +464,7 @@ class AOMirror:
 
     def update_optimized_array(self):
         """Update the last optimized voltage and modal arrays"""
+        self._update_current_state()
         self.optimized_modal_coefs = self.current_coeffs.copy()
         self.optimized_voltage = self.current_voltage.copy()
 
@@ -472,111 +479,64 @@ class AOMirror:
     # -------------------------------------------------#
     # Methods for applying saved mirror states
     # -------------------------------------------------#
-    def apply_factory_flat_voltage(self, set_reference: bool = True):
+    
+    def apply_factory_flat_voltage(self):
         """Set mirror to positions to system flat."""
-        # Reset modal_coef with zeros
-        self.modal_coeff.set_coefs_values(
-            np.zeros(self._n_modes), index_array=self._mode_indices
-        )
-        # Apply mirror voltage
-        success = self.set_mirror_voltage(self.factory_flat_voltage)
-        
-        if set_reference:
+        try:
+            _old_voltage = self.current_voltage.copy()
             self.set_reference_state("factory_flat")
-        self._update_current_state()
+            self.set_modal_coefficients(np.zeros(self._n_modes))
+            self._update_current_state()
+            success = self._verify_current_voltage(self.factory_flat_voltage)
+        except Exception as e:
+            print(f"Exception occured in setting FACTORY FLAT state:\n {e}")
+            self.set_mirror_voltage(_old_voltage)
+            success = False
         
-        if DEBUGGING:
-            voltage_success = np.allclose(
-                self.current_voltage, self.factory_flat_voltage, atol=1e-5
-            )
-            print(
-                "------- AOmirror -------\n"
-                "Applied system flat voltage:\n"
-                f"Success: {voltage_success}\n"
-                f"current modal coef: {self.current_coeffs}"
-            )
         return success
 
-    def apply_zeros_voltage(self, set_reference: bool = True):
+    def apply_zeros_voltage(self):
         """Set mirror to positions to system flat."""
-        # Reset modal_coef with zeros
-        self.modal_coeff.set_coefs_values(
-            np.zeros(self._n_modes), index_array=self._mode_indices
-        )
-        # Apply mirror voltage
-        success = self.set_mirror_voltage(self.zeros_voltage)
-        
-        if set_reference:
+        try:
+            _old_voltage = self.current_voltage.copy()
             self.set_reference_state("zeros_voltage")
-        self._update_current_state()
-
-        if DEBUGGING:
-            voltage_success = np.allclose(
-                self.current_voltage, self.zeros_voltage, atol=1e-5
-            )
-            print(
-                "------- AOmirror -------\n"
-                "Applied zeros_voltage voltage:\n"
-                f"Success: {voltage_success}\n"
-                f"current modal coef: {self.current_coeffs}"
-            )
+            self.set_modal_coefficients(np.zeros(self._n_modes))
+            self._update_current_state()
+            success = self._verify_current_voltage(self.zeros_voltage)
+        except Exception as e:
+            print(f"Exception occured in setting ZEROS state:\n {e}")
+            self.set_mirror_voltage(_old_voltage)
+            success = False
+            
         return success
 
-    def apply_system_flat_voltage(self, set_reference: bool = True):
+    def apply_system_flat_voltage(self):
         """Set mirror to positions to system flat."""
-        # Reset modal_coef with zeros
-        self.modal_coeff.set_coefs_values(
-            np.zeros(self._n_modes), index_array=self._mode_indices
-        )
-        # Apply mirror voltage
-        success = self.set_mirror_voltage(self.system_flat_voltage)
-        if set_reference:
+        try:
+            _old_voltage = self.current_voltage.copy()
             self.set_reference_state("system_flat")
-        self._update_current_state()
-        
-        if DEBUGGING:
-            voltage_success = np.allclose(
-                self.current_voltage, self.system_flat_voltage, atol=1e-5
-            )
-            print(
-                "------- AOmirror -------\n"
-                "Applied system flat voltage:\n"
-                f"Success: {voltage_success}\n"
-                f"current modal coef: {self.current_coeffs}"
-            )
+            self.set_modal_coefficients(np.zeros(self._n_modes))
+            self._update_current_state()
+            success = self._verify_current_voltage(self.system_flat_voltage)
+        except Exception as e:
+            print(f"Exception occured in setting SYSTEM FLAT state:\n {e}")
+            self.set_mirror_voltage(_old_voltage)
+            success = False
+            
         return success
 
-    def apply_optimized_voltage(self, set_reference: bool = True):
+    def apply_optimized_voltage(self, reference_state:str="system_flat"):
         """Set mirror to positions to last optimized"""
-        # Set modal_coef with last optimized values
-        self.modal_coeff.set_coefs_values(
-            self.optimized_modal_coefs, index_array=self._mode_indices
-        )
-        # Apply mirror voltage
-        success = self.set_mirror_voltage(self.optimized_voltage)
-        if set_reference:
-            self.set_reference_state("optimized")
-        self._update_current_state()
-
-        if DEBUGGING:
-            print(
-                "Applied optimized voltage and modal coefficients"
-                f"modal_coefs: {self.optimized_modal_coefs}\n"
-            )
-            modal_success = np.allclose(
-                self.current_coeffs, self.optimized_modal_coefs, atol=1e-5
-            )
-            voltage_success = np.allclose(
-                self.current_voltage, self.optimized_voltage, atol=1e-5
-            )
-            print(
-                "------- AOmirror -------\n"
-                "Applied optimized arrays:\n"
-                f"modal_coef success: {modal_success}\n"
-                f"voltage success: {voltage_success}\n"
-                f"modal_coefs: {self.current_coeffs}\n"
-                f"voltages: {self.current_voltage}"
-            )
+        try:
+            _old_voltage = self.current_voltage.copy()
+            self.set_reference_state(reference_state)
+            self.set_modal_coefficients(self.optimized_modal_coefs)
+            self._update_current_state()
+            success = self._verify_current_voltage(self.optimized_voltage)
+        except Exception as e:
+            print(f"Exception occured in setting SYSTEM FLAT state:\n {e}")
+            self.set_mirror_voltage(_old_voltage)
+            success = False
         return success
 
     def apply_positions_array(self, idx: int = 0):
@@ -590,48 +550,37 @@ class AOMirror:
             position index to use
         """
         try:
-            # Set modal_coef with current modal values
-            self.modal_coeff.set_coefs_values(
-                self.positions_modal_array[idx, :], index_array=self._mode_indices
-            )
-            # Apply mirror voltages
-            success = self.set_mirror_voltage(self.positions_voltage_array[idx, :])
-
-            if DEBUGGING:
-                voltage_success = np.allclose(
-                    self.current_voltage, self.positions_voltage_array[idx], atol=1e-5
-                )
-                print(
-                    "------- AOmirror -------\n"
-                    f"Applied mirror state for stage position {idx}:\n"
-                    f"Success: {voltage_success}"
-                )
-            return success
-
+            _old_voltage = self.current_voltage.copy()
+            self.set_modal_coefficients(self.positions_modal_array[idx, :])
+            self._update_current_state()
+            success = self._verify_current_voltage(self.positions_voltage_array[idx])
         except Exception as e:
-            print(
-                f"AOmirror: Setting mirror state from positions array failed! idx:{idx}"
-                f"\nException: {e}"
-            )
+            print(f"Exception occured in applying POSITION ARRAY idx={idx}:\n {e}")
+            self.set_mirror_voltage(_old_voltage)  
+        
+        return success
 
     def apply_wfc_voltage_file(self, wfc_path: Path):
         """ Set mirror to the positions given by wfc file
-        WARNING: This method does not update the modal_coef reference!
+        WARNING: THIS METHOD BREAKS THE MODAL COEFF REFERENCE STATE
+                 ONLY USE FOR LOADING SAVED MIRROR STATES
         """
         if ".wcs" not in wfc_path.name:
             print("WFC file not provided")
             return False
         else:
+            # Update the modal coeff model and get wfc voltage state
             self.modal_coeff.set_coefs_values(
                 np.zeros(self._n_modes), index_array=self._mode_indices
             )
-            self.current_coeffs = np.zeros(self._n_modes)
             wfc_voltage = np.array(
                 self.wfc.get_positions_from_file(str(wfc_path)),
                 dtype=np.float32,
                 copy=True,
             )
             success = self.set_mirror_voltage(wfc_voltage)
+            self._update_current_state()
+            
             return success
     
     # -------------------------------------------------#
@@ -656,27 +605,17 @@ class AOMirror:
                 self.wfc.move_to_absolute_positions(positions)
                 if self._wait_after_move:
                     time.sleep(self._mirror_settle_ms * 10**-3)
-                success = True
+                self._update_current_state()
+                success = self._verify_current_voltage(positions)
             except Exception as e:
                 success = False
                 print(
-                    f"------- AOmirror -------Exception in setting mirror voltage\n{e}"
+                    "------- AOmirror ERROR -------",
+                    f"\nException in setting mirror voltage:\n{e}"
                 )
         else:
             success = False
-        if success:
-            # only update state if the mirror was changed!
-            self._update_current_state()
-        
-        if DEBUGGING:
-            voltage_success = np.allclose(positions, self.current_voltage, atol=1e-5)
-            print(
-                "------- AOmirror -------\n"
-                f"Setting mirror voltage, success: {success}:\n"
-                f"Current=Requested: {voltage_success}\n"
-                f"Current voltages: {self.current_voltage}"
-            )
-
+            
         return success
 
     def set_modal_coefficients(self, amps: ArrayLike):
@@ -688,21 +627,6 @@ class AOMirror:
         amps : NDArray
             Flatten array of Zernike mode amplitudes
         """
-        # Set mirror in reference flat state, zero coeffs reference point
-        if self._reference_state == "system_flat":
-            self.apply_system_flat_voltage()
-        elif self._reference_state == "factory_flat":
-            self.apply_factory_flat_voltage()
-        elif self._reference_state == "zeros_voltage":
-            self.apply_zeros_voltage()
-        elif self._reference_state == "optimized":
-            # self.apply_optimized_voltage()
-            self.set_mirror_voltage(self.system_flat_voltage) 
-            # TODO: should this be optimized voltage? I think not, but assumes optimized
-            #       is with respect to system flat
-        else:
-            raise ValueError("Invalid reference_state, cannot set modal coefficients!")
-
         # Validate amplitude array
         amps = np.asarray(amps, dtype=np.float32)
         if amps.shape != (self._n_modes,):
@@ -721,7 +645,7 @@ class AOMirror:
         deltas = self.corr_data_manager.compute_delta_command_from_delta_slopes(
             delta_slopes=haso_slopes
         )
-        # New voltage relative from system flat
+        # New voltage relative reference voltage
         new_voltage = self._ref_voltage + np.asarray(deltas)
         success = self.set_mirror_voltage(new_voltage)
 

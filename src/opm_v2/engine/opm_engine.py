@@ -516,21 +516,22 @@ class OPMEngine(MDAEngine):
                         )
                 else:
                     run_ao_optimization(
-                        starting_mirror_state=str(data_dict['AO']['mirror_state']),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
-                        modes_to_optimize=data_dict["AO"]["modes_to_optimize"],
                         daq_mode=data_dict["AO"]["daq_mode"],
+                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         num_mode_samples=int(data_dict["AO"]["num_mode_samples"]),
                         starting_coef_delta=float(data_dict["AO"]["modal_delta"]),
                         coef_delta_scale=float(data_dict["AO"]["modal_alpha"]),
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
-                        num_averaged_frames=int(data_dict["AO"]["num_averaged_frames"]),
-                        image_mirror_range_um=float(data_dict["AO"]["image_mirror_range_um"]),
-                        save_dir_path=data_dict["AO"]["output_path"],
+                        modes_to_optimize=data_dict["AO"]["modes_to_optimize"],
+                        starting_mirror_state=str(data_dict['AO']['mirror_state']),
                         mode_acceptance=data_dict["AO"]["metric_acceptance"],
+                        num_averaged_frames=int(data_dict["AO"]["num_averaged_frames"]),
+                        pos_idx=pos_idx,
+                        save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING
                     )
                     if pos_idx is not None:
@@ -596,7 +597,7 @@ class OPMEngine(MDAEngine):
                     )
             
             elif action_name == "AO-mirrorUpdate":
-                coeffs = data_dict["AOmirror"]["coefficients"]
+                coeffs = data_dict["AOmirror"]["modal_coeffs"]
                 if coeffs is not None:
                     self.AOMirror.set_modal_coefficients(np.array(coeffs))
                     if DEBUGGING:
