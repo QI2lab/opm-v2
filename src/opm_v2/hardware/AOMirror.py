@@ -1,5 +1,4 @@
 import json
-import logging
 import time
 from pathlib import Path
 from typing import List
@@ -371,10 +370,11 @@ class AOMirror:
                 f"Voltage validation: Volts array must have shape = {self.n_actuators}"
             )
             return False
-        elif np.sum(np.where(np.abs(volts) >= 0.99, 1, 0)) > 1:
+        elif np.any(np.abs(volts) >= 0.99):
+            bad_idx = np.where(np.abs(volts) > 1.0)[0]
             print(
-                "------- AOmirror -------\n"
-                "Voltage validation: Individual actuator voltage too high."
+                "------- AOmirror VOLTAGE ERROR -------\n"
+                f"Voltage validation: Individual actuator voltage too high: {bad_idx}"
             )
             return False
         else:
@@ -415,7 +415,8 @@ class AOMirror:
             self._ref_voltage = self.zeros_voltage.copy()
         else:
             raise ValueError(
-                "Invalid reference state, must be 'system_flat', 'factory_flat', or 'zeros_voltage'!"
+                "Invalid reference state, must be:"
+                "'system_flat', 'factory_flat', or 'zeros_voltage'!"
             )
 
     # -------------------------------------------------#
@@ -599,6 +600,7 @@ class AOMirror:
         success
             bool: whether mirror voltages where applied
         """
+        # positions = np.clip(positions, -0.99, 0.99)
         if self._validate_voltage(positions):
             try:
                 # Apply mirror voltages
@@ -627,6 +629,8 @@ class AOMirror:
         amps : NDArray
             Flatten array of Zernike mode amplitudes
         """
+        starting_coeffs = self.current_coeffs
+        
         # Validate amplitude array
         amps = np.asarray(amps, dtype=np.float32)
         if amps.shape != (self._n_modes,):
@@ -652,10 +656,11 @@ class AOMirror:
         if not success:
             # Revert to the modal_coef to the last saved state and update
             self.modal_coeff.set_coefs_values(
-                coef_array=self.current_coeffs, index_array=self._mode_indices
+                coef_array=starting_coeffs, index_array=self._mode_indices
             )
-        # Update the current state
-        self._update_current_state()
+            # Update the current state
+            self._update_current_state()
+            
         return success
 
     # -------------------------------------------------#
@@ -696,7 +701,7 @@ class AOMirror:
             else:
                 # save wfc compatible file
                 actuator_save_path = self._output_path / Path(
-                    f"{prefix}_wfc_voltage.wcs"
+                    f"{prefix}_wfc_state.wcs"
                 )
                 self.wfc.save_current_positions_to_file(str(actuator_save_path))
 

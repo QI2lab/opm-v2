@@ -2,8 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 DEBUG = True
 
-camera_crop_y = 128
-camera_crop_x = 1900
+camera_roi[3] = 128
+camera_roi[2] = 1900
 coverslip_slope = 0.008
 scan_axis_step_um = 0.4
 scan_tile_overlap_um = 50
@@ -16,7 +16,7 @@ exposure_ms = 20
 pixel_size_um = 0.115
 coverslip_max_dz = 3.0
 
-scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + 20
+scan_tile_overlap_um = camera_roi[3] * opm_angle_scale * pixel_size_um + 20
 scan_tile_overlap_mm = scan_tile_overlap_um/1000.
 #--------------------------------------------------------------------#
 # Grab grid plan extents
@@ -40,13 +40,13 @@ cs_range_um = np.round(np.abs(cs_max_pos - cs_min_pos),2)
 #--------------------------------------------------------------------#
 # Calculate tile steps
 z_axis_step_max = (
-    camera_crop_y
+    camera_roi[3]
     * pixel_size_um
     * opm_angle_scale 
     * (1-tile_axis_overlap)
 )
 tile_axis_step_max = (
-    camera_crop_x
+    camera_roi[2]
     * pixel_size_um
     * (1-tile_axis_overlap)
 )

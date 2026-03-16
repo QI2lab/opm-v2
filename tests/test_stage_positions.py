@@ -10,8 +10,8 @@ max_x_pos = 1000
 min_z_pos = 0
 max_z_pos = 20
 coverslip_slope = 0
-camera_crop_y = 386
-camera_crop_x = 1900
+camera_roi[3] = 386
+camera_roi[2] = 1900
 tile_axis_overlap = 0.2
 opm_angle_scale = np.sin(np.deg2rad(30))
 pixel_size_um = 0.115
@@ -33,13 +33,13 @@ cs_range_um = np.round(np.abs(cs_max_pos - cs_min_pos),2)
 #--------------------------------------------------------------------#
 # Calculate tile steps
 z_axis_step_max = (
-    camera_crop_y
+    camera_roi[3]
     * pixel_size_um
     * opm_angle_scale 
     * (1-tile_axis_overlap)
 )
 tile_axis_step_max = (
-    camera_crop_x
+    camera_roi[2]
     * pixel_size_um
     * (1-tile_axis_overlap)
 )
