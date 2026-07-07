@@ -267,7 +267,7 @@ def acq_modes(config: dict):
     """Returns the settings for each available mode"""
     opm_mode = config["acq_config"]["opm_mode"]
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = config["acq_config"]["o2o3_mode"]
     fluidics_mode = config["acq_config"]["fluidics"]
     return [opm_mode, ao_mode, o2o3_mode, fluidics_mode]
 
@@ -422,17 +422,17 @@ def ao_metadata(config: dict):
         "metric_acceptance": str(ao_config["metric_acceptance"]),
         "daq_mode": str(ao_config["daq_mode"]),
         "exposure_ms": float(ao_config["exposure_ms"]),
-        "modal_delta": float(ao_config["mode_delta"]),
+        "mode_delta": float(ao_config["mode_delta"]),
         "metric_precision": int(ao_config["metric_precision"]),
         "num_averaged_frames": int(ao_config["num_averaged_frames"]),
-        "modal_alpha": float(ao_config["mode_alpha"]),
-        "iterations": int(ao_config["num_iterations"]),
+        "mode_alpha": float(ao_config["mode_alpha"]),
+        "iterations": int(ao_config["iterations"]),
         "num_mode_samples": int(ao_config["num_mode_samples"]),
         "metric": str(ao_config["metric"]),
         "modes_to_optimize": str(ao_config["modes_to_optimize"]),
         "image_mirror_range_um": ao_config["image_mirror_range_um"],
         "lightsheet_mode": str(ao_config["lightsheet_mode"]),
-        "readout_ms": float(ao_config["readout_ms"]),
+        "readout_us": float(ao_config["readout_us"]),
         "apply_existing": bool(False),
         "pos_idx": int(0),
         "scan_idx": int(0),
@@ -576,7 +576,7 @@ def setup_optimizenow(mmc: CMMCorePlus, config: dict, output: Path) -> list[MDAE
         OPM events
     """
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = config["acq_config"]["o2o3_mode"]
 
     # Sequentially run auto focus then AO optmization
     opm_events: list[MDAEvent] = []
@@ -595,6 +595,7 @@ def setup_optimizenow(mmc: CMMCorePlus, config: dict, output: Path) -> list[MDAE
             ao_output = output / f"{time}_ao_optimize_now"
         ao_data = ao_metadata(config)
         ao_optimize_event = create_ao_optimize_event(ao_data, ao_output)
+        print(ao_optimize_event)
         opm_events.append(ao_optimize_event)
 
     return opm_events, None

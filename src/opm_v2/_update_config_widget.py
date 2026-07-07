@@ -238,7 +238,7 @@ class OPMSettings(QWidget):
         self.layout_ao_daq_mode.addWidget(self.cmbx_ao_daq_mode)
 
         self.spbx_num_iterations = self.create_spinbox(
-            value=self.config["acq_config"]["AO"]["num_iterations"],
+            value=self.config["acq_config"]["AO"]["iterations"],
             min=1,
             max=10,
             connect_to_fn=self.update_config,
@@ -371,7 +371,7 @@ class OPMSettings(QWidget):
                     "metric_acceptance": self.cmbx_ao_accept,
                     "mode_delta": self.spbx_mode_delta,
                     "mode_alpha": self.spbx_mode_alpha,
-                    "num_iterations": self.spbx_num_iterations,
+                    "iterations": self.spbx_num_iterations,
                     "num_mode_samples": self.spbx_num_mode_samples,
                     "num_scan_positions": self.spbx_num_scan_positions,
                     "num_tile_positions": self.spbx_num_tile_positions,

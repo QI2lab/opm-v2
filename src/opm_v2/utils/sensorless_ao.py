@@ -478,7 +478,7 @@ def run_ao_optimization(
         "stage_position": stage_position,
         "opm_mode": daq_mode,
         "metric_name": metric_to_use,
-        "num_iterations": num_iterations,
+        "iterations": num_iterations,
         "num_mode_samples": num_mode_samples,
         "mode_deltas": list(mode_deltas),
         "modes_to_optimize": list(modes_to_optimize),
@@ -879,7 +879,7 @@ def plot_zernike_coeffs(
         }
     )
     metadata = ao_results["metadata"]
-    num_iterations = int(metadata["num_iterations"])
+    num_iterations = int(metadata["iterations"])
     optimal_coeffs = np.array(ao_results["optimal_coeffs"])
     starting_coeffs = np.array(ao_results["starting_coeffs"])
 
@@ -1081,7 +1081,7 @@ def plot_metric_progress(
     )
     metadata = ao_results["metadata"]
     num_mode_samples = int(metadata["num_mode_samples"])
-    num_iterations = int(metadata["num_iterations"])
+    num_iterations = int(metadata["iterations"])
     metric_name = str(metadata["metric_name"])
     modes_to_optimize = metadata["modes_to_optimize"]
     num_modes = len(modes_to_optimize)
@@ -2240,8 +2240,8 @@ def run_ao_grid_mapping(
             image_mirror_range_um=ao_dict["image_mirror_range_um"],
             num_iterations=ao_dict["iterations"],
             num_mode_samples=ao_dict["num_mode_samples"],
-            starting_coef_delta=ao_dict["modal_delta"],
-            coef_delta_scale=ao_dict["modal_alpha"],
+            starting_coef_delta=ao_dict["mode_delta"],
+            coef_delta_scale=ao_dict["mode_alpha"],
             metric_precision=ao_dict["metric_precision"],
             modes_to_optimize=ao_dict["modes_to_optimize"],
             starting_mirror_state=mirror_state,

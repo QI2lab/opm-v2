@@ -64,6 +64,7 @@ class OPMEngine(MDAEngine):
         camera_roi : list[int,int,int,int]
             center x, center y, crop x, crop y
         """
+        print(f"\nSetting camera ROI to: {camera_roi}")
         self._mmc.getROI()
         self._mmc.clearROI()
         self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
@@ -547,8 +548,8 @@ class OPMEngine(MDAEngine):
                         ),
                         num_iterations=int(data_dict["AO"]["iterations"]),
                         num_mode_samples=int(data_dict["AO"]["num_mode_samples"]),
-                        starting_coef_delta=float(data_dict["AO"]["modal_delta"]),
-                        coef_delta_scale=float(data_dict["AO"]["modal_alpha"]),
+                        starting_coef_delta=float(data_dict["AO"]["mode_delta"]),
+                        coef_delta_scale=float(data_dict["AO"]["mode_alpha"]),
                         metric_precision=int(data_dict["AO"]["metric_precision"]),
                         modes_to_optimize=data_dict["AO"]["modes_to_optimize"],
                         starting_mirror_state=str(data_dict["AO"]["mirror_state"]),

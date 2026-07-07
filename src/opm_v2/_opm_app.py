@@ -416,7 +416,7 @@ def main() -> None:
         update_config()
         opm_mode = config["acq_config"]["opm_mode"]
         ao_mode = config["acq_config"]["AO"]["ao_mode"]
-        o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+        o2o3_mode = config["acq_config"]["o2o3_mode"]
         fluidics_mode = config["acq_config"]["fluidics"]
 
         # --------------------------------------------------------------------#
