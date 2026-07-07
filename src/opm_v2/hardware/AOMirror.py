@@ -382,9 +382,7 @@ class AOMirror:
     
     def _verify_current_voltage(self, volts: NDArray, tolerance:int=0.001) -> bool:
         """Validate the current mirror state matches the requested volts."""
-        success = np.allclose(
-                self.current_voltage, volts, rtol=tolerance, atol=0
-            )
+        success = np.allclose(self.current_voltage, volts, atol=tolerance)
         if success:
             return success
         else:

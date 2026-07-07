@@ -7,27 +7,39 @@ Required modules :
 -sys
 -time
 """
-import os, sys, time
-
-from PyQt6 import QtCore, QtGui, QtWidgets, uic
-from PyQt6.QtCore import Qt
-from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
-from PyQt6.QtCore import QIODevice
-import matplotlib.pyplot as plt
-
+import os
+import sys
+import time
 from pathlib import Path
-exp_ms = 6500
-include_curvature = False
-output_prefix = '20250818_laser'
+
+import matplotlib.pyplot as plt
+import numpy as np
+
+# from matplotlib.backends.backend_qt6agg import FigureCanvasQTAgg as FigureCanvas
+from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
+from PyQt5 import QtCore, QtWidgets, uic
+from PyQt5.QtCore import QIODevice, Qt
+
+exp_ms = 9000
+include_curvature = True
+include_tilt = True
+output_prefix = '20260505_straight_from_corrected_wo_curvature'
 if include_curvature:
     output_prefix += '_curvature'
 else:
     output_prefix += '_no_curvature'
+if include_tilt:
+    output_prefix += '_tilt'
+else:
+    output_prefix += '_no_tilt'
 
-output_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_position_files") / Path(output_prefix + "_closed_loop_output.wcs")
+output_file_path = Path(r"E:\Alignment\20260706") / Path(output_prefix + "_closed_loop_output_allTRUE.wcs")
 
 sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..//..//..//" ))
+
+
 import wavekit_py as wkpy
+
 
 class Interface(QtWidgets.QMainWindow):
 
@@ -186,6 +198,19 @@ class Interface(QtWidgets.QMainWindow):
         try :
             self.wfc = wkpy.WavefrontCorrector(config_file_path = self.wfc_path)
             self.wfc.connect(True)
+            # wfc_flat_file_path = Path(r"E:\Alignment\20260504_05\20260505_straight_pushpull05_no_curvature_closed_loop_output.wcs")
+
+            # # wfc_path = Path(r"E:\Alignment\20260504_05\20260504_straight_pushpull05_no_curvature_closed_loop_output.wcs")
+            # self.loaded_positions = np.array(
+            #     self.wfc.get_positions_from_file(str(wfc_flat_file_path)),
+            #     dtype=np.float32,
+            #     copy=True,
+            # )
+            # self.wfc_set = wkpy.WavefrontCorrectorSet(wavefrontcorrector=self.wfc)
+            # self.loaded_positions = np.array(
+            # self.wfc_set.get_flat_mirror_positions(), dtype=np.float32, copy=True
+            # )
+            # self.wfc.move_to_absolute_positions(self.loaded_positions)
             self.on_wfc_connection(True)
         except Exception as e :
             print(str(e))
@@ -247,10 +272,18 @@ class Interface(QtWidgets.QMainWindow):
             ref_hasoslopes = wkpy.HasoSlopes(hasoslopes = slopes)
             
             processor_list = wkpy.SlopesPostProcessorList()
+
             if include_curvature:
-                processor_list.insert_filter(0, False, False, True, True, True, True)
+                if include_tilt:
+                    # processor_list.insert_filter(0, False, False, False, False, False, True)
+                    processor_list.insert_filter(0, True, True, True, True, True, True)
+                else:
+                    processor_list.insert_filter(0, False, False, True, False, False, True)
             else:
-                processor_list.insert_filter(0, False, False, False, True, True, True)
+                if include_tilt:
+                    processor_list.insert_filter(0, True, True, False, True, False, True)
+                else:
+                    processor_list.insert_filter(0, False, False, False, True, True, True)
 
             hasodata = wkpy.HasoData(hasoslopes = ref_hasoslopes)
             hasodata.apply_slopes_post_processor_list(processor_list)
@@ -265,7 +298,7 @@ class Interface(QtWidgets.QMainWindow):
 
             """Set wavefrontcorrector pref_hasoslopeserences
             """
-            self.wfc.set_temporization(20)
+            self.wfc.set_temporization(100)
 
             """Compute command matrix
             """

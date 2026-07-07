@@ -133,7 +133,7 @@ stationary_modes = [
     30,
     31,
 ]
-
+all_modes = [0,1,3,4,5,6,8,9,10,11,12,13,17,18,19,20,31,30,29,28,27,26,25,24,23,22]
 mode_names = [
     "Vert. Tilt",
     "Horz. Tilt",
@@ -639,10 +639,10 @@ def run_ao_optimization(
                         optimal_delta = -b / (2 * a)
                         # Reject if metrics have positive curvature
                         if a >= 0:
-                            # optimal_delta = deltas[int(np.argmax(metrics))]
-                            optimal_delta = 0
-                            optimal_image = np.zeros_like(starting_image)
-                            optimal_metric = np.nan
+                            optimal_delta = modal_coeff_deltas[int(np.argmax(metrics))]
+                            # optimal_delta = 0
+                            # optimal_image = np.zeros_like(starting_image)
+                            # optimal_metric = np.nan
                             if verbose:
                                 print(
                                     "\n------- WARNING -------"

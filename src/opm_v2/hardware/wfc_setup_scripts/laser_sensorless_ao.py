@@ -82,10 +82,10 @@ haso_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
 )
 wfc_correction_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\202508026_tilted_interaction_matrix.aoc"
+    r"E:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
 )
 wfc_flat_file_path = Path(
-    r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_setup_scripts\20250827_141952_laser_brightness_brightness_from_wfs_opt_using_max\20250827_brightness_from_wfs_opt_max_wfc_voltage.wcs'
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\20260505_straight_from_corrected_wo_curvature_curvature_tilt_closed_loop_output_allTRUE.wcs"
 )
 # wfc_flat_file_path = None
 output_root_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_setup_scripts')
@@ -95,10 +95,10 @@ output_root_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\har
 #-------------------------------------------------#
 
 o3_stage_name = 'MCL NanoDrive Z Stage'
-o3_start_position = 49.3
-zstack_depth = 5.0
+o3_start_position = 48.7
+zstack_depth = 4.0
 pixel_center = [1143, 1146] #[1150,1150]
-image_crop = 56
+image_crop = 128
 image_type = 'max'
 
 image_history = []
@@ -112,7 +112,7 @@ user_is_dragging_slider = False
 
 # Setup saving paths 
 name = 'brightness_from_wfs_opt'
-ao_save_path_prefix = f'20250827_{name}_{image_type}'
+ao_save_path_prefix = f'20260706_{name}_{image_type}'
 save_dir_suffix = f'brightness_{name}_using_{image_type}'
 
 # Create a unique directory to save results

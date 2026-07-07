@@ -77,6 +77,7 @@
             "per timepoint",
             "once at start"
         ],
+        "fluidics_enabled": false,
         "tile_overlap_perc": 20,
         "stage_move_speed": 0.05,
         "pixel_size_um": 0.115
@@ -85,7 +86,7 @@
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WaveFrontCorrector_mirao52-e_0329.dat",
         "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/202508026_tilted_interaction_matrix.aoc",
         "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path": "E:/optimize_now/current_now/optimized_wfc_voltage.wcs"
+        "wfc_flat_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/20260505_straight_from_corrected_wo_curvature_curvature_tilt_closed_loop_output_allTRUE.wcs"
     },
     "Camera": {
         "camera_id": "OrcaFusionBT",
@@ -142,8 +143,8 @@
         "opm_mode": "stage",
         "fluidics": "none",
         "camera_roi": {
-            "center_x": 1151.0,
-            "center_y": 1154.0,
+            "center_x": 1147.0,
+            "center_y": 1147.0,
             "crop_x": 128.0,
             "crop_y": 128.0
         },
@@ -155,16 +156,16 @@
         },
         "AO": {
             "mirror_state": "system flat",
-            "metric": "brightness",
-            "mode_delta": 0.04,
-            "mode_alpha": 0.5,
-            "num_iterations": 3,
+            "metric": "DCT",
+            "mode_delta": 0.1,
+            "mode_alpha": 0.6,
+            "num_iterations": 1,
             "num_mode_samples": 5,
             "image_mirror_range_um": 100.0,
             "active_channel_id": "405nm",
             "active_channel_power": 1.0,
-            "exposure_ms": 10.0,
-            "ao_mode": "optimize now",
+            "exposure_ms": 20.0,
+            "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
             "save_dir_path": "e:/optimize_now",
@@ -172,9 +173,9 @@
             "lightsheet_mode": "on",
             "readout_ms": 4.868,
             "metric_precision": 5,
-            "modes_to_optimize": "all modes",
-            "metric_acceptance": "optimal",
-            "num_averaged_frames": 50
+            "modes_to_optimize": "spherical first",
+            "metric_acceptance": "zero",
+            "num_averaged_frames": 1
         },
         "timelapse": {
             "channel_states": [

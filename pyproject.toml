@@ -29,7 +29,7 @@ classifiers = [
 ]
 # add your package dependencies here
 dependencies = ["pymmcore-plus", "matplotlib", "pymmcore-widgets",
-                "pydaqmx", "pyserial", "scipy", "numba",
+                "pydaqmx", "pyserial", "scipy", "numba", "zarr",
                 "pycparser==2.21","pythonnet==3.0.3", "pyfirmata2",
                 "pymmcore-gui @ git+https://github.com/pymmcore-plus/pymmcore-gui"]
 # @ git+https://github.com/pymmcore-plus/pymmcore-gui.git@f0eb39a"

@@ -8,23 +8,23 @@ from opm_v2.hardware.AOMirror import AOMirror
 
 # WFC configuration paths
 wfc_config_file_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat')
-wfc_correction_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\202508026_tilted_interaction_matrix.aoc")
+wfc_correction_file_path = Path(r"E:\Alignment\20260504_05\20260504_straight_pushpull05_interaction_matrix.aoc")
 haso_config_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat")
 mirror_state_output_path = Path(r'C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_position_files')
 
 # WFC positions file path
 # wfc_flat_file_path = None # Use None for flat (zero) positions
-wfc_flat_file_path = Path(r"E:/optimize_now/current_now/optimized_wfc_voltage.wcs")
+wfc_flat_file_path = Path(r"E:\Alignment\20260706\20260505_straight_from_corrected_wo_curvature_curvature_tilt_closed_loop_output_allTRUE.wcs")
 
 # Load ao_mirror controller using the given positions file
-ao_mirror = AOMirror(wfc_config_file_path = wfc_config_file_path,
-                    haso_config_file_path = haso_config_file_path,
-                    interaction_matrix_file_path = wfc_correction_file_path,
-                    system_flat_file_path = wfc_flat_file_path,
-                    output_path = mirror_state_output_path,
-                    n_modes = 32,
-                    modes_to_ignore = [])
-
+ao_mirror = AOMirror(
+    wfc_config_file_path = wfc_config_file_path,
+    haso_config_file_path = haso_config_file_path,
+    interaction_matrix_file_path = wfc_correction_file_path,
+    system_flat_file_path = wfc_flat_file_path,
+    output_path = mirror_state_output_path,
+    n_modes = 32,
+    modes_to_ignore = [])
 print('AO mirror set to positions . . .')
 print('type exit to end\n')
 

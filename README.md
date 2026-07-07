@@ -44,5 +44,15 @@ Some hardware control modules may require vendor SDKs:
 - NI-DAQ (nidaqmx)
 - Imagine Optic Mirao52E (wavekit_py)
 
+To install wavekit_py, navigate to the directory and run the install coommand
+```
+conda activate opm_v2
+python .\install_wavekit_python.py
+```
+If Micro-Manager is not installed in the pymmcore-plus path, install it using:
+```
+mmcore install
+```
+
 ## Usage
 

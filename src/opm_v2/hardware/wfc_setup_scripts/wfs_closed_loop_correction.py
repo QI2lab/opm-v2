@@ -16,25 +16,28 @@ print('WARNING ! If you have no Correction data backup file, \nPlease exit this 
 
 """Import Imagine Optic's Python interface
 """
-import os, sys
+import os
+import sys
+
 sys.path.append('./../..')
-import wavekit_py as wkpy
 from pathlib import Path
+
 import numpy as np
+import wavekit_py as wkpy
 
 """Get configuration file path
 """
 wfs_config_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\WFS_HASO4_VIS_7635.dat"
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
 )
 wfc_config_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\WaveFrontCorrector_mirao52-e_0329.dat"
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 wfc_correction_file_path = Path(
-    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration\20250808_laser_interaction_matrix.aoc"
+    r"E:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
 )
-output_prefix = '20250808_laser'
-output_file_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\ao_wfc_configuration") / Path(output_prefix + "_closed_loop_output.wcs")
+output_prefix = '20260706_straight_with_curvature_and_tilt'
+output_file_path = Path(r"E:\Alignment\20260706") / Path(output_prefix + "_closed_loop_output.wcs")
 
 print('Haso configuration file path set to :' + str(wfs_config_file_path))
 print('Corrector configuration file path set to :' + str(wfc_config_file_path))
@@ -72,9 +75,9 @@ ref_hasoslopes = wkpy.HasoSlopes(
     )
 wkpy.SlopesPostProcessor.apply_filter(
     ref_hasoslopes,
-    True,
-    True,
-    True,
+    False,
+    False,
+    False,
     False,
     False,
     False
@@ -128,7 +131,6 @@ try :
         wavefront_corrector.move_to_relative_positions(
             delta_commands
             )
-
         if msvcrt.kbhit():
             break
 except KeyboardInterrupt:
