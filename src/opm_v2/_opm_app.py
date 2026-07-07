@@ -340,13 +340,39 @@ def main() -> None:
         output : Path | str | None
             The output path for the MDA sequence.
         """
+        # ----------------------------------------------------------------#
+        # Get the acquisition settings from configuration on disk
+        # ----------------------------------------------------------------#
+
+        update_config()
+
+        opm_mode = config["acq_config"]["opm_mode"]
+        ao_mode = config["acq_config"]["AO"]["ao_mode"]
+        o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+        fluidics_mode = config["acq_config"]["fluidics"]
+
+        # ----------------------------------------------------------------#
+        # Validate acquisition settings
+        # ----------------------------------------------------------------#
+
+        if ("now" in ao_mode) or ("now" in o2o3_mode):
+            optimize_now = True
+            if not output:
+                new_output = None
+        else:
+            optimize_now = False
+            
+        print(output)
         opm_events, handler = None, None
         if output is not None:
             if isinstance(output, str):
+                print("output was a string")
                 output = Path(output)
 
             # Check if the path matches the OPM acquisition type
             if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
+                OPM_ACQUISITION = True
+            elif optimize_now:
                 OPM_ACQUISITION = True
             else:
                 OPM_ACQUISITION = False
@@ -356,31 +382,12 @@ def main() -> None:
         if not OPM_ACQUISITION:
             print("Running standard MDA acquisition")
             mmc.mda.set_engine(MDAEngine(mmc))
-            mmc.run_mda(mda_widget.value(), output=output)
+            mmc.mda.run_mda(mda_widget.value(), output=output)
             return
 
         else:
-            # ----------------------------------------------------------------#
-            # Get the acquisition settings from configuration on disk
-            # ----------------------------------------------------------------#
-
-            update_config()
-
-            opm_mode = config["acq_config"]["opm_mode"]
-            ao_mode = config["acq_config"]["AO"]["ao_mode"]
-            o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
-            fluidics_mode = config["acq_config"]["fluidics"]
-
-            # ----------------------------------------------------------------#
-            # Validate acquisition settings
-            # ----------------------------------------------------------------#
-
-            if ("now" in ao_mode) or ("now" in o2o3_mode):
-                optimize_now = True
-                if not output:
-                    new_output = None
-            else:
-                optimize_now = False
+            print("Running OPM acquisition")
+            
 
             if not (optimize_now) and not (output):
                 print("Must set acquisition path to excecute acquisition")
