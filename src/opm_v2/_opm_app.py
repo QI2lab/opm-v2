@@ -44,25 +44,68 @@ if TYPE_CHECKING:
 
     ExcTuple = tuple[type[BaseException], BaseException, TracebackType | None]
 
-
-APP_NAME = "Micro-Manager GUI"
-APP_VERSION = __version__
-ORG_NAME = "pymmcore-plus"
-ORG_DOMAIN = "pymmcore-plus"
-APP_ID = f"{ORG_DOMAIN}.{ORG_NAME}.{APP_NAME}.{APP_VERSION}"
-RESOURCES = Path(__file__).parent / "resources"
-ICON = RESOURCES / ("icon.ico" if sys.platform.startswith("win") else "logo.png")
 IS_FROZEN = getattr(sys, "frozen", False)
 
 
-def main() -> None:
-    """Run the Micro-Manager GUI."""
+def load_config(path: Path, config: dict = None) -> dict:
+    """Load or update config dict from file
 
-    # load microscope configuration file
+    Parameters
+    ----------
+    path : Path
+        Where the configuration file is saved
+    config : dict, optional
+        Existing config to be updated if provided, by default None
+
+    Returns
+    -------
+    dict
+        _description_
+    """
+    with open(path, "r") as config_file:
+        new_config = json.load(config_file)
+    if config is not None:
+        config.update(new_config)
+    else: 
+        return new_config
+
+def timestamped_output_path(output: Path) -> Path:
+    """Generate a new path with unique timestamp
+
+    Parameters
+    ----------
+    output : Path
+        Path returned from MDA save field
+
+    Returns
+    -------
+    Path
+        output with timestamp prepended
+    """
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
+    new_dir.mkdir(exist_ok=True)
+    new_output = new_dir / Path(output.name)
+    return new_output
+    
+def is_opm_acquisition(output: Path) -> bool:
+    return False
+
+def main() -> None:
+    
+    """Load the OPM configuration file"""
     config_path = Path(r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config.json")
     with open(config_path, "r") as config_file:
         config = json.load(config_file)
 
+    # Helper function for reading config file
+    def update_config():
+        """Updates config from file on disk"""
+        with open(config_path, "r") as config_file:
+            new_config = json.load(config_file)
+        config.update(new_config)
+        
+    """Run the Micro-Manager GUI."""
     # Load the pymmcore-gui window
     win = create_mmgui(mm_config=Path(config["OPM"]["mm_config_path"]), exec_app=False)
     # win.showMaximized()
