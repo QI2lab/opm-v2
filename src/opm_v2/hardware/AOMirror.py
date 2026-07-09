@@ -371,7 +371,7 @@ class AOMirror:
                 f"Voltage validation: Volts array must have shape = {self.n_actuators}"
             )
             return False
-        elif np.sum(np.where(np.abs(volts) >= 0.99, 1, 0)) > 1:
+        elif np.any(np.abs(volts) >= 0.99):
             print(
                 "------- AOmirror -------\n"
                 "Voltage validation: Individual actuator voltage too high."

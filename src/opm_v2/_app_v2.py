@@ -287,9 +287,9 @@ class OPMAppController:
         #------------------------------------------------------------------------------#
         
         opm_mode = self.mmc.getProperty("OPM-live-mode", "Label")
-        if opm_mode == "Standard":
+        if opm_mode == "0-Standard":
             scan_type = "2d"
-        elif opm_mode == "Projection":
+        elif opm_mode == "1-Projection":
             scan_type = "projection"
         else:
             self.warning("UNKNOWN LIVE MODE", f"OPM-live-mode: {opm_mode}")
