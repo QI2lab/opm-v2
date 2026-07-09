@@ -31,7 +31,7 @@ logging.getLogger('matplotlib.font_manager').setLevel(logging.WARNING)
 # Start the GUI
 # ------------------------------------------------------------------------------------ #
 
-from _opm_app import main
+from _app_v2 import main
 
 if __name__ == "__main__":
     main()

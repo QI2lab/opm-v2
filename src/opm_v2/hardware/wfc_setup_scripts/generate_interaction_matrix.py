@@ -22,8 +22,8 @@ wfc_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 # Set the output path
-output_prefix = '20260706_straight'
-root_path = Path(r"E:\Alignment\20260706")
+output_prefix = '20260708_straight'
+root_path = Path(r"E:\Alignment\20260708\wfc_files")
 output_image_path = root_path / Path(output_prefix + r'_interaction_images.tiff')
 output_file_path = root_path / Path(output_prefix + "_interaction_matrix.aoc")
 
@@ -41,7 +41,7 @@ corr_data_manager = wkpy.CorrDataManager(
 camera.connect()
 wavefrontcorrector.connect(True)
 
-exposure_duration = 9000
+exposure_duration = 8000
 camera.set_parameter_value('exposure_duration_us',exposure_duration)
 print('Exposure duration requested : ' + str(exposure_duration) + 'us')
 print('Exposure duration applied : '   + str(camera.get_parameter_value('exposure_duration_us')) + 'us')

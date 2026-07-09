@@ -2352,22 +2352,21 @@ def save_optimization_results(
         zarr destination path
     """
 
-    # Create the Zarr directory if it doesn"t exist
-    store = zarr.DirectoryStore(str(save_dir_path / Path("ao_results.zarr")))
-    root = zarr.group(store=store)
+    results_path = save_dir_path / Path("ao_results.zarr")
+    root = zarr.open_group(str(results_path), mode="w")
 
     # Create datasets in the Zarr store
-    root.create_dataset("all_images", data=all_images)
-    root.create_dataset("all_metrics", data=all_metrics)
-    root.create_dataset("optimal_images", data=optimal_images)
-    root.create_dataset("optimal_metrics", data=optimal_metrics)
-    root.create_dataset("optimal_coeffs", data=optimal_coeffs)
-    root.create_dataset("starting_coeffs", data=starting_coeffs)
-    root.create_dataset("starting_metric", data=starting_metric)
-    root.create_dataset("starting_image", data=starting_image)
-    root.create_dataset("update_status", data=update_status)
-    root.create_dataset("zernike_mode_names", data=np.array(mode_names, dtype="S"))
+    root.create_array("all_images", data=all_images)
+    root.create_array("all_metrics", data=all_metrics)
+    root.create_array("optimal_images", data=optimal_images)
+    root.create_array("optimal_metrics", data=optimal_metrics)
+    root.create_array("optimal_coeffs", data=optimal_coeffs)
+    root.create_array("starting_coeffs", data=starting_coeffs)
+    root.create_array("starting_metric", data=np.asarray(starting_metric))
+    root.create_array("starting_image", data=starting_image)
+    root.create_array("update_status", data=update_status)
     root.attrs.update(metadata)
+    root.attrs["zernike_mode_names"] = list(mode_names)
 
 
 def load_optimization_results(results_path: Path):
@@ -2378,9 +2377,7 @@ def load_optimization_results(results_path: Path):
     results_path : Path
         Path to the Zarr directory containing the data.
     """
-    # Open the Zarr store
-    store = zarr.DirectoryStore(str(results_path))
-    results = zarr.open(store)
+    results = zarr.open_group(str(results_path), mode="r")
 
     all_images = results["all_images"][:]
     all_metrics = results["all_metrics"][:]
@@ -2388,13 +2385,17 @@ def load_optimization_results(results_path: Path):
     optimal_metrics = results["optimal_metrics"][:]
     optimal_coeffs = results["optimal_coeffs"][:]
     starting_coeffs = results["starting_coeffs"][:]
-    starting_metric = results["starting_metric"][:]
+    starting_metric = np.asarray(results["starting_metric"][:]).squeeze().item()
     starting_image = results["starting_image"][:]
-    update_status = results["update_status"]
-    zernike_mode_names = [
-        name.decode("utf-8") for name in results["zernike_mode_names"][:]
-    ]
+    update_status = results["update_status"][:]
     metadata = dict(results.attrs)
+    if "zernike_mode_names" in metadata:
+        zernike_mode_names = list(metadata["zernike_mode_names"])
+    else:
+        zernike_mode_names = [
+            name.decode("utf-8") if isinstance(name, bytes) else str(name)
+            for name in results["zernike_mode_names"][:]
+        ]
 
     ao_results = {
         "all_images": all_images,

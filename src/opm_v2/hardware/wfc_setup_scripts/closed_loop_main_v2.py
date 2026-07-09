@@ -7,6 +7,7 @@ Required modules :
 -sys
 -time
 """
+import ctypes
 import os
 import sys
 import time
@@ -15,14 +16,60 @@ from pathlib import Path
 import matplotlib.pyplot as plt
 import numpy as np
 
+WAVEKIT_PYTHON_ROOT = Path(r"C:\Users\qi2lab\Documents\github\wavekit_python")
+WAVEKIT_PACKAGE_DIR = WAVEKIT_PYTHON_ROOT / "wavekit_py"
+WAVEKIT_DLL_DIR = WAVEKIT_PYTHON_ROOT / "dlls" / ("x64" if sys.maxsize > 2**32 else "Win32")
+WAVEKIT_DLL_PATH = WAVEKIT_DLL_DIR / (
+    "imop_wavekit_4_2_c_vc100_x64.dll"
+    if sys.maxsize > 2**32
+    else "imop_wavekit_4_2_c_vc100_Win32.dll"
+)
+
+HASO_CONFIG_FILE_PATH = Path(
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
+)
+WFC_CONFIG_FILE_PATH = Path(
+    r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
+)
+INTERACTION_MATRIX_FILE_PATH = Path(
+    r"E:\Alignment\20260708\wfc_files\20260708_straight_interaction_matrix.aoc"
+)
+CLOSED_LOOP_UI_PATH = Path(
+    r"C:\Users\qi2lab\Documents\github\wavekit_python\Examples\DEMO\Closed loop\closed_loop.ui"
+)
+
+# Keep these global so Windows keeps the DLL directories active.
+DLL_DIRECTORY_HANDLES = []
+
+
+def setup_wavekit_paths():
+    if not WAVEKIT_PYTHON_ROOT.exists():
+        raise FileNotFoundError(f"WaveKit Python root does not exist: {WAVEKIT_PYTHON_ROOT}")
+    if not WAVEKIT_PACKAGE_DIR.exists():
+        raise FileNotFoundError(f"WaveKit package directory does not exist: {WAVEKIT_PACKAGE_DIR}")
+    if not WAVEKIT_DLL_DIR.exists():
+        raise FileNotFoundError(f"WaveKit DLL directory does not exist: {WAVEKIT_DLL_DIR}")
+    if not WAVEKIT_DLL_PATH.exists():
+        raise FileNotFoundError(f"WaveKit DLL does not exist: {WAVEKIT_DLL_PATH}")
+
+    if str(WAVEKIT_PYTHON_ROOT) not in sys.path:
+        sys.path.append(str(WAVEKIT_PYTHON_ROOT))
+    if str(WAVEKIT_PACKAGE_DIR) not in sys.path:
+        sys.path.append(str(WAVEKIT_PACKAGE_DIR))
+    DLL_DIRECTORY_HANDLES.append(os.add_dll_directory(str(WAVEKIT_DLL_DIR)))
+    os.environ["PATH"] = str(WAVEKIT_DLL_DIR) + os.pathsep + os.environ["PATH"]
+
+
+setup_wavekit_paths()
+
 # from matplotlib.backends.backend_qt6agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from PyQt5 import QtCore, QtWidgets, uic
 from PyQt5.QtCore import QIODevice, Qt
 
 exp_ms = 8000
-include_curvature = True
-include_tilt = True
+include_curvature = False
+include_tilt = False
 output_prefix = '20260708_straight'
 if include_curvature:
     output_prefix += '_curvature'
@@ -35,10 +82,34 @@ else:
 
 output_file_path = Path(r"E:\Alignment\20260708") / Path(output_prefix + "_closed_loop_output.wcs")
 
-# sys.path.append(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..//..//..//" ))
-
-
+import io_thirdparty_load_library as wavekit_library
 import wavekit_py as wkpy
+
+
+def load_wavekit_dll():
+    current_dir = Path.cwd()
+    try:
+        os.chdir(WAVEKIT_DLL_DIR)
+        return ctypes.cdll.LoadLibrary(str(WAVEKIT_DLL_PATH))
+    except OSError as exc:
+        raise Exception(
+            "IO_Error",
+            f"---CAN NOT GET DLLS--- {WAVEKIT_DLL_PATH}: {exc}",
+        )
+    finally:
+        os.chdir(current_dir)
+
+
+wavekit_library.load_dll = load_wavekit_dll
+
+
+def print_wavekit_diagnostics():
+    print(f"wavekit_py loaded from: {getattr(wkpy, '__file__', 'unknown')}")
+    print(f"WaveKit DLL directory: {WAVEKIT_DLL_DIR}")
+    print(f"WaveKit DLL directory exists: {WAVEKIT_DLL_DIR.exists()}")
+    print(f"WaveKit DLL path: {WAVEKIT_DLL_PATH}")
+    print(f"WaveKit DLL exists: {WAVEKIT_DLL_PATH.exists()}")
+    print(f"Current working directory: {Path.cwd()}")
 
 
 class Interface(QtWidgets.QMainWindow):
@@ -52,7 +123,7 @@ class Interface(QtWidgets.QMainWindow):
         
         #Load interface
         #loader = QtWidgets.QUiLoader()
-        file = QtCore.QFile(os.path.abspath(r"C:\Users\qi2lab\Documents\github\wavekit_python\Examples\DEMO\Closed loop\closed_loop.ui"))
+        file = QtCore.QFile(str(CLOSED_LOOP_UI_PATH))
         file.open(QIODevice.OpenModeFlag.ReadOnly)
         self.window = uic.loadUi(file, parent) 
         file.close()        
@@ -61,12 +132,14 @@ class Interface(QtWidgets.QMainWindow):
         #self.setAttribute(QtCore.Qt.WA_DeleteOnClose)
         
         #Init variable
-        self.backup_path = None
-        self.haso_path = None
-        self.wfc_path = None
+        self.backup_path = str(INTERACTION_MATRIX_FILE_PATH)
+        self.haso_path = str(HASO_CONFIG_FILE_PATH)
+        self.wfc_path = str(WFC_CONFIG_FILE_PATH)
         self.image = None
         self.init_ui()
+        self.load_default_paths()
         self.init_connections()
+        QtCore.QTimer.singleShot(0, self.auto_connect_hardware)
     
     def init_ui(self):
     
@@ -120,6 +193,40 @@ class Interface(QtWidgets.QMainWindow):
         self.window.WFSdisconnectButton.setEnabled(False)
         self.window.WFCconnectButton.setEnabled(False)
         self.window.WFCdisconnectButton.setEnabled(False)
+
+    def load_default_paths(self):
+        self.window.HasoFilePath.setText(self.haso_path)
+        self.window.WFCFilePath.setText(self.wfc_path)
+        self.window.BackupFilePath.setText(self.backup_path)
+
+        self.window.WFSconnectButton.setEnabled(Path(self.haso_path).exists())
+        self.window.WFCconnectButton.setEnabled(Path(self.wfc_path).exists())
+
+        for label, path in (
+            ("HASO config", self.haso_path),
+            ("WFC config", self.wfc_path),
+            ("interaction matrix", self.backup_path),
+        ):
+            if not Path(path).exists():
+                print(f"WARNING: default {label} path does not exist: {path}")
+
+    def auto_connect_hardware(self):
+        if not Path(self.haso_path).exists():
+            self.error(f"HASO config not found: {self.haso_path}")
+            return
+        if not Path(self.wfc_path).exists():
+            self.error(f"WFC config not found: {self.wfc_path}")
+            return
+        if not Path(self.backup_path).exists():
+            self.error(f"Interaction matrix not found: {self.backup_path}")
+            return
+
+        print("Auto-loading WFS, WFC, and interaction matrix paths.")
+        if not self.window.HasoStatus.isEnabled():
+            self.connect_haso()
+        if not self.window.WFCStatus.isEnabled():
+            self.connect_wfc()
+        self.check_start_ready()
     
     def init_connections(self) :
         self.window.getHasoFileButton.clicked.connect(self.get_haso_path)
@@ -167,6 +274,7 @@ class Interface(QtWidgets.QMainWindow):
     
     def connect_haso(self):
         try :
+            print_wavekit_diagnostics()
             self.camera = wkpy.Camera(config_file_path = self.haso_path)
             self.camera.connect()
             self.camera.start(
@@ -196,6 +304,7 @@ class Interface(QtWidgets.QMainWindow):
     
     def connect_wfc(self):
         try :
+            print_wavekit_diagnostics()
             self.wfc = wkpy.WavefrontCorrector(config_file_path = self.wfc_path)
             self.wfc.connect(True)
             self.on_wfc_connection(True)
@@ -257,18 +366,20 @@ class Interface(QtWidgets.QMainWindow):
             """Create ref_hasoslopeserence slopes
             """
             ref_hasoslopes = wkpy.HasoSlopes(hasoslopes = slopes)
-            
+             
             processor_list = wkpy.SlopesPostProcessorList()
 
-            if include_curvature:
-                if include_tilt:
-                    processor_list.insert_filter(0, False, False, False, False, False, False)
+            if include_tilt:
+                if include_curvature:
+                    processor_list.insert_filter(0, True, True, True, True, True, True)
                 else:
-                    processor_list.insert_filter(0, True, True, False, False, False, False)
-            elif not include_curvature and include_tilt:
-                processor_list.insert_filter(0, False, False, True, False, False, True)
+                    processor_list.insert_filter(0, True, True, False, True, True, True)
             else:
-                processor_list.insert_filter(0, False, False, False, False, False, False)
+                if include_curvature:
+                    processor_list.insert_filter(0, False, False, True, True, True, True)
+                else:
+                    processor_list.insert_filter(0, False, False, False, True, True, True)
+            processor_list.insert_filter(0, False, False, False, False, False, False)
 
             hasodata = wkpy.HasoData(hasoslopes = ref_hasoslopes)
             hasodata.apply_slopes_post_processor_list(processor_list)
