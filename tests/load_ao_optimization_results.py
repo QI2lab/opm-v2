@@ -27,7 +27,7 @@ if "pos" in ao_results_paths[0].name:
 
 
 data_path = Path(
-    r"E:\20260127_Tetrahymena\20260126_151627_tetra_mirror_scan_withAO\tetra_mirror_scan_withAO_ao_results\start_ao_optimize\ao_results.zarr"
+    r"E:\optimize_now\20260710_120248_ao_optimizeNOW\ao_results.zarr"
     # "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/20251222_130948_ao_optimizeNOW/ao_results.zarr"
 )
 
@@ -73,24 +73,24 @@ print(
     f'number of metrics: {len(all_metrics)}\n'
 )
 
-ao.plot_metric_progress(
-    all_metrics = all_metrics,
-    modes_to_optimize = modes_to_optimize,
-    num_iterations = num_iterations,
-    zernike_mode_names = zernike_mode_names,
-    save_dir_path = data_path,
-    show_fig = showfig,
-)
+# ao.plot_metric_progress(
+#     all_metrics = all_metrics,
+#     modes_to_optimize = modes_to_optimize,
+#     num_iterations = num_iterations,
+#     zernike_mode_names = zernike_mode_names,
+#     save_dir_path = data_path,
+#     show_fig = showfig,
+# )
 
-ao.plot_zernike_coeffs(
-    starting_coeffs=starting_coeffs,
-    optimal_coeffs=optimal_coeffs,
-    num_iterations=num_iterations,
-    zernike_mode_names=zernike_mode_names,
-    save_dir_path=data_path,
-    show_fig=showfig,
-    x_range=0.1
-)
+# ao.plot_zernike_coeffs(
+#     starting_coeffs=starting_coeffs,
+#     optimal_coeffs=optimal_coeffs,
+#     num_iterations=num_iterations,
+#     zernike_mode_names=zernike_mode_names,
+#     save_dir_path=data_path,
+#     show_fig=showfig,
+#     x_range=0.1
+# )
 
 
 
