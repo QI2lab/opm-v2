@@ -22,6 +22,7 @@ from pymmcore_plus import CMMCorePlus
 from tqdm import trange
 from useq import MDAEvent, MDASequence
 
+from opm_v2.engine.debug_printing import debug, info
 from opm_v2.engine.opm_custom_events import (
     create_ao_grid_event,
     create_ao_mirror_update_event,
@@ -151,7 +152,10 @@ def stage_positions_from_grid(
         y_step_um = np.round(range_y_um / n_y_positions, 2)
 
     if scan_range_um == 0:
-        print("Scan range == 0!")
+        info(
+            "NO STAGE POSITIONS",
+            "Scan range is 0; no stage positions were generated.",
+        )
         return []
     else:
         x_step_max = scan_range_um * (1 - scan_axis_overlap)
@@ -201,23 +205,24 @@ def stage_positions_from_grid(
                         + jj * dz_per_y_tile,
                     }
                 )
-    if DEBUGGING:
-        print(
-            "\n\nXYZ Stage position settings:",
-            f"\n  x start: {min_x_pos}",
-            f"\n  x end: {max_x_pos}",
-            f"\n  y start: {min_y_pos}",
-            f"\n  y end: {max_y_pos}",
-            f"\n  z position min:{min_z_pos}",
-            f"\n  z position max:{max_z_pos}",
-            f"\n  scan range (um): {scan_range_um}",
-            f"\n  Coverslip slope (x/y): {coverslip_slope_x}/{coverslip_slope_y}",
-            f"\n  Number x tiles: {n_x_positions}",
-            f"\n  Number y tiles: {n_y_positions}",
-            f"\n  Number z tiles: {n_z_positions}",
-            f"\n  x tile length um: {x_step_um}",
-            f"\n  y tile length um: {y_step_um}",
-        )
+
+    debug(
+        "XYZ STAGE POSITIONS",
+        f"x start: {min_x_pos}",
+        f"x end: {max_x_pos}",
+        f"y start: {min_y_pos}",
+        f"y end: {max_y_pos}",
+        f"z position min: {min_z_pos}",
+        f"z position max: {max_z_pos}",
+        f"scan range (um): {scan_range_um}",
+        f"coverslip slope (x/y): {coverslip_slope_x}/{coverslip_slope_y}",
+        f"number x tiles: {n_x_positions}",
+        f"number y tiles: {n_y_positions}",
+        f"number z tiles: {n_z_positions}",
+        f"x tile length um: {x_step_um}",
+        f"y tile length um: {y_step_um}",
+        enabled=DEBUGGING
+    )
 
     return stage_positions
 
@@ -415,9 +420,8 @@ def setup_timelapse(
     Handler
         OPM zarr file saving handler
     """
-    if DEBUGGING:
-        print("\n++++ Setting up a timelapse acquisition ++++")
-
+    info("TIMELAPSE ACQUISITION")
+    
     OPMdaq_setup = OPMNIDAQ.instance()
     opm_events = []
 
@@ -471,8 +475,11 @@ def setup_timelapse(
             config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
         )
     except Exception as e:
-        if DEBUGGING:
-            print(f"--- Failed to get offset or e_to_adu properties: ---\n {e}")
+        debug(
+            "CAMERA ERROR",
+            f"Failed to get offset or e_to_adu properties: {e}",
+            enabled=DEBUGGING,
+        )
         offset = 0.0
         e_to_ADU = 1.0
 
@@ -551,7 +558,10 @@ def setup_timelapse(
     if ao_mode != "none":
         if "grid" in ao_mode:
             ao_mode = "per xyz position"
-            print("AO Grid selected, running optimization at each XYZ position")
+            info(
+                "ADAPTIVE OPTICS",
+                "Running at each XYZ position"
+            )
         ao_root_dir = output.parent / Path(f"{output.stem}_ao_results")
         ao_root_dir.mkdir(exist_ok=True)
 
@@ -609,17 +619,16 @@ def setup_timelapse(
 
     #----------------------------------------------------------------#
     # setup np x 1C x nT x nZ mirror-based AO-OPM acquisition event structure
-
-    if DEBUGGING:
-        print(
-            "Acquisition shape values:"
-            f"\n  timepoints: {n_time_steps}"
-            f"\n  Num scan positions: {n_scan_steps}",
-            f"\n  Stage positions: {n_stage_positions}"
-            f"\n  Active channels: {n_active_channels}"
-            f"\n  Estimated loop duration (s): {estimated_loop_duration_s:.2f}",
-            f"\n  Update AO mid loop: {update_ao_mirror_mid_loop}",
-        )
+    debug(
+        "ACQUISITION SHAPE",
+        f"timepoints: {n_time_steps}",
+        f"Num scan positions: {n_scan_steps}",
+        f"Stage positions: {n_stage_positions}",
+        f"Active channels: {n_active_channels}",
+        f"Estimated loop duration (s): {estimated_loop_duration_s:.2f}",
+        f"Update AO mid loop: {update_ao_mirror_mid_loop}",
+        enabled=DEBUGGING,
+    )
 
     for pos_idx in trange(n_stage_positions, desc="Stage positions:", leave=True):
         if pos_idx > 0:
@@ -729,7 +738,7 @@ def setup_timelapse(
         handler = OPMMirrorHandler(
             path=Path(output), indice_sizes=indice_sizes, delete_existing=True
         )
-        print(f"Using Qi2lab handler\nindices: {indice_sizes}")
+        info("HANDLER INDICES", f"{indice_sizes}")
         return opm_events, handler
     else:
         raise Exception("Defualt handler selected, modify save path!")
@@ -947,20 +956,19 @@ def setup_projection(
     #--------------------------------------------------------------------#
     opm_events: list[MDAEvent] = []
 
-    if DEBUGGING:
-        print(
-            "Projection Acquisition Parameters:"
-            f"  timepoints / interval: {n_time_steps} / {time_interval}",
-            f"  Stage positions: {n_stage_positions}",
-            f"  Active channels: {n_active_channels}",
-            f"  o2o3 focus frequency: {o2o3_mode}",
-            f"  AO frequency: {ao_mode}",
-            "  AO starting state:",
-            f"  coeffs: {ao_starting_coeffs}",
-            f"  volts: {ao_starting_volts}",
-            sep="\n",
-        )
-
+    debug(
+        "PROJECTION ACQUISITION",
+        f"timepoints / interval: {n_time_steps} / {time_interval}",
+        f"Stage positions: {n_stage_positions}",
+        f"Active channels: {n_active_channels}",
+        f"o2o3 focus frequency: {o2o3_mode}",
+        f"AO frequency: {ao_mode}",
+        "AO starting state:",
+        f"coeffs: {ao_starting_coeffs}",
+        f"volts: {ao_starting_volts}",
+        enabled=DEBUGGING,
+    )
+    
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
         #--------------------------------------------------------------------#
         # Create events to run before acquisition
@@ -1233,9 +1241,12 @@ def setup_mirrorscan(
     # Flag for setting up a static mirror acquisition
     if scan_range_um == 0.0:
         scan_mode = "2d"
-        print("Setting up a 2d scan mode:")
         OPMdaq_setup.set_acquisition_params(scan_type="2d")
         n_scan_steps = 1
+        info(
+            "STATIC MIRROR SCAN",
+            "Static mirror scan acquisition selected.",
+        )
     else:
         scan_mode = "mirror"
         OPMdaq_setup.set_acquisition_params(
@@ -1368,13 +1379,15 @@ def setup_mirrorscan(
         need_to_setup_daq = False
         if "timepoint" in ao_mode:
             ao_mode = "start"
-            print(
-                "AO mode is set to timepoint, but 0 interval selected, running at start"
+            info(
+                "ADAPTIVE OPTICS",
+                "running at start"
             )
         if "timepoint" in o2o3_mode:
             o2o3_mode = "start"
-            print(
-                "AF mode is set to timepoint, but 0 interval selected, running at start"
+            info(
+                "O2O3 AUTOFOCUS",
+                "running at start"
             )
     else:
         need_to_setup_daq = True
@@ -1420,20 +1433,20 @@ def setup_mirrorscan(
 
     #----------------------------------------------------------------#
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
-    if DEBUGGING:
-        print(
-            "Acquisition settings:"
-            f"\n  timepoints / interval: {n_time_steps} / {time_interval}"
-            f"\n  Stage positions: {n_stage_positions}"
-            f"\n  Active channels: {n_active_channels}"
-            f"\n  AO frequency: {ao_mode}"
-            f"\n  o2o3 focus frequency: {o2o3_mode}"
-            "\nMirror scan settings:"
-            f"\n  num scan steps: {n_scan_steps}"
-            f"\n  scan range (um): {scan_range_um}"
-            f"\n  scan step (um): {scan_step_um}"
-            f"\n  DAQ scan mode: {scan_mode}"
-        )
+    debug(
+        "MIRRORSCAN ACQUISITION",
+        f"\n  timepoints / interval: {n_time_steps} / {time_interval}",
+        f"\n  Stage positions: {n_stage_positions}",
+        f"\n  Active channels: {n_active_channels}",
+        f"\n  AO frequency: {ao_mode}",
+        f"\n  o2o3 focus frequency: {o2o3_mode}",
+        "\nMirror scan settings:",
+        f"\n  num scan steps: {n_scan_steps}",
+        f"\n  scan range (um): {scan_range_um}",
+        f"\n  scan step (um): {scan_step_um}",
+        f"\n  DAQ scan mode: {scan_mode}",
+        enabled=DEBUGGING,
+    )
 
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
         #--------------------------------------------------------------------#
@@ -1688,7 +1701,7 @@ def setup_mirrorscan(
         handler = OPMMirrorHandler(
             path=Path(output), indice_sizes=indice_sizes, delete_existing=True
         )
-        print(f"\nUsing Qi2lab handler,\nindices: {indice_sizes}\n")
+        info("HANDLER INDICES", f"{indice_sizes}")
         return opm_events, handler
     else:
         raise Exception("Defualt handler selected, modify save path!")
@@ -1891,7 +1904,10 @@ def setup_stagescan(
     stage_positions = []
 
     if mda_grid_plan is None:
-        print("No grid plan selected!")
+        info(
+            "NO GRID PLAN",
+            "Stage scanning requires an MDA grid plan.",
+        )
         return None, None
 
     # grab grid plan extents
@@ -1936,20 +1952,20 @@ def setup_stagescan(
     if min_x_pos > max_x_pos:
         min_x_pos, max_x_pos = max_x_pos, min_x_pos
 
-    if DEBUGGING:
-        print(
-            "\n\nXYZ Stage scan position settings:",
-            f"\n  Scan start: {min_x_pos}",
-            f"\n  Scan end: {max_x_pos}",
-            f"\n  Tile start: {min_y_pos}",
-            f"\n  Tile end: {max_y_pos}",
-            f"\n  Z position min:{min_z_pos}",
-            f"\n  Z position max:{max_z_pos}",
-            f"\n  Coverslip slope: {coverslip_slope}",
-            f"\n  Coverslip low: {cs_min_pos}",
-            f"\n  Coverslip high: {cs_max_pos}",
-            f"\n  Max scan range (CS used?:{coverslip_slope != 0}): {scan_axis_max_range}",
-        )
+    debug(
+        "XYZ STAGE SCAN POSITION SETTINGS",
+        f"Scan start: {min_x_pos}",
+        f"Scan end: {max_x_pos}",
+        f"Tile start: {min_y_pos}",
+        f"Tile end: {max_y_pos}",
+        f"Z position min: {min_z_pos}",
+        f"Z position max: {max_z_pos}",
+        f"Coverslip slope: {coverslip_slope}",
+        f"Coverslip low: {cs_min_pos}",
+        f"Coverslip high: {cs_max_pos}",
+        f"Max scan range (CS used?: {coverslip_slope != 0}): {scan_axis_max_range}",
+        enabled=DEBUGGING,
+    )
 
     #--------------------------------------------------------------------#
     # Calculate scan axis tile locations, units: mm and s
@@ -2013,27 +2029,27 @@ def setup_stagescan(
     exposure_s = actual_exposure
     scan_axis_speed = actual_speed_x
 
-    if DEBUGGING:
-        test_scan_length = scan_tile_length_mm == scan_tile_length_w_overlap_mm
-        test_tile_sizes = np.allclose(scan_tile_sizes, scan_tile_sizes[0])
-        print(
-            "\nScan-axis calculated parameters:",
-            f"\n  Number scan tiles: {n_scan_positions}"
-            f"\n  tile length um: {scan_tile_length_um}"
-            f"\n  tile overlap um: {scan_tile_overlap_um}"
-            f"\n  tile length mm: {scan_tile_length_mm}"
-            f"\n  tile length with overlap (mm): {scan_tile_length_w_overlap_mm}"
-            f"\n  Does scan tile w/ overlap equal scan tile length?: {test_scan_length}"
-            f"\n  step size (mm): {scan_axis_step_mm}"
-            f"\n  exposure: {exposure_s}"
-            f"\n  number of active channels: {n_active_channels}"
-            f"\n  Scan axis speed (mm/s): {scan_axis_speed}\n"
-            f"\n  Stage scan positions, units: mm"
-            f"\n  Scan axis start positions: {scan_axis_start_pos_mm}."
-            f"\n  Scan axis end positions: {scan_axis_end_pos_mm}."
-            f"\n  Number of scan positions: {scan_axis_positions}"
-            f"\n  Are all scan tiles the same size: {test_tile_sizes}",
-        )
+    test_scan_length = scan_tile_length_mm == scan_tile_length_w_overlap_mm
+    test_tile_sizes = np.allclose(scan_tile_sizes, scan_tile_sizes[0])
+    debug(
+        "SCAN-AXIS CALCULATED PARAMETERS",
+        f"Number scan tiles: {n_scan_positions}",
+        f"Tile length um: {scan_tile_length_um}",
+        f"Tile overlap um: {scan_tile_overlap_um}",
+        f"Tile length mm: {scan_tile_length_mm}",
+        f"Tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
+        f"Does scan tile w/ overlap equal scan tile length?: {test_scan_length}",
+        f"Step size (mm): {scan_axis_step_mm}",
+        f"Exposure: {exposure_s}",
+        f"Number of active channels: {n_active_channels}",
+        f"Scan axis speed (mm/s): {scan_axis_speed}",
+        "Stage scan positions, units: mm",
+        f"Scan axis start positions: {scan_axis_start_pos_mm}.",
+        f"Scan axis end positions: {scan_axis_end_pos_mm}.",
+        f"Number of scan positions: {scan_axis_positions}",
+        f"Are all scan tiles the same size: {test_tile_sizes}",
+        enabled=DEBUGGING,
+    )
 
     #--------------------------------------------------------------------#
     # Generate tile axis positions
@@ -2046,11 +2062,14 @@ def setup_stagescan(
     else:
         tile_axis_step = tile_axis_positions[1] - tile_axis_positions[0]
 
-    if DEBUGGING:
-        print("Tile axis positions units: um")
-        print(f"Tile axis positions: {tile_axis_positions}")
-        print(f"Num tile axis positions: {n_tile_positions}")
-        print(f"Tile axis step: {tile_axis_step}")
+    debug(
+        "TILE AXIS POSITIONS",
+        "Tile axis positions units: um",
+        f"Tile axis positions: {tile_axis_positions}",
+        f"Num tile axis positions: {n_tile_positions}",
+        f"Tile axis step: {tile_axis_step}",
+        enabled=DEBUGGING,
+    )
 
     #--------------------------------------------------------------------#
     # Generate z axis positions, ignoring coverslip slope
@@ -2064,16 +2083,17 @@ def setup_stagescan(
     # Calculate the stage z change along the scan axis
     dz_per_scan_tile = (cs_range_um / n_scan_positions) * np.sign(coverslip_slope)
 
-    if DEBUGGING:
-        print(
-            "Z axis positions, units: um",
-            f"\n  Z axis positions: {z_positions}"
-            f"\n  Z axis range: {range_z_um} um"
-            f"\n  Z axis step: {z_axis_step_um} um"
-            f"\n  Num z axis positions: {n_z_positions}"
-            f"\n  Z offset per x-scan-tile: {dz_per_scan_tile} um"
-            f"\n  Z axis step max: {z_axis_step_max}",
-        )
+    debug(
+        "Z AXIS POSITIONS",
+        "Z axis positions, units: um",
+        f"Z axis positions: {z_positions}",
+        f"Z axis range: {range_z_um} um",
+        f"Z axis step: {z_axis_step_um} um",
+        f"Num z axis positions: {n_z_positions}",
+        f"Z offset per x-scan-tile: {dz_per_scan_tile} um",
+        f"Z axis step max: {z_axis_step_max}",
+        enabled=DEBUGGING,
+    )
 
     #--------------------------------------------------------------------#
     # Generate stage positions
@@ -2110,17 +2130,17 @@ def setup_stagescan(
 
     #----------------------------------------------------------------#
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
-    if DEBUGGING:
-        print(
-            "Acquisition shape values:"
-            f"\n  timepoints / interval: {n_time_steps} / {time_interval}"
-            f"\n  Stage positions: {n_stage_positions}"
-            f"\n  Scan positions: {n_scan_axis_indices}"
-            f"\n  Active channels: {n_active_channels}"
-            f"\n  Excess frames (S/E):{excess_start_images}/{excess_end_images}"
-            f"\n  AO frequency: {ao_mode}"
-            f"\n  o2o3 focus frequency: {o2o3_mode}"
-        )
+    debug(
+        "ACQUISITION SHAPE VALUES",
+        f"timepoints / interval: {n_time_steps} / {time_interval}",
+        f"Stage positions: {n_stage_positions}",
+        f"Scan positions: {n_scan_axis_indices}",
+        f"Active channels: {n_active_channels}",
+        f"Excess frames (S/E): {excess_start_images}/{excess_end_images}",
+        f"AO frequency: {ao_mode}",
+        f"o2o3 focus frequency: {o2o3_mode}",
+        enabled=DEBUGGING,
+    )
 
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
         #--------------------------------------------------------------------#
@@ -2345,8 +2365,8 @@ def setup_stagescan(
         }
         handler = OPMMirrorHandler(
             path=Path(output), indice_sizes=indice_sizes, delete_existing=True
-        )
-        print(f"\nUsing Qi2lab handler,\nindices: {indice_sizes}\n")
+        )        
+        info("HANDLER INDICES", f"{indice_sizes}")
         return opm_events, handler
     else:
         raise Exception("Defualt handler selected, modify save path!")

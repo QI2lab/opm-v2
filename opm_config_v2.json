@@ -1,0 +1,225 @@
+{
+    "OPM": {
+        "mm_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/OPM_mmgr.cfg",
+        "imaging_modes": [
+            "stage",
+            "mirror",
+            "projection",
+            "2d"
+        ],
+        "live_modes": [
+            "standard",
+            "projection"
+        ],
+        "daq_modes": [
+            "2d",
+            "projection"
+        ],
+        "angle_deg": 30.0,
+        "camera_Zstage_orientation": "negative",
+        "camera_XYstage_orientation": "positive",
+        "camera_mirror_orientation": "positive",
+        "channel_ids": [
+            "405nm",
+            "488nm",
+            "561nm",
+            "637nm",
+            "730nm"
+        ],
+        "fluidics_modes": [
+            "none",
+            "1",
+            "2",
+            "8",
+            "11",
+            "16"
+        ],
+        "ao_metrics": [
+            "DCT",
+            "localize_gauss_2d",
+            "gauss_2d",
+            "brightness",
+            "fourier_ratio"
+        ],
+        "ao_modes": [
+            "none",
+            "optimize now",
+            "grid at start",
+            "grid at timepoints",
+            "once at start",
+            "at xyz position",
+            "at timepoints"
+        ],
+        "ao_modes_to_optimize": [
+            "spherical first",
+            "all modes",
+            "focusing only",
+            "spherical only",
+            "stationary only",
+            "high order first"
+        ],
+        "ao_mirror_states": [
+            "system flat",
+            "last optimized",
+            "factory flat",
+            "zeros"
+        ],
+        "ao_comparison_mode": [
+            "zero",
+            "optimal",
+            "accept all"
+        ],
+        "autofocus_frequencies": [
+            "none",
+            "optimize now",
+            "per xyz position",
+            "per timepoint",
+            "once at start"
+        ],
+        "tile_overlap_perc": 20,
+        "stage_move_speed": 0.05,
+        "pixel_size_um": 0.115
+    },
+    "AOMirror": {
+        "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WaveFrontCorrector_mirao52-e_0329.dat",
+        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/202508026_tilted_interaction_matrix.aoc",
+        "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WFS_HASO4_VIS_7635.dat",
+        "wfc_flat_path": "E:/optimize_now/current_now/optimized_wfc_voltage.wcs"
+    },
+    "Camera": {
+        "camera_id": "OrcaFusionBT",
+        "exposure_ms": 50.0,
+        "center_x": 1151,
+        "center_y": 1154,
+        "crop_x": 1900,
+        "crop_y": 512,
+        "line_readout_us": 0.4
+    },
+    "NIDAQ": {
+        "name": "Dev1",
+        "scan_type": "2d",
+        "laser_blanking": true,
+        "image_mirror_calibration": 0.0433,
+        "projection_mirror_calibration": 0.00566,
+        "image_mirror_step_um": 0.4,
+        "image_mirror_neutral_v": 0.0,
+        "projection_mirror_neutral_v": 0.0,
+        "verbose": false
+    },
+    "Lasers": {
+        "name": "Coherent-Scientific Remote",
+        "laser_names": [
+            "Laser 405-100C",
+            "Laser 488-150C",
+            "Laser OBIS LS 561-150",
+            "Laser 637-140C",
+            "Laser 730-30C"
+        ]
+    },
+    "OB1": {
+        "port": "COM9",
+        "to_OB1_pin": 7,
+        "from_OB1_pin": 8
+    },
+    "O2O3-autofocus": {
+        "shutter_id": 712,
+        "O3_stage_name": "MCL NanoDrive Z Stage",
+        "exposure_ms": 10.0,
+        "crop_y": 128
+    },
+    "Stage": {
+        "name": "TigerCommHub"
+    },
+    "PLC": {
+        "name": "PLogic:E:36",
+        "position": "PointerPosition",
+        "cellconfig": "EditCellConfig",
+        "pin": 33,
+        "signalid": 46
+    },
+    "acq_config": {
+        "opm_mode": "stage",
+        "o2o3_mode": "none",
+        "fluidics": "none",
+        "camera_roi": {
+            "center_x": 1151.0,
+            "center_y": 1154.0,
+            "crop_x": 1900.0,
+            "crop_y": 512.0
+        },
+        "AO": {
+            "mirror_state": "system flat",
+            "metric": "DCT",
+            "mode_delta": 0.13,
+            "mode_alpha": 0.6,
+            "num_iterations": 4,
+            "num_mode_samples": 5,
+            "image_mirror_range_um": 100.0,
+            "channel_id": "405nm",
+            "channel_power": 1.0,
+            "exposure_ms": 100.0,
+            "ao_mode": "none",
+            "num_scan_positions": 1,
+            "num_tile_positions": 1,
+            "save_dir_path": "e:/optimize_now",
+            "daq_mode": "2d",
+            "lightsheet_mode": "on",
+            "readout_us": 4.868,
+            "metric_precision": 5,
+            "modes_to_optimize": "spherical first",
+            "metric_acceptance": "zero",
+            "num_averaged_frames": 1,
+            "mode_accept": "zero",
+            "time_interval": 6,
+            "active_channel_id": "405nm",
+            "active_channel_power": 1.0
+        },
+        "DAQ": {
+            "channel_states": [
+                false,
+                false,
+                false,
+                false,
+                false
+            ],
+            "channel_powers": [
+                0,
+                0.0,
+                0,
+                0,
+                0
+            ],
+            "channel_exposures_ms": [
+                0,
+                0.0,
+                0,
+                0,
+                0
+            ],
+            "scan_axis_step_um": 0.4,
+            "scan_range_um": 6.800000000000004,
+            "laser_blanking": true
+        },
+        "Positions": {
+            "coverslip_slope_x": 0.0,
+            "coverslip_slope_y": 0.0,
+            "coverslip_max_dz": 2.0,
+            "scan_axis_overlap_um": 40,
+            "scan_axis_overlap": 0.2,
+            "tile_axis_overlap": 0.2,
+            "z_axis_overlap": 0.2
+        },
+        "timelapse": {
+            "": "none"
+        },
+        "stage_scan": {
+            "max_stage_scan_range_um": 1000.0,
+            "excess_start_frames": 0,
+            "excess_end_frames": 0
+        },
+        "projection_scan": {
+            "camera_ls_mode": false,
+            "camera_readout_us": 4.867647
+        }
+    }
+}
