@@ -67,7 +67,7 @@ class OPMSettings(QWidget):
         self.config = config
         self.widgets = {}       
         self.create_ui()
-        self.update_config(False)
+        self.update_config(reload_from_disk=False)
 
     def create_spinbox(
         self,
@@ -155,7 +155,10 @@ class OPMSettings(QWidget):
         # Create AO optimization settings
         #--------------------------------------------------------------------#
             
-        self.cmbx_ao_active_channel =  self.create_combobox(self.config['OPM']['channel_ids'])
+        self.cmbx_ao_active_channel =  self.create_combobox(
+            self.config['OPM']['channel_ids'],
+            connect_to_fn=self.update_config
+        )
         self.layout_ao_active_channel = QHBoxLayout()
         self.layout_ao_active_channel.addWidget(QLabel('Active Channel'))
         self.layout_ao_active_channel.addWidget(self.cmbx_ao_active_channel)
@@ -851,88 +854,75 @@ class OPMSettings(QWidget):
     #--------------------------------------------------------------------#
 
     def update_405_state(self):
-        checked = self.chx_405_state.isChecked()
-        power = self.spbx_405_power.value()
-        exposure_ms = self.spbx_405_exp.value()
-        for _mode in self.config['OPM']['imaging_modes'][:-1]:
-            self.config['acq_config'][_mode+'_scan']['channel_states'][0] = checked
-            self.config['acq_config'][_mode+'_scan']['channel_powers'][0] = power
-            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][0] = exposure_ms
-        # update static time lapse separately
-        self.config['acq_config']['timelapse']['channel_states'][0] = checked
-        self.config['acq_config']['timelapse']['channel_powers'][0] = power
-        self.config['acq_config']['timelapse']['channel_exposures_ms'][0] = exposure_ms
-        
-        self.update_config(update_config=False)
+        self._update_channel_state(
+            0,
+            self.chx_405_state,
+            self.spbx_405_power,
+            self.spbx_405_exp,
+        )
                
     def update_488_state(self):
-        checked = self.chx_488_state.isChecked()
-        power = self.spbx_488_power.value()
-        exposure_ms = self.spbx_488_exp.value()
-        for _mode in self.config['OPM']['imaging_modes'][:-1]:
-            self.config['acq_config'][_mode+'_scan']['channel_states'][1] = checked
-            self.config['acq_config'][_mode+'_scan']['channel_powers'][1] = power
-            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][1] = exposure_ms
-        # update static time lapse separately
-        self.config['acq_config']['timelapse']['channel_states'][1] = checked
-        self.config['acq_config']['timelapse']['channel_powers'][1] = power
-        self.config['acq_config']['timelapse']['channel_exposures_ms'][1] = exposure_ms
-        
-        self.update_config(update_config=False)
+        self._update_channel_state(
+            1,
+            self.chx_488_state,
+            self.spbx_488_power,
+            self.spbx_488_exp,
+        )
     
     def update_561_state(self):
-        checked = self.chx_561_state.isChecked()
-        power = self.spbx_561_power.value()
-        exposure_ms = self.spbx_561_exp.value()
-        for _mode in self.config['OPM']['imaging_modes'][:-1]:
-            self.config['acq_config'][_mode+'_scan']['channel_states'][2] = checked
-            self.config['acq_config'][_mode+'_scan']['channel_powers'][2] = power
-            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][2] = exposure_ms
-        # update static time lapse separately
-        self.config['acq_config']['timelapse']['channel_states'][2] = checked
-        self.config['acq_config']['timelapse']['channel_powers'][2] = power
-        self.config['acq_config']['timelapse']['channel_exposures_ms'][2] = exposure_ms
-        
-        self.update_config(update_config=False)
+        self._update_channel_state(
+            2,
+            self.chx_561_state,
+            self.spbx_561_power,
+            self.spbx_561_exp,
+        )
         
     def update_638_state(self):
-        checked = self.chx_638_state.isChecked()
-        power = self.spbx_638_power.value()
-        exposure_ms = self.spbx_638_exp.value()
-        for _mode in self.config['OPM']['imaging_modes'][:-1]:
-            self.config['acq_config'][_mode+'_scan']['channel_states'][3] = checked
-            self.config['acq_config'][_mode+'_scan']['channel_powers'][3] = power
-            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][3] = exposure_ms
-        # update static time lapse separately
-        self.config['acq_config']['timelapse']['channel_states'][3] = checked
-        self.config['acq_config']['timelapse']['channel_powers'][3] = power
-        self.config['acq_config']['timelapse']['channel_exposures_ms'][3] = exposure_ms
-        
-        self.update_config(update_config=False)
+        self._update_channel_state(
+            3,
+            self.chx_638_state,
+            self.spbx_638_power,
+            self.spbx_638_exp,
+        )
     
     def update_705_state(self):
-        checked = self.chx_705_state.isChecked()
-        power = self.spbx_705_power.value()
-        exposure_ms = self.spbx_705_exp.value()
+        self._update_channel_state(
+            4,
+            self.chx_705_state,
+            self.spbx_705_power,
+            self.spbx_705_exp,
+        )
+
+    def _update_channel_state(
+        self,
+        channel_index: int,
+        state_widget: QCheckBox,
+        power_widget: QDoubleSpinBox,
+        exposure_widget: QDoubleSpinBox,
+    ):
+        checked = state_widget.isChecked()
+        power = power_widget.value()
+        exposure_ms = exposure_widget.value()
         for _mode in self.config['OPM']['imaging_modes'][:-1]:
-            self.config['acq_config'][_mode+'_scan']['channel_states'][4] = checked
-            self.config['acq_config'][_mode+'_scan']['channel_powers'][4] = power
-            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][4] = exposure_ms
+            self.config['acq_config'][_mode+'_scan']['channel_states'][channel_index] = checked
+            self.config['acq_config'][_mode+'_scan']['channel_powers'][channel_index] = power
+            self.config['acq_config'][_mode+'_scan']['channel_exposures_ms'][channel_index] = exposure_ms
         # update static time lapse separately
-        self.config['acq_config']['timelapse']['channel_states'][4] = checked
-        self.config['acq_config']['timelapse']['channel_powers'][4] = power
-        self.config['acq_config']['timelapse']['channel_exposures_ms'][4] = exposure_ms
-        self.update_config(update_config=False)
+        self.config['acq_config']['timelapse']['channel_states'][channel_index] = checked
+        self.config['acq_config']['timelapse']['channel_powers'][channel_index] = power
+        self.config['acq_config']['timelapse']['channel_exposures_ms'][channel_index] = exposure_ms
+
+        self.update_config(reload_from_disk=False)
         
     #--------------------------------------------------------------------#
     # Methods to update configuration file and emit a signal when settings are updated.
     #--------------------------------------------------------------------#
     
-    def update_config(self, update_config: bool = True):
+    def update_config(self, *_, reload_from_disk: bool = True):
         '''
         Update configuration file and local dict.
         '''
-        if update_config:
+        if reload_from_disk:
             with open(self.config_path, 'r') as config_file:
                 config = json.load(config_file)
         else:
@@ -968,11 +958,16 @@ class OPMSettings(QWidget):
         config["NIDAQ"]["laser_blanking"] = laser_blanking
 
         self.config = config
-               
-        with open(self.config_path, 'w') as file:
-                json.dump(self.config, file, indent=4)
+
+        self._write_config()
         
         self.settings_changed.emit()
+
+    def _write_config(self):
+        tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
+        with open(tmp_path, 'w') as file:
+            json.dump(self.config, file, indent=4)
+        tmp_path.replace(self.config_path)
         
 
 if __name__ ==  '__main__':
