@@ -84,9 +84,9 @@
     },
     "AOMirror": {
         "wfc_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WaveFrontCorrector_mirao52-e_0329.dat",
-        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/202508026_tilted_interaction_matrix.aoc",
+        "wfc_correction_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/20260708_straight_interaction_matrix.aoc",
         "haso_config_path": "C:/Users/qi2lab/Documents/github/opm_v2/src/opm_v2/hardware/wfc_configuration_files/WFS_HASO4_VIS_7635.dat",
-        "wfc_flat_path": "E:/optimize_now/20260708_163331_ao_optimizeNOW/optimized_wfc_voltage.wcs"
+        "wfc_flat_path": "E:/optimize_now/20260713_110922_ao_optimizeNOW/optimized_wfc_voltage.wcs"
     },
     "Camera": {
         "camera_id": "OrcaFusionBT",
@@ -126,7 +126,7 @@
     "O2O3-autofocus": {
         "shutter_id": 712,
         "O3_stage_name": "MCL NanoDrive Z Stage",
-        "exposure_ms": 10.0,
+        "exposure_ms": 12.0,
         "roi_crop_y": 512
     },
     "Stage": {
@@ -152,20 +152,20 @@
             "O3_stage_name": "MCL NanoDrive Z Stage",
             "exposure_ms": 12.0,
             "roi_crop_y": 732,
-            "o2o3_mode": "none"
+            "o2o3_mode": "optimize now"
         },
         "AO": {
             "mirror_state": "last optimized",
             "metric": "brightness",
-            "mode_delta": 0.12,
-            "mode_alpha": 0.66,
-            "num_iterations": 3,
+            "mode_delta": 0.05000000000000002,
+            "mode_alpha": 0.5,
+            "num_iterations": 1,
             "num_mode_samples": 5,
             "image_mirror_range_um": 100.0,
             "active_channel_id": "405nm",
             "active_channel_power": 1.0,
             "exposure_ms": 5.0,
-            "ao_mode": "optimize now",
+            "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
             "save_dir_path": "e:/optimize_now",
@@ -174,8 +174,8 @@
             "readout_ms": 4.868,
             "metric_precision": 4,
             "modes_to_optimize": "spherical first",
-            "metric_acceptance": "zero",
-            "num_averaged_frames": 25
+            "metric_acceptance": "optimal",
+            "num_averaged_frames": 1
         },
         "timelapse": {
             "channel_states": [

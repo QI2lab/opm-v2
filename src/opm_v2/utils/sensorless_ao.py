@@ -133,7 +133,8 @@ stationary_modes = [
     30,
     31,
 ]
-all_modes = [0,1,3,4,5,6,8,9,10,11,12,13,17,18,19,20,31,30,29,28,27,26,25,24,23,22]
+# all_modes = [0,1,3,4,5,6,8,9,10,11,12,13,17,18,19,20,31,30,29,28,27,26,25,24,23,22]
+all_modes = [2,3,4,5,6,7,2,10,11,14,15,2,16,30,31]
 mode_names = [
     "Vert. Tilt",
     "Horz. Tilt",
@@ -230,6 +231,24 @@ def get_metric(
         metric = np.nan
 
     return metric
+
+
+def acquire_metric_image(
+    mmc: CMMCorePlus,
+    metric_to_use: str,
+    num_averaged_frames: int = 1,
+) -> tuple[NDArray, float]:
+    """Acquire image(s) and calculate a metric consistently for all AO metrics."""
+    if num_averaged_frames > 1:
+        images = [mmc.snap() for _ in range(num_averaged_frames)]
+        image_stack = np.stack(images, axis=0).astype(np.float32)
+        image = np.mean(image_stack, axis=0)
+        metric = float(np.mean([get_metric(im, metric_to_use) for im in images]))
+    else:
+        image = mmc.snap()
+        metric = get_metric(image, metric_to_use)
+
+    return image, metric
 
 
 def metric_from_fit(a: float, b: float, c: float, delta: float) -> float:
@@ -498,13 +517,9 @@ def run_ao_optimization(
 
     # Aqcuire starting image and metric
     try:
-        if "brightness" in metric_to_use:
-            images = [mmc.snap() for _ in range(num_averaged_frames)]
-            image_stack = np.stack(images, axis=0).astype(np.float32)
-            starting_image = np.mean(image_stack, axis=0)
-        else:
-            starting_image = mmc.snap()
-        starting_metric = get_metric(starting_image, metric_to_use)
+        starting_image, starting_metric = acquire_metric_image(
+            mmc, metric_to_use, num_averaged_frames
+        )
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
 
         # append to tracking lists
@@ -574,20 +589,12 @@ def run_ao_optimization(
                     if not opmNIDAQ_local.running():
                         raise ConnectionError("DAQ is not running, check for errors")
                     try:
-                        if num_averaged_frames > 1:
-                            images = [mmc.snap() for _ in range(num_averaged_frames)]
-                            # TODO: SHould I average the images or the metrics?
-                            image_stack = np.stack(images, axis=0).astype(np.float32)
-                            image = np.mean(image_stack, axis=0)
-                        else:
-                            image = mmc.snap()
+                        image, metric = acquire_metric_image(
+                            mmc, metric_to_use, num_averaged_frames
+                        )
                     except Exception as e:
                         raise RuntimeError("Exception in acquiring image") from e
                     try:
-                        if num_averaged_frames > 1:
-                            metric = np.mean([get_metric(im, metric_to_use) for im in images])
-                        else:
-                            metric = get_metric(image, metric_to_use)
                         metric = round_to_sigfigs(metric, metric_precision)
                     except Exception:
                         metric = np.nan
@@ -684,16 +691,12 @@ def run_ao_optimization(
                 if not opmNIDAQ_local.running():
                     raise ConnectionError("DAQ is not running, check for errors")
                 try:
-                    if "brightness" in metric_to_use:
-                        images = [mmc.snap() for _ in range(num_averaged_frames)]
-                        image_stack = np.stack(images, axis=0).astype(np.float32)
-                        optimal_image = np.mean(image_stack, axis=0)
-                    else:
-                        optimal_image = mmc.snap()
+                    optimal_image, optimal_metric = acquire_metric_image(
+                        mmc, metric_to_use, num_averaged_frames
+                    )
                 except Exception as e:
                     raise RuntimeError("Exception in acquiring optimal image") from e
 
-                optimal_metric = get_metric(optimal_image, metric_to_use)
                 optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
                 if verbose:
                     print(
@@ -1345,8 +1348,10 @@ def get_image_center(image: NDArray, threshold: float) -> Tuple[int, int]:
     """
     try:
         binary_image = image > threshold
-        center = center_of_mass(binary_image)
-        center = tuple(map(int, center))
+        center_y, center_x = center_of_mass(binary_image)
+        if not np.isfinite(center_x) or not np.isfinite(center_y):
+            raise ValueError("Could not determine image center from threshold mask")
+        center = (int(center_x), int(center_y))
     except Exception:
         center = (image.shape[1] // 2, image.shape[0] // 2)
     return center
@@ -1379,21 +1384,21 @@ def get_cropped_image(
     if len(image.shape) == 3:
         x_min, x_max = (
             max(center[0] - crop_size, 0),
-            min(center[0] + crop_size, image.shape[1]),
+            min(center[0] + crop_size, image.shape[2]),
         )
         y_min, y_max = (
             max(center[1] - crop_size, 0),
-            min(center[1] + crop_size, image.shape[2]),
+            min(center[1] + crop_size, image.shape[1]),
         )
         cropped_image = image[:, y_min:y_max, x_min:x_max]
     else:
         x_min, x_max = (
             max(center[0] - crop_size, 0),
-            min(center[0] + crop_size, image.shape[0]),
+            min(center[0] + crop_size, image.shape[1]),
         )
         y_min, y_max = (
             max(center[1] - crop_size, 0),
-            min(center[1] + crop_size, image.shape[1]),
+            min(center[1] + crop_size, image.shape[0]),
         )
         cropped_image = image[y_min:y_max, x_min:x_max]
 
@@ -1887,11 +1892,46 @@ def metric_shannon_dct(
         return shannon_dct
 
 def metric_laplacian_variance(
-    image: NDArray
+    image: NDArray,
+    crop_size: int | None = None,
+    threshold: Optional[float] = 1000,
+    image_center: tuple[int, int] | None = None,
+    bg_percentile: float = 10.0,
+    normalize: bool = True,
+    return_image: Optional[bool] = False,
 ) -> float:
-    image = image / np.max(image)
-    laplacian = laplace(image.astype(np.float32))
-    return float(np.var(laplacian))
+    """Compute a focus metric from the variance of the image Laplacian.
+
+    Larger values indicate sharper images. The optional background subtraction
+    and normalization make the metric less dependent on camera offset and laser
+    power while preserving high-frequency structure.
+    """
+    if crop_size:
+        center = image_center or get_image_center(image, threshold)
+        image = get_cropped_image(image, crop_size, center)
+
+    if len(image.shape) == 3:
+        image = np.max(image, axis=0)
+
+    image = image.astype(np.float32, copy=False)
+    image = image - np.percentile(image, bg_percentile)
+    image[image < 0] = 0
+
+    if normalize:
+        scale = np.percentile(image, 99.9)
+        if not np.isfinite(scale) or scale <= 0:
+            metric = np.nan
+            return (metric, image) if return_image else metric
+        image = image / scale
+
+    laplacian = laplace(image)
+    metric = float(np.var(laplacian))
+    if not np.isfinite(metric) or metric <= 0:
+        metric = np.nan
+
+    if return_image:
+        return metric, image
+    return metric
 
 def metric_gauss2d(
     image: NDArray,
@@ -1929,8 +1969,12 @@ def metric_gauss2d(
             center = image_center
         image = get_cropped_image(image, crop_size, center)
 
+    image_max = np.max(image)
+    if not np.isfinite(image_max) or image_max <= 0:
+        return np.nan
+
     # normalize image 0-1
-    image = image / np.max(image)
+    image = image / image_max
     # normalize_roi(image, bg_percentile=25.0)
     image = image.astype(np.float32)
 
@@ -1948,8 +1992,10 @@ def metric_gauss2d(
         3,
         image.min(),
     )
+
+    sigma_floor = 0.25
     fit_bounds = [
-        [0, 0, 0, 1.0, 1.0, 0],
+        [0, 0, 0, sigma_floor, sigma_floor, 0],
         [1.5, image.shape[1], image.shape[0], 100, 100, 10],
     ]
     try:
@@ -1963,35 +2009,63 @@ def metric_gauss2d(
         )
 
         amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
+        if not np.all(np.isfinite(popt)):
+            return np.nan
 
-        # weighted_metric = (
-        #     (1 - np.abs((sigma_x - sigma_y) / (sigma_x + sigma_y)))
-        #     + 1 / (sigma_x + sigma_y)
-        #     + np.exp(-1 * (sigma_x + sigma_y - 1) ** 2)
-        # )
+        sigma_area = sigma_x * sigma_y
+        ellipticity = abs(sigma_x - sigma_y) / (sigma_x + sigma_y)
 
-        # weighted_metric = (
-        # np.exp(-1 * np.abs(sigma_x - sigma_y))
-        # + 2 / (sigma_y + sigma_x)
-        # )
-        # SJS: From old laser_optmization code
-        # weighted_metric = (
-        # (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y)))
-        # * (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
-        # )
-        weight_amp = 0.1
-        weight_sigma_x = 1000
-        weight_sigma_y = 1000
-        weighted_metric = (
-        weight_amp * amplitude
-        + weight_sigma_x / sigma_x + weight_sigma_y / sigma_y
-        + np.exp(-1*(sigma_x+sigma_y-4)**2)
-        )
+        width_score = amplitude / (sigma_area**2)
+        symmetry_score = np.exp(-4.0 * ellipticity**2)
 
-        if (weighted_metric <= 0) or (weighted_metric > 100):
-            weighted_metric = 1e-12
+        weighted_metric = width_score * symmetry_score
+        if not np.isfinite(weighted_metric) or weighted_metric <= 0:
+            return np.nan
+
+    # fit_bounds = [
+    #     [0, 0, 0, 0.25, 0.25, 0],
+    #     [1.5, image.shape[1], image.shape[0], 100, 100, 10],
+    # ]
+    # try:
+    #     popt, pcov = curve_fit(
+    #         gauss2d,
+    #         (x, y),
+    #         image.ravel(),
+    #         p0=initial_guess,
+    #         bounds=fit_bounds,
+    #         maxfev=1000,
+    #     )
+
+    #     amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
+
+    #     # weighted_metric = (
+    #     #     (1 - np.abs((sigma_x - sigma_y) / (sigma_x + sigma_y)))
+    #     #     + 1 / (sigma_x + sigma_y)
+    #     #     + np.exp(-1 * (sigma_x + sigma_y - 1) ** 2)
+    #     # )
+
+    #     # weighted_metric = (
+    #     # np.exp(-1 * np.abs(sigma_x - sigma_y))
+    #     # + 2 / (sigma_y + sigma_x)
+    #     # )
+    #     # SJS: From old laser_optmization code
+    #     # weighted_metric = (
+    #     # (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y)))
+    #     # * (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
+    #     # )
+    #     weight_amp = 0.5
+    #     weight_sigma_x = 1000
+    #     weight_sigma_y = 1000
+    #     weighted_metric = (
+    #     weight_amp * amplitude
+    #     + weight_sigma_x / sigma_x + weight_sigma_y / sigma_y
+    #     + np.exp(-1*(sigma_x+sigma_y-4)**2)
+    #     )
+
+    #     if (weighted_metric <= 0): # or (weighted_metric > 100):
+    #         weighted_metric = 1e-12
     except Exception:
-        weighted_metric = 1e-12
+        weighted_metric = np.nan
 
     if return_image:
         return weighted_metric, image
