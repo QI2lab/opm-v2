@@ -87,6 +87,7 @@ opm-v2 = "opm_v2._main:main"
 [tool.pytest.ini_options]
 minversion = "7.0"
 testpaths = ["tests"]
+pythonpath = ["."]
 filterwarnings = ["error"]
 
 [tool.ruff]

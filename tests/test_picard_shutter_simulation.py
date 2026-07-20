@@ -2,7 +2,17 @@
 
 from __future__ import annotations
 
-from opm_v2.hardware.PicardShutter import PicardShutter
+import sys
+
+import pytest
+
+from opm_v2.hardware.PicardShutter import PicardShutter, PiUsbNet
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Picard driver is Windows-only")
+def test_packaged_picard_driver_loads() -> None:
+    """Load the vendored .NET assembly from the package directory."""
+    assert PiUsbNet is not None
 
 
 def test_simulated_picard_shutter_tracks_open_and_closed_states() -> None:

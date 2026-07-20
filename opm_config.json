@@ -200,7 +200,7 @@
                 0
             ],
             "scan_axis_step_um": 0.4,
-            "scan_range_um": 6.800000000000004,
+            "scan_range_um": 6.8,
             "laser_blanking": true
         },
         "Positions": {

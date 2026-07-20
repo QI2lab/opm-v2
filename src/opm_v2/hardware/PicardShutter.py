@@ -3,16 +3,25 @@
 from __future__ import annotations
 
 import gc
+import os
 import time
+from pathlib import Path
 from typing import Any
+
+_piusb_dll_directory = None
+_piusb_import_error: Exception | None = None
 
 try:
     import clr
 
-    clr.AddReference("PiUsbNet")
+    package_dir = Path(__file__).resolve().parent.parent
+    if hasattr(os, "add_dll_directory"):
+        _piusb_dll_directory = os.add_dll_directory(str(package_dir))
+    clr.AddReference(str(package_dir / "PiUsbNet.dll"))
     import PiUsbNet  # type: ignore[import-not-found]
-except Exception:
+except Exception as exc:
     PiUsbNet = None
+    _piusb_import_error = exc
 
 
 _instance_shutter = None
@@ -99,7 +108,7 @@ class PicardShutter:
             raise RuntimeError(
                 "PiUsbNet could not be loaded. Install the Picard driver or "
                 "construct PicardShutter with simulate=True."
-            )
+            ) from _piusb_import_error
         if shutter_id is None:
             raise ValueError("shutter_id is required for a physical Picard shutter")
 
