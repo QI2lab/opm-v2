@@ -36,6 +36,7 @@ class OPMSettingsV2(QWidget):
 
     settings_changed = Signal(dict)
     run_requested = Signal()
+    picard_shutter_requested = Signal(bool)
 
     def __init__(self, config_path: Path, parent: QWidget | None = None):
         """Initialize settings controls from an OPM configuration file.
@@ -517,6 +518,39 @@ class OPMSettingsV2(QWidget):
         self.layout_o2o3_mode.addWidget(QLabel("O2O3 Autofocus:"))
         self.layout_o2o3_mode.addWidget(self.cmbx_o2o3_mode)
 
+        self.picard_shutter_button = QPushButton()
+        self.picard_shutter_button.setCheckable(True)
+        self.picard_shutter_button.setMinimumWidth(180)
+        self.picard_shutter_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #4b5563;
+                color: white;
+                border: 1px solid #374151;
+                border-radius: 4px;
+                font-weight: 600;
+                padding: 6px 10px;
+            }
+            QPushButton:hover {
+                background-color: #6b7280;
+            }
+            QPushButton:checked {
+                background-color: #f59e0b;
+                color: #111827;
+                border-color: #b45309;
+            }
+            QPushButton:checked:hover {
+                background-color: #fbbf24;
+            }
+            """
+        )
+        self.picard_shutter_button.toggled.connect(self._update_picard_shutter_button)
+        self.picard_shutter_button.clicked.connect(self.picard_shutter_requested.emit)
+        self.set_picard_shutter_open(False)
+        self.layout_picard_shutter = QHBoxLayout()
+        self.layout_picard_shutter.addWidget(QLabel("O2O3 Picard shutter:"))
+        self.layout_picard_shutter.addWidget(self.picard_shutter_button)
+
         self.cmbx_fluidics_mode = self.create_combobox(
             items=self.config["OPM"]["fluidics_modes"],
             width=125,
@@ -545,6 +579,7 @@ class OPMSettingsV2(QWidget):
         self.layout_opm_settings = QVBoxLayout()
         self.layout_opm_settings.addLayout(self.layout_opm_mode)
         self.layout_opm_settings.addLayout(self.layout_o2o3_mode)
+        self.layout_opm_settings.addLayout(self.layout_picard_shutter)
         self.layout_opm_settings.addLayout(self.layout_fluidics_mode)
         self.layout_opm_settings.addLayout(self.layout_laser_blanking)
         self.group_opm_settings = QGroupBox("OPM modes/settings")
@@ -911,6 +946,37 @@ class OPMSettingsV2(QWidget):
         self.main_layout.addWidget(self.run_button)
         self.setLayout(self.main_layout)
         self.layout()
+
+    def set_picard_shutter_open(self, is_open: bool) -> None:
+        """Synchronize the Picard shutter button with the hardware state.
+
+        Parameters
+        ----------
+        is_open : bool
+            Whether the shutter is currently open.
+        """
+        with QSignalBlocker(self.picard_shutter_button):
+            self.picard_shutter_button.setChecked(is_open)
+        self._update_picard_shutter_button(is_open)
+
+    def _update_picard_shutter_button(self, is_open: bool) -> None:
+        """Update the Picard shutter button's state and action text.
+
+        Parameters
+        ----------
+        is_open : bool
+            Whether the shutter is currently open.
+        """
+        if is_open:
+            self.picard_shutter_button.setText("OPEN — click to close")
+            self.picard_shutter_button.setToolTip(
+                "The Picard shutter is open. Click to close it."
+            )
+        else:
+            self.picard_shutter_button.setText("CLOSED — click to open")
+            self.picard_shutter_button.setToolTip(
+                "The Picard shutter is closed. Click to open it."
+            )
 
     # --------------------------------------------------------------------#
     # Methods to update sliders and spinboxes channel states

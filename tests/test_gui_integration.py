@@ -158,6 +158,38 @@ def _channel_widgets(settings: OPMSettingsV2) -> list[tuple[Any, ...]]:
     ]
 
 
+def test_picard_shutter_button_shows_and_emits_state(
+    workspace_tmp_path, qtbot, opm_config_factory
+) -> None:
+    """Make the shutter's open state visually explicit and controllable."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="stage"),
+        workspace_tmp_path / "picard_button.json",
+    )
+    settings = OPMSettingsV2(config_path)
+    qtbot.addWidget(settings)
+    requested_states: list[bool] = []
+    settings.picard_shutter_requested.connect(requested_states.append)
+
+    button = settings.picard_shutter_button
+    assert not button.isChecked()
+    assert "CLOSED" in button.text()
+    assert "QPushButton:checked" in button.styleSheet()
+    assert "#f59e0b" in button.styleSheet()
+
+    qtbot.mouseClick(button, Qt.MouseButton.LeftButton)
+
+    assert button.isChecked()
+    assert "OPEN" in button.text()
+    assert requested_states == [True]
+
+    settings.set_picard_shutter_open(False)
+
+    assert not button.isChecked()
+    assert "CLOSED" in button.text()
+    assert requested_states == [True]
+
+
 def test_custom_widget_loads_reusable_configuration_without_resetting_it(
     workspace_tmp_path, qtbot, opm_config_factory
 ) -> None:

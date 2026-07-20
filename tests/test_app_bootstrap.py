@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from pymmcore_gui._qt.QtCore import Qt
 from pymmcore_gui._qt.QtWidgets import QApplication
 
 from opm_v2._app import OPM_WIDGET_KEY, launch_opm_app
@@ -72,5 +73,19 @@ def test_registered_extension_composes_gui_engine_and_hardware_instances(
         assert controller.opm_ao_mirror.simulate
         assert controller.opm_nidaq.simulate
         assert controller.opm_picard_shutter.simulate
+
+        shutter_button = controller.opm_settings_widget.picard_shutter_button
+        assert controller.opm_picard_shutter.state == "Closed"
+        assert not shutter_button.isChecked()
+
+        qtbot.mouseClick(shutter_button, Qt.MouseButton.LeftButton)
+
+        assert controller.opm_picard_shutter.state == "Open"
+        assert shutter_button.isChecked()
+        assert "OPEN" in shutter_button.text()
+
+        controller.opm_picard_shutter.closeShutter()
+        qtbot.waitUntil(lambda: not shutter_button.isChecked())
+        assert "CLOSED" in shutter_button.text()
     finally:
         window.close()

@@ -213,6 +213,7 @@ class OPMAppController:
         self.ob1_controller = None
         self.opm_engine = None
         self.data_handler = None
+        self._picard_state_timer = None
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -371,6 +372,14 @@ class OPMAppController:
         """Connect Micro-Manager and OPM widget signals to controller methods."""
         self.opm_settings_widget.settings_changed.connect(self.update_config_snapshot)
         self.opm_settings_widget.run_requested.connect(self.run_opm_acquisition)
+        self.opm_settings_widget.picard_shutter_requested.connect(
+            self.set_picard_shutter_open
+        )
+        self.sync_picard_shutter_button()
+        self._picard_state_timer = QTimer(self.win)
+        self._picard_state_timer.setInterval(100)
+        self._picard_state_timer.timeout.connect(self.sync_picard_shutter_button)
+        self._picard_state_timer.start()
 
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
@@ -390,10 +399,45 @@ class OPMAppController:
             "SIGNALS CONNECTED",
             "OPM settings -> in-memory acquisition snapshot",
             "OPM run button -> OPM acquisition",
+            "Picard shutter button -> O2-O3 shutter state",
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
         )
+
+    def set_picard_shutter_open(self, is_open: bool) -> None:
+        """Apply a Picard shutter state requested by the settings widget.
+
+        Parameters
+        ----------
+        is_open : bool
+            Whether the user requested the shutter to be open.
+        """
+        if self.opm_picard_shutter is None:
+            self.opm_settings_widget.set_picard_shutter_open(False)
+            return
+
+        try:
+            if is_open:
+                self.opm_picard_shutter.openShutter()
+            else:
+                self.opm_picard_shutter.closeShutter()
+        finally:
+            self.sync_picard_shutter_button()
+
+        self.debug(
+            "PICARD SHUTTER UPDATED",
+            f"State: {self.opm_picard_shutter.state}",
+        )
+
+    def sync_picard_shutter_button(self) -> None:
+        """Reflect the current Picard shutter state in the settings widget."""
+        if self.opm_settings_widget is None or self.opm_picard_shutter is None:
+            return
+        state_name = str(self.opm_picard_shutter.state).rsplit(".", maxsplit=1)[-1]
+        is_open = state_name.casefold() == "open"
+        if self.opm_settings_widget.picard_shutter_button.isChecked() != is_open:
+            self.opm_settings_widget.set_picard_shutter_open(is_open)
 
     def update_config_snapshot(self, config: dict) -> None:
         """Accept an immutable-at-dispatch snapshot from the OPM widget.
