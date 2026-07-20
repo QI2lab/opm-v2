@@ -132,3 +132,5 @@ src/opm_v2/hardware/*.json
 *.png
 *.tiff
 src/opm_v2/hardware/wfc_position_files
+.localappdata/
+.agents/
