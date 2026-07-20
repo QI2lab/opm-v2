@@ -107,7 +107,7 @@ for i in range(specs.nb_actuators):
 """
 corr_data_manager.compute_interaction_matrix(hasoslopes_array)
 corr_data_manager.save_backup_file(str(output_file_path), "Tilted")
-print(f"Correction data saved to file {str(output_file_path)} in Examples directory.")
+print(f"Correction data saved to file {output_file_path!s} in Examples directory.")
 
 """Set computation prefs
 """

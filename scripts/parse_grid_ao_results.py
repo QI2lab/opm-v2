@@ -1,90 +1,79 @@
+"""Discover and plot every current-format AO result store in a grid run."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
 from pathlib import Path
-import matplotlib.pyplot as plt
-from opm_v2.utils import sensorless_ao as ao
-import numpy as np
+
+if __package__:
+    from .parse_ao_results import plot_results
+else:
+    from parse_ao_results import plot_results
 
 
-showfig = False
-root_dir = Path(
-    "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/after_adding_IB_wAO_ao_results"
-)
+def discover_results(root: Path) -> list[Path]:
+    """Find AO result stores below a directory.
 
-import zarr
+    Parameters
+    ----------
+    root : Path
+        Grid acquisition directory.
 
-# process grid acquisitions, need to parse mulitle directories by defualt
-grid_results = []
-for _d in root_dir.iterdir():
-    zarr_path = [p for p in _d.glob("*ao_results.zarr")]
+    Returns
+    -------
+    list[Path]
+        Sorted ``ao_results.zarr`` paths.
 
-    if len(zarr_path) == 0:
-        pass
-    else:
-        grid_results.append(ao.load_optimization_results(zarr_path[0]))
-
-    """  
-    ao_results = {
-        "all_images":all_images,
-        "all_metrics":all_metrics,
-        "metrics_per_iteration":metrics_per_iteration,
-        "images_per_iteration":images_per_iteration,
-        "optimal_coeffs":optimal_coeffs,
-        "modes_to_optimize":modes_to_optimize,
-        # "optimized_phase":optimized_phase,
-        "mode_names":zernike_mode_names,
-    }
-    ao_results.update(results.attrs)
+    Raises
+    ------
+    FileNotFoundError
+        If the root does not exist or contains no result stores.
     """
+    if not root.exists():
+        raise FileNotFoundError(root)
+    paths = sorted(root.rglob("ao_results.zarr"))
+    if not paths:
+        raise FileNotFoundError(f"No ao_results.zarr stores found below {root}")
+    return paths
 
-# Combine grid data to take place of iterations
-if "grid" in _d.name:
-    optimal_coeffs = []
-    all_metrics = []
-    for ao_results in grid_results:
-        zernike_mode_names = ao_results["mode_names"]
-        modes_to_optimize = ao_results["modes_to_optimize"]
-        optimal_coeffs = ao_results["optimal_coeffs"]
-        save_dir_path = None
-        showfig = True
 
-        ao.plot_metric_progress(
-            all_metrics=all_metrics,
-            modes_to_optimize=modes_to_optimize,
-            num_iterations=optimal_coeffs.shape[1] - 1,
-            zernike_mode_names=zernike_mode_names,
-            save_dir_path=root_dir,
-            show_fig=True,
-        )
-        ao.plot_zernike_coeffs(
-            optimal_coeffs=optimal_coeffs,
-            zernike_mode_names=zernike_mode_names,
-            save_dir_path=root_dir,
-            show_fig=True,
-            x_range=0.1,
-        )
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
 
-        optimal_coeffs.append(ao_results["optimal_coeffs"])
-        all_metrics.append(ao_results["all_metrics"])
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("root", type=Path, help="AO grid result directory")
+    parser.add_argument("--output", type=Path, help="Shared plot output directory")
+    parser.add_argument("--show", action="store_true")
+    return parser
 
-    optimal_coeffs = np.asarray(optimal_coeffs).reshape([
-        len(grid_results),
-        len(zernike_mode_names),
-    ])
-    all_metrics = np.asarray(all_metrics)
 
-    num_iterations = optimal_coeffs.shape[1]
+def main(argv: Sequence[str] | None = None) -> int:
+    """Plot all current AO result stores below a grid directory.
 
-    ao.plot_metric_progress(
-        all_metrics=all_metrics,
-        modes_to_optimize=modes_to_optimize,
-        num_iterations=optimal_coeffs.shape[1],
-        zernike_mode_names=zernike_mode_names,
-        save_dir_path=root_dir,
-        show_fig=True,
-    )
-    ao.plot_zernike_coeffs(
-        optimal_coeffs=optimal_coeffs,
-        zernike_mode_names=zernike_mode_names,
-        save_dir_path=root_dir,
-        show_fig=True,
-        x_range=0.1,
-    )
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    args = build_parser().parse_args(argv)
+    paths = discover_results(args.root)
+    for index, path in enumerate(paths):
+        output = args.output / f"grid_{index}" if args.output else path.parent
+        plot_results(path, output, args.show)
+    print(f"Processed {len(paths)} AO result stores")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

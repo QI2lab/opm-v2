@@ -1,69 +1,161 @@
-"""WARNING ! This example is Hardware dependant.
-Please ensure that hardware is connected,
-And use your own Haso configuration file and acquisition system.
-"""
-# ----
+"""Run or simulate an Imagine Optic mirror push/pull calibration sequence."""
 
-"""Import Imagine Optic's Python interface
-"""
-import wavekit_py as wkpy
-from pathlib import Path
-import numpy as np
-from tifffile import imwrite
+from __future__ import annotations
+
+import argparse
 import time
+from collections.abc import Sequence
+from pathlib import Path
+from typing import Any
 
-"""Get configuration file path
-"""
-wfs_config_file_path = Path(
-    r"C:\Program Files (x86)\Imagine Optic\Configuration Files\WFS_HASO4_VIS_7635.dat"
-)
-wfc_config_file_path = Path(
-    r"C:\Program Files (x86)\Imagine Optic\Configuration Files\WaveFrontCorrector_mirao52-e_0329.dat"
-)
+import numpy as np
 
-"""Instantiate objects
-"""
-camera = wkpy.Camera(config_file_path=str(wfs_config_file_path))
-wavefrontcorrector = wkpy.WavefrontCorrector(config_file_path=str(wfc_config_file_path))
-corr_data_manager = wkpy.CorrDataManager(
-    haso_config_file_path=str(wfs_config_file_path),
-    wfc_config_file_path=str(wfc_config_file_path),
-)
 
-"""Connect to hardware
-"""
-wavefrontcorrector.connect(True)
-wavefrontcorrector.move_to_absolute_positions(
-    np.full(wavefrontcorrector.nb_actuators, 0)
-)
+def simulated_push_pull_commands(
+    actuator_count: int, amplitude: float
+) -> list[tuple[np.ndarray, np.ndarray]]:
+    """Generate deterministic push/pull actuator commands.
 
-push_pull_value = 0.5
-corr_data_manager.set_calibration_prefs(push_pull_value)
-size = corr_data_manager.get_calibration_matrix_size()
-print("Calibration matrix size : (" + str(size.X) + " x " + str(size.Y) + ")")
+    Parameters
+    ----------
+    actuator_count : int
+        Number of mirror actuators.
+    amplitude : float
+        Absolute calibration displacement.
 
-specs = corr_data_manager.get_specifications()
+    Returns
+    -------
+    list[tuple[numpy.ndarray, numpy.ndarray]]
+        Push and pull vectors for every actuator.
 
-# images = []
-start_subpupil = wkpy.uint2D(20, 15)
-for i in range(specs.nb_actuators):
-    prefs = corr_data_manager.get_actuator_prefs(i)
-    if prefs.validity == wkpy.E_ACTUATOR_CONDITIONS.VALID:
-        push, pull = corr_data_manager.get_calibration_commands(i)
-        """Get push interaction slopes
-        """
-        wavefrontcorrector.move_to_absolute_positions(push)
-        time.sleep(2)
-        wavefrontcorrector.move_to_absolute_positions(pull)
-        time.sleep(2)
-        print(
-            "Calibration process experiment for actuator "
-            + str(i + 1)
-            + "/"
-            + str(specs.nb_actuators)
-            + " succeed."
-        )
+    Raises
+    ------
+    ValueError
+        If the actuator count or amplitude is invalid.
+    """
+    if actuator_count < 1 or amplitude <= 0:
+        raise ValueError("Actuator count and amplitude must be positive")
+    commands = []
+    for index in range(actuator_count):
+        push = np.zeros(actuator_count)
+        push[index] = amplitude
+        commands.append((push, -push))
+    return commands
 
-wavefrontcorrector.disconnect()
 
-del wavefrontcorrector
+def run_hardware_calibration(
+    wfs_config: Path,
+    wfc_config: Path,
+    *,
+    amplitude: float,
+    settle_seconds: float,
+) -> int:
+    """Run a push/pull calibration against connected Imagine Optic hardware.
+
+    Parameters
+    ----------
+    wfs_config : Path
+        HASO wavefront-sensor configuration.
+    wfc_config : Path
+        Wavefront-corrector configuration.
+    amplitude : float
+        Calibration push/pull amplitude.
+    settle_seconds : float
+        Delay after every mirror command.
+
+    Returns
+    -------
+    int
+        Number of calibrated actuators.
+
+    Raises
+    ------
+    RuntimeError
+        If the vendor WaveKit module is unavailable.
+    """
+    try:
+        import wavekit_py as wkpy
+    except ImportError as error:
+        raise RuntimeError(
+            "Imagine Optic wavekit_py is required for hardware calibration"
+        ) from error
+    corrector = wkpy.WavefrontCorrector(config_file_path=str(wfc_config))
+    manager = wkpy.CorrDataManager(
+        haso_config_file_path=str(wfs_config),
+        wfc_config_file_path=str(wfc_config),
+    )
+    calibrated = 0
+    try:
+        corrector.connect(True)
+        corrector.move_to_absolute_positions(np.zeros(corrector.nb_actuators))
+        manager.set_calibration_prefs(amplitude)
+        specifications = manager.get_specifications()
+        for index in range(specifications.nb_actuators):
+            preferences: Any = manager.get_actuator_prefs(index)
+            if preferences.validity != wkpy.E_ACTUATOR_CONDITIONS.VALID:
+                continue
+            push, pull = manager.get_calibration_commands(index)
+            corrector.move_to_absolute_positions(push)
+            time.sleep(settle_seconds)
+            corrector.move_to_absolute_positions(pull)
+            time.sleep(settle_seconds)
+            calibrated += 1
+    finally:
+        corrector.disconnect()
+    return calibrated
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--wfs-config", type=Path)
+    parser.add_argument("--wfc-config", type=Path)
+    parser.add_argument("--amplitude", type=float, default=0.5)
+    parser.add_argument("--settle-seconds", type=float, default=2.0)
+    parser.add_argument("--simulate-actuators", type=int)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run a physical or simulated push/pull calibration.
+
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+
+    Raises
+    ------
+    SystemExit
+        If physical operation is requested without both configuration files.
+    """
+    args = build_parser().parse_args(argv)
+    if args.simulate_actuators is not None:
+        commands = simulated_push_pull_commands(args.simulate_actuators, args.amplitude)
+        print(f"Generated {len(commands)} simulated actuator command pairs")
+        return 0
+    if args.wfs_config is None or args.wfc_config is None:
+        raise SystemExit("--wfs-config and --wfc-config are required for hardware use")
+    calibrated = run_hardware_calibration(
+        args.wfs_config,
+        args.wfc_config,
+        amplitude=args.amplitude,
+        settle_seconds=args.settle_seconds,
+    )
+    print(f"Calibrated {calibrated} actuators")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

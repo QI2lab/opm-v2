@@ -32,7 +32,7 @@ class PicardShutter:
     """
 
     @classmethod
-    def instance(cls) -> "PicardShutter":
+    def instance(cls) -> PicardShutter:
         """Return the initialized process-wide shutter instance.
 
         Returns
@@ -49,6 +49,12 @@ class PicardShutter:
         if _instance_shutter is None:
             raise RuntimeError("PicardShutter must be initialized before instance()")
         return _instance_shutter
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Release the process singleton reference for controlled teardown."""
+        global _instance_shutter
+        _instance_shutter = None
 
     def __init__(
         self,
@@ -75,8 +81,9 @@ class PicardShutter:
             If physical mode is selected without a shutter identifier.
         """
         global _instance_shutter
-        if _instance_shutter is None:
-            _instance_shutter = self
+        if _instance_shutter is not None:
+            raise RuntimeError("PicardShutter is already initialized; use instance()")
+        _instance_shutter = self
 
         self.shutter_id = shutter_id
         self.verbose = verbose

@@ -44,12 +44,23 @@ class APump:
         Returns
         -------
         APump
-            Existing instance, or a new simulated instance when uninitialized.
+            Existing initialized instance.
+
+        Raises
+        ------
+        RuntimeError
+            If no pump has been initialized by the application.
         """
         global _instance_pump
         if _instance_pump is None:
-            _instance_pump = cls()
+            raise RuntimeError("APump must be initialized before instance()")
         return _instance_pump
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Release the process singleton reference for controlled teardown."""
+        global _instance_pump
+        _instance_pump = None
 
     def __init__(self, parameters: dict | None = None) -> None:
         """Initialize pump state and its selected backend.
@@ -58,13 +69,19 @@ class APump:
         ----------
         parameters : dict or None
             Pump port, identifier, direction, verbosity, and simulation settings.
+
+        Raises
+        ------
+        RuntimeError
+            If another pump controller already owns the process singleton.
         """
         parameters = parameters or {}
 
         # Set the first instance of this class as the global singleton
         global _instance_pump
-        if _instance_pump is None:
-            _instance_pump = self
+        if _instance_pump is not None:
+            raise RuntimeError("APump is already initialized; use instance()")
+        _instance_pump = self
 
         # Define attributes
         self.com_port = parameters.get("pump_com_port", "COM3")
@@ -198,7 +215,7 @@ class APump:
         """
         if rotation_speed >= 0 and rotation_speed <= 48:
             rotation_int = int(rotation_speed * 100)
-            self.sendBuffered(self.pump_ID, "R" + ("%04d" % rotation_int))
+            self.sendBuffered(self.pump_ID, f"R{rotation_int:04d}")
             self.speed = float(rotation_speed)
             self.flow_status = "Flowing" if self.speed > 0 else "Stopped"
 

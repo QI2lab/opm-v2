@@ -1,10 +1,14 @@
-"""Provide console-printing helpers shared by the OPM modules."""
+"""Provide standard logging helpers shared by the OPM modules."""
 
-DEBUG_SEPARATOR = "-" * 72
+from __future__ import annotations
+
+import logging
+
+LOGGER = logging.getLogger("opm_v2")
 
 
-def print_block(header: str, *lines: object) -> None:
-    """Print a visually separated console message block.
+def _message(header: str, lines: tuple[object, ...]) -> str:
+    """Build one structured log message.
 
     Parameters
     ----------
@@ -12,16 +16,18 @@ def print_block(header: str, *lines: object) -> None:
         Block heading.
     *lines : object
         Values to print beneath the heading.
+
+    Returns
+    -------
+    str
+        Header and detail values joined into one log message.
     """
-    print(f"\n{DEBUG_SEPARATOR}")
-    print(f"----- {header} -----")
-    for line in lines:
-        print(line)
-    print(DEBUG_SEPARATOR)
+    details = " | ".join(str(line) for line in lines)
+    return f"{header}: {details}" if details else header
 
 
 def debug(header: str, *lines: object, enabled: bool = True) -> None:
-    """Print a debug block when enabled.
+    """Log a debug message when enabled.
 
     Parameters
     ----------
@@ -33,11 +39,11 @@ def debug(header: str, *lines: object, enabled: bool = True) -> None:
         Whether to emit the block.
     """
     if enabled:
-        print_block(f"DEBUGGING: {header}", *lines)
+        LOGGER.debug(_message(header, lines))
 
 
 def info(header: str, *lines: object) -> None:
-    """Print a status block.
+    """Log a status message.
 
     Parameters
     ----------
@@ -46,11 +52,11 @@ def info(header: str, *lines: object) -> None:
     *lines : object
         Values to print beneath the heading.
     """
-    print_block(header, *lines)
+    LOGGER.info(_message(header, lines))
 
 
 def warning(header: str, *lines: object) -> None:
-    """Print a warning block.
+    """Log a warning message.
 
     Parameters
     ----------
@@ -59,4 +65,4 @@ def warning(header: str, *lines: object) -> None:
     *lines : object
         Values to print beneath the heading.
     """
-    print_block(f"WARNING: {header}", *lines)
+    LOGGER.warning(_message(header, lines))

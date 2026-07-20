@@ -29,6 +29,7 @@ classifiers = [
 ]
 # add your package dependencies here
 dependencies = [
+    "imageio",
     "matplotlib",
     "numba",
     "ome-writers[tensorstore]",
@@ -64,8 +65,8 @@ dev = [
 ]
 
 [tool.uv.sources]
-pymmcore-plus = { git = "https://github.com/pymmcore-plus/pymmcore-plus", rev = "53804720c99e44420da277091ea5abf3dbe95925" }
-pymmcore-gui = { git = "https://github.com/pymmcore-plus/pymmcore-gui", rev = "08beeb09d581bf966d8ed6de9d954801afe1493e" }
+pymmcore-plus = { git = "https://github.com/pymmcore-plus/pymmcore-plus", rev = "70d330d57c97d5936e4aa8efefcab6bb161c0030" }
+pymmcore-gui = { git = "https://github.com/pymmcore-plus/pymmcore-gui", rev = "0cf73c58e287559d9d1e0b85f99824f8afd95d19" }
 pymmcore-widgets = { git = "https://github.com/pymmcore-plus/pymmcore-widgets", rev = "d61a158cb9bfc5da316f2d6cb74ea8c24206d3e4" }
 ome-writers = { git = "https://github.com/pymmcore-plus/ome-writers", rev = "bac0f391eeadc1083b70cbafb2e5efd3e7075df9" }
 
@@ -91,9 +92,14 @@ filterwarnings = ["error"]
 [tool.ruff]
 target-version = "py312"
 preview = true
+extend-exclude = [
+    "src/opm_v2/hardware/test_flat_pos.py",
+    "src/opm_v2/hardware/wfc_setup_scripts",
+]
 
 [tool.ruff.lint]
-select = ["D", "DOC"]
+select = ["E4", "E7", "E9", "F", "I", "D", "DOC", "B006", "B008", "B904", "UP"]
+ignore = ["D401", "E501", "UP045"]
 
 [tool.ruff.lint.pydocstyle]
 convention = "numpy"

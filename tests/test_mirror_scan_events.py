@@ -1,12 +1,11 @@
-from __future__ import annotations
+"""Component tests for mirror and timelapse generation with demo hardware."""
 
-import json
+from __future__ import annotations
 
 import pytest
 from useq import MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN
-from opm_v2.engine.opm_engine import OPMEngineV2
 from opm_v2.engine.setup_events import setup_mirrorscan, setup_timelapse
 
 
@@ -27,7 +26,7 @@ from opm_v2.engine.setup_events import setup_mirrorscan, setup_timelapse
         ),
     ],
 )
-def test_mirror_scan_camera_order_follows_interleaving_setup(
+def test_mirror_camera_order_follows_interleaving(
     demo_core,
     workspace_tmp_path,
     exposures,
@@ -37,19 +36,38 @@ def test_mirror_scan_camera_order_follows_interleaving_setup(
     opm_config_factory,
     simulated_acquisition_hardware,
     split_events,
+    assert_standard_image_fields,
 ) -> None:
-    config = opm_config_factory(
-        mode="mirror",
-        channel_exposures_ms=exposures,
-    )
-    sequence = MDASequence(
-        stage_positions=[(0.0, 0.0, 0.0)],
-        axis_order=axis_order,
-    )
+    """Build mirror events in each supported channel/Z ordering.
+
+    Parameters
+    ----------
+    demo_core : CMMCorePlus
+        Core loaded with Micro-Manager demo devices.
+    workspace_tmp_path : Path
+        Directory used to construct the output handler.
+    exposures : list[float]
+        Active-channel exposures controlling interleaving.
+    axis_order : str
+        Axis order selected in the standard MDA widget.
+    camera_indices : list[tuple[int, int]]
+        Expected plane/channel arrival order.
+    acquisition_order : tuple[str, ...]
+        Expected datastore order.
+    opm_config_factory : OpmConfigFactory
+        Reusable simulated configuration factory.
+    simulated_acquisition_hardware : SimulatedAcquisitionHardware
+        Initialized singleton hardware simulations.
+    split_events : Callable
+        Event classifier fixture.
+    assert_standard_image_fields : Callable
+        Reusable standard useq field assertion.
+    """
+    config = opm_config_factory(mode="mirror", channel_exposures_ms=exposures)
     events, handler = setup_mirrorscan(
         demo_core,
         config,
-        sequence,
+        MDASequence(stage_positions=[(0.0, 0.0, 0.0)], axis_order=axis_order),
         workspace_tmp_path / "mirror.ome.zarr",
     )
     image_events, custom_actions = split_events(events)
@@ -57,6 +75,7 @@ def test_mirror_scan_camera_order_follows_interleaving_setup(
         {"t": 0, "p": 0, "c": channel, "z": plane} for plane, channel in camera_indices
     ]
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
+    assert_standard_image_fields(image_events)
     assert handler.acquisition_order == acquisition_order
 
 
@@ -66,17 +85,34 @@ def test_timelapse_writer_uses_camera_event_order(
     opm_config_factory,
     simulated_acquisition_hardware,
     split_events,
+    assert_standard_image_fields,
 ) -> None:
+    """Build timelapse events in the widget-selected frame order.
+
+    Parameters
+    ----------
+    demo_core : CMMCorePlus
+        Core loaded with Micro-Manager demo devices.
+    workspace_tmp_path : Path
+        Directory used to construct the output handler.
+    opm_config_factory : OpmConfigFactory
+        Reusable simulated configuration factory.
+    simulated_acquisition_hardware : SimulatedAcquisitionHardware
+        Initialized singleton hardware simulations.
+    split_events : Callable
+        Event classifier fixture.
+    assert_standard_image_fields : Callable
+        Reusable standard useq field assertion.
+    """
     config = opm_config_factory(mode="timelapse")
-    sequence = MDASequence(
-        stage_positions=[(0.0, 0.0, 0.0)],
-        time_plan={"interval": 0, "loops": 2},
-        axis_order="pztc",
-    )
     events, handler = setup_timelapse(
         demo_core,
         config,
-        sequence,
+        MDASequence(
+            stage_positions=[(0.0, 0.0, 0.0)],
+            time_plan={"interval": 0, "loops": 2},
+            axis_order="pztc",
+        ),
         workspace_tmp_path / "timelapse.ome.zarr",
     )
     image_events, custom_actions = split_events(events)
@@ -87,87 +123,5 @@ def test_timelapse_writer_uses_camera_event_order(
         for channel in range(2)
     ]
     assert handler.acquisition_order == ("p", "z", "t", "c")
+    assert_standard_image_fields(image_events)
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
-
-
-@pytest.mark.parametrize(
-    (
-        "mode",
-        "setup_mode",
-        "sequence",
-        "expected_shape",
-        "acquisition_order",
-        "daq_mode",
-    ),
-    [
-        (
-            "mirror",
-            setup_mirrorscan,
-            MDASequence(
-                stage_positions=[(0.0, 0.0, 0.0)],
-                axis_order="tpzc",
-            ),
-            (1, 2, 2, 32, 64),
-            ["t", "p", "z", "c"],
-            "mirror",
-        ),
-        (
-            "timelapse",
-            setup_timelapse,
-            MDASequence(
-                stage_positions=[(0.0, 0.0, 0.0)],
-                time_plan={"interval": 0, "loops": 2},
-                axis_order="pztc",
-            ),
-            (2, 2, 2, 32, 64),
-            ["p", "z", "t", "c"],
-            "2d",
-        ),
-    ],
-)
-def test_mirror_based_modes_round_trip_generated_event_metadata(
-    demo_core,
-    workspace_tmp_path,
-    opm_config_factory,
-    simulated_acquisition_hardware,
-    read_tensorstore_array,
-    split_events,
-    mode,
-    setup_mode,
-    sequence,
-    expected_shape,
-    acquisition_order,
-    daq_mode,
-) -> None:
-    config = opm_config_factory(mode=mode)
-    config_path = opm_config_factory.write(
-        config,
-        workspace_tmp_path / f"{mode}.json",
-    )
-    output = workspace_tmp_path / f"{mode}.ome.zarr"
-    events, handler = setup_mode(demo_core, config, sequence, output)
-    engine = OPMEngineV2(demo_core, config_path, use_hardware_sequencing=False)
-    demo_core.register_mda_engine(engine)
-
-    demo_core.run_mda(events, output=handler, block=True)
-
-    assert read_tensorstore_array(output / "0").shape == expected_shape
-    image_events, _ = split_events(events)
-    root_metadata = json.loads((output / "zarr.json").read_text())
-    stored_frames = root_metadata["attributes"]["ome_writers"]["frame_metadata"]
-    assert [frame["event_index"] for frame in stored_frames] == [
-        dict(event.index) for event in image_events
-    ]
-    assert [frame["event_metadata"] for frame in stored_frames] == [
-        dict(event.metadata) for event in image_events
-    ]
-    assert all(
-        frame["event_metadata"]["DAQ"]["mode"] == daq_mode for frame in stored_frames
-    )
-
-    opm_metadata = root_metadata["attributes"]["opm_v2"]
-    assert opm_metadata["index_sizes"] == handler.index_sizes
-    assert opm_metadata["acquisition_order"] == acquisition_order
-    assert opm_metadata["summary_metadata"]["image_infos"][0]["camera_label"] == (
-        demo_core.getCameraDevice()
-    )

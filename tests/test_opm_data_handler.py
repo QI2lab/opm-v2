@@ -1,3 +1,5 @@
+"""Test OPM metadata and pixels written through the TensorStore handler."""
+
 from __future__ import annotations
 
 import json
@@ -23,13 +25,50 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
     read_tensorstore_array,
     acquisition_order,
 ) -> None:
+    """Verify pixels and all metadata survive both supported frame orders.
+
+    Parameters
+    ----------
+    workspace_tmp_path : Path
+        Workspace-local directory for the OME-Zarr output.
+    read_tensorstore_array : Callable
+        Fixture materializing arrays through TensorStore.
+    acquisition_order : tuple[str, ...]
+        Indexed frame-arrival order under test.
+    """
     output = workspace_tmp_path / "projection.ome.zarr"
     index_sizes = {"t": 1, "p": 2, "c": 2, "z": 2}
+    semantic_events = [
+        MDAEvent(
+            index={"p": position, "c": channel},
+            metadata={
+                "DAQ": {
+                    "current_channel": ("405nm", "561nm")[channel],
+                    "image_mirror_step_um": 1.5,
+                },
+                "Stage": {
+                    "x_pos": position * 10.0,
+                    "y_pos": position * 20.0,
+                    "z_pos": 3.0,
+                },
+            },
+        )
+        for position in range(2)
+        for channel in range(2)
+    ]
     handler = OpmDataHandler(
         path=output,
         index_sizes=index_sizes,
         delete_existing=True,
         acquisition_order=acquisition_order,
+        events=semantic_events,
+        acquisition_metadata={
+            "acq_config": {
+                "opm_mode": "projection",
+                "DAQ": {"laser_blanking": np.bool_(True)},
+            },
+            "output": Path("configured/output"),
+        },
     )
     sequence = MDASequence()
     summary_metadata = {
@@ -142,6 +181,14 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
         "index_sizes": index_sizes,
         "acquisition_order": list(acquisition_order),
         "summary_metadata": expected_summary_metadata,
+        "configuration": {
+            "acq_config": {
+                "opm_mode": "projection",
+                "DAQ": {"laser_blanking": True},
+            },
+            "output": str(Path("configured/output")),
+        },
+        "storage_backend": "tensorstore",
     }
 
     ome_series = json.loads((output / "OME" / "zarr.json").read_text())
@@ -162,7 +209,7 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
             {
                 "path": "0",
                 "coordinateTransformations": [
-                    {"type": "scale", "scale": [1.0, 1.0, 1.0, 0.2, 0.2]}
+                    {"type": "scale", "scale": [1.0, 1.0, 1.5, 0.2, 0.2]}
                 ],
             }
         ]
@@ -177,3 +224,47 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
         assert array_metadata["dimension_names"] == ["t", "c", "z", "y", "x"]
         assert array_metadata["data_type"] == "uint16"
         assert array_metadata["shape"] == [1, 2, 2, 3, 4]
+
+
+def test_opm_data_handler_validates_order_and_sequence_lifecycle(
+    workspace_tmp_path,
+) -> None:
+    """Reject duplicate axes and distinguish incomplete and canceled writes.
+
+    Parameters
+    ----------
+    workspace_tmp_path : Path
+        Workspace-local directory for lifecycle outputs.
+    """
+    with pytest.raises(ValueError, match="every indexed axis once"):
+        OpmDataHandler(
+            path=workspace_tmp_path / "duplicate.zarr",
+            index_sizes={"t": 1, "c": 2},
+            acquisition_order=("t", "t"),
+        )
+
+    sequence = MDASequence()
+    incomplete = OpmDataHandler(
+        path=workspace_tmp_path / "incomplete.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    incomplete.sequenceStarted(sequence, {})
+    with pytest.raises(RuntimeError, match="0 of 2 expected frames"):
+        incomplete.sequenceFinished(sequence)
+    assert not incomplete.is_finalized
+
+    canceled = OpmDataHandler(
+        path=workspace_tmp_path / "canceled.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    canceled.sequenceStarted(sequence, {})
+    canceled.frameReady(
+        np.zeros((2, 2), dtype=np.uint16),
+        MDAEvent(index={"t": 0}),
+        {"runner_time_ms": 0.0, "exposure_ms": 1.0},
+    )
+    canceled.sequenceCanceled(sequence)
+    assert canceled.was_canceled
+    assert not canceled.is_finalized

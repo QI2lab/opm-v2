@@ -8,11 +8,8 @@ TO DO:
 2024/12 DPS initial work
 """
 
-import time
 from datetime import datetime
 from pathlib import Path
-from time import sleep
-from typing import List, Optional
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -414,16 +411,16 @@ def round_to_sigfigs(x):
 
 def optimize_modes(
     exposure_ms: float,
-    metric_to_use: Optional[str] = "brightness",
-    num_iterations: Optional[int] = 3,
-    num_mode_steps: Optional[int] = 3,
-    starting_coef_delta: Optional[float] = 0.25,
-    coef_delta_scale: Optional[float] = 0.9,
-    modes_to_optimize: Optional[List[int]] = spherical_modes_first,
-    save_dir_path: Optional[Path] = None,
-    verbose: Optional[bool] = True,
-    display_data: Optional[bool] = True,
-    image_crop: Optional[int] = None,
+    metric_to_use: str | None = "brightness",
+    num_iterations: int | None = 3,
+    num_mode_steps: int | None = 3,
+    starting_coef_delta: float | None = 0.25,
+    coef_delta_scale: float | None = 0.9,
+    modes_to_optimize: list[int] | None = spherical_modes_first,
+    save_dir_path: Path | None = None,
+    verbose: bool | None = True,
+    display_data: bool | None = True,
+    image_crop: int | None = None,
 ):
     """Optimize selected mirror modes using camera-derived image metrics.
 
@@ -690,7 +687,7 @@ def optimize_modes(
                         # Reject result if metrics have positive curvature or too large of delta
                         if a >= 0:
                             optimal_delta = 0
-                            print(f" --- Metrics have positive curvature ---")
+                            print(" --- Metrics have positive curvature ---")
                         elif np.abs(optimal_delta) > MAXIMUM_MODE_DELTA:
                             optimal_delta = 0
                             print(

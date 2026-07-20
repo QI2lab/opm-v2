@@ -19,7 +19,7 @@ Change Log:
 
 import ctypes as ct
 import warnings
-from typing import Sequence
+from collections.abc import Sequence
 
 import numpy as np
 
@@ -90,12 +90,23 @@ class OPMNIDAQ:
         Returns
         -------
         OPMNIDAQ
-            Existing instance, or a new instance when uninitialized.
+            Existing initialized instance.
+
+        Raises
+        ------
+        RuntimeError
+            If no DAQ has been initialized by the application.
         """
         global _instance_daq
         if _instance_daq is None:
-            _instance_daq = cls()
+            raise RuntimeError("OPMNIDAQ must be initialized before instance()")
         return _instance_daq
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Release the process singleton reference for controlled teardown."""
+        global _instance_daq
+        _instance_daq = None
 
     def __init__(
         self,
@@ -145,8 +156,9 @@ class OPMNIDAQ:
         """
         # Set the first instance of this class as the global singleton
         global _instance_daq
-        if _instance_daq is None:
-            _instance_daq = self
+        if _instance_daq is not None:
+            raise RuntimeError("OPMNIDAQ is already initialized; use instance()")
+        _instance_daq = self
 
         self.simulate = simulate
         if not self.simulate and daqmx is None:
@@ -209,6 +221,59 @@ class OPMNIDAQ:
             scan type. One of "2d", "mirror", "projection", or "stage"
         """
         return getattr(self, "_scan_type", None)
+
+    def set_mirror_neutral_position(
+        self,
+        *,
+        image_mirror_v: float | None = None,
+        projection_mirror_v: float | None = None,
+    ) -> None:
+        """Update one or both galvo neutral voltages.
+
+        Parameters
+        ----------
+        image_mirror_v : float or None
+            New image-mirror neutral voltage, or ``None`` to leave it unchanged.
+        projection_mirror_v : float or None
+            New projection-mirror neutral voltage, or ``None`` to leave it unchanged.
+        """
+        if image_mirror_v is not None:
+            self._ao_neutral_positions[0] = float(image_mirror_v)
+        if projection_mirror_v is not None:
+            self._ao_neutral_positions[1] = float(projection_mirror_v)
+
+    @property
+    def analog_waveform(self) -> np.ndarray:
+        """Copy of the generated analog-output waveform.
+
+        Returns
+        -------
+        numpy.ndarray
+            Analog samples with image and projection mirror columns.
+        """
+        return np.asarray(self._ao_waveform).copy()
+
+    @property
+    def digital_waveform(self) -> np.ndarray:
+        """Copy of the generated digital-output waveform.
+
+        Returns
+        -------
+        numpy.ndarray
+            Digital samples with one column per configured output line.
+        """
+        return np.asarray(self._do_waveform).copy()
+
+    @property
+    def mirror_neutral_positions(self) -> tuple[float, float]:
+        """Image and projection galvo neutral voltages.
+
+        Returns
+        -------
+        tuple[float, float]
+            Image-mirror and projection-mirror neutral voltages.
+        """
+        return tuple(float(value) for value in self._ao_neutral_positions)
 
     @scan_type.setter
     def scan_type(self, value: str):

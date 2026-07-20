@@ -1,9 +1,12 @@
+"""Test ElveFlow OB1 triggering with its in-memory backend."""
+
 from __future__ import annotations
 
 from opm_v2.hardware.ElveFlow import OB1Controller
 
 
 def test_simulated_ob1_completes_trigger_handshake_in_memory() -> None:
+    """Verify a simulated OB1 trigger completes its acknowledgment handshake."""
     controller = OB1Controller(simulate=True)
 
     try:

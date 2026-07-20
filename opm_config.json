@@ -96,7 +96,7 @@
         "center_y": 1154,
         "crop_x": 1900,
         "crop_y": 512,
-        "line_readout_us": 0.4
+        "line_readout_ms": 0.4
     },
     "NIDAQ": {
         "name": "Dev1",
@@ -167,7 +167,7 @@
             "save_dir_path": "e:/optimize_now",
             "daq_mode": "2d",
             "lightsheet_mode": "on",
-            "readout_us": 4.868,
+            "readout_ms": 4.868,
             "metric_precision": 5,
             "modes_to_optimize": "spherical first",
             "metric_acceptance": "zero",
@@ -222,7 +222,7 @@
         },
         "projection_scan": {
             "camera_ls_mode": false,
-            "camera_readout_us": 4.867647
+            "camera_readout_ms": 4.867647
         }
     }
 }

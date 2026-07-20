@@ -15,7 +15,6 @@ import time
 from pathlib import Path
 
 import matplotlib.pyplot as plt
-import numpy as np
 
 WAVEKIT_PYTHON_ROOT = Path(r"C:\Users\qi2lab\Documents\github\wavekit_python")
 WAVEKIT_PACKAGE_DIR = WAVEKIT_PYTHON_ROOT / "wavekit_py"
@@ -155,7 +154,7 @@ class Interface(QtWidgets.QMainWindow):
             Optional Qt parent widget.
         """
         # Init mother class
-        super(Interface, self).__init__(parent)
+        super().__init__(parent)
 
         # Load interface
         # loader = QtWidgets.QUiLoader()

@@ -2,7 +2,7 @@
 
 import msvcrt
 
-#! /usr/bin/python
+# ! /usr/bin/python
 # TODO: Update paths
 # ----
 """ WARNING ! This example is Hardware dependant.
@@ -20,7 +20,6 @@ print(
 
 """Import Imagine Optic's Python interface
 """
-import os
 import sys
 
 sys.path.append("./../..")

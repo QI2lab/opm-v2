@@ -1,10 +1,8 @@
 """Control an Imagine Optic Mirao52E mirror with simulation support."""
 
 import json
-import logging
 import time
 from pathlib import Path
-from typing import List
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
@@ -75,12 +73,23 @@ class AOMirror:
         Returns
         -------
         AOMirror
-            Existing instance, or a new instance when uninitialized.
+            Existing initialized instance.
+
+        Raises
+        ------
+        RuntimeError
+            If no mirror has been initialized by the application.
         """
         global _instance_mirror
         if _instance_mirror is None:
-            _instance_mirror = cls()
+            raise RuntimeError("AOMirror must be initialized before instance()")
         return _instance_mirror
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Release the process singleton reference for controlled teardown."""
+        global _instance_mirror
+        _instance_mirror = None
 
     def __init__(
         self,
@@ -89,7 +98,7 @@ class AOMirror:
         interaction_matrix_file_path: Path | None = None,
         system_flat_file_path: Path | None = None,
         n_positions: int = 1,
-        modes_to_ignore: List[int] | None = None,
+        modes_to_ignore: list[int] | None = None,
         n_modes: int = 32,
         tilt_filtering: bool = False,
         mirror_settle_ms: float = 50.0,
@@ -135,8 +144,9 @@ class AOMirror:
         """
         # Set the first instance of this class as the global singleton
         global _instance_mirror
-        if _instance_mirror is None:
-            _instance_mirror = self
+        if _instance_mirror is not None:
+            raise RuntimeError("AOMirror is already initialized; use instance()")
+        _instance_mirror = self
 
         self.simulate = simulate
         self._haso_config_file_path = haso_config_file_path
@@ -1030,8 +1040,6 @@ class AOMirror:
             wfc_coeffs_list = self.positions_modal_array.tolist()
             with open(positions_file_path, "w") as f:
                 json.dump(wfc_coeffs_list, f)
-        else:
-            pass
 
     def load_positions_array(self, prefix: str = "stage_position"):
         """Load positions from json saved using 'save_positions_array'.
@@ -1042,12 +1050,12 @@ class AOMirror:
             file name prefix, by default "stage_position"
         """
         file_path = self._output_path / Path(f"{prefix}_voltage.json")
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             voltage_list = json.load(f)
         self.positions_voltage_array = np.asarray(voltage_list)
 
         file_path = self._output_path / Path(f"{prefix}_mode_amplitude.json")
-        with open(file_path, "r") as f:
+        with open(file_path) as f:
             mode_amplitudes = json.load(f)
         self.positions_modal_array = np.asarray(mode_amplitudes)
 
@@ -1123,12 +1131,7 @@ def plotDM(
     ax.text(
         0,
         -1,
-        title
-        + "\n min="
-        + "{:1.2f}".format(valmin)
-        + ", max="
-        + "{:1.2f}".format(valmax)
-        + " V",
+        title + "\n min=" + f"{valmin:1.2f}" + ", max=" + f"{valmax:1.2f}" + " V",
         fontsize=12,
     )
 

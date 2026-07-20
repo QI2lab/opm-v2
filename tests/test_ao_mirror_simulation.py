@@ -1,3 +1,5 @@
+"""Test adaptive-optics mirror behavior with its in-memory backend."""
+
 from __future__ import annotations
 
 import numpy as np
@@ -6,6 +8,7 @@ from opm_v2.hardware.AOMirror import AOMirror
 
 
 def test_simulated_ao_mirror_preserves_position_corrections() -> None:
+    """Verify saved modal corrections round-trip through mirror positions."""
     mirror = AOMirror(simulate=True, n_modes=4, n_positions=2)
     correction = np.asarray([0.1, -0.2, 0.3, -0.4], dtype=np.float32)
 

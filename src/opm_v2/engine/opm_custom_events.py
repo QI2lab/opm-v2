@@ -2,12 +2,12 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from useq import CustomAction, MDAEvent
 
-ACTION_TIMELAPSE = "Timelapse"
 ACTION_FLUIDICS = "Fluidics"
 ACTION_AO_OPTIMIZE = "AO-optimize"
 ACTION_AO_GRID = "AO-grid"
@@ -197,35 +197,6 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
         "time_idx": 0,
         "output_path": output_dir_path,
     }
-
-
-def create_timelapse_event(interval: int, time_steps: int, timepoint: int) -> MDAEvent:
-    """Create an event that pauses until the next timepoint.
-
-    Parameters
-    ----------
-    interval : int
-        Timepoint interval in seconds.
-    time_steps : int
-        Total number of timepoints.
-    timepoint : int
-        Current timepoint index.
-
-    Returns
-    -------
-    MDAEvent
-        Timelapse custom-action event.
-    """
-    return _custom_event(
-        ACTION_TIMELAPSE,
-        {
-            "plan": {
-                "interval": int(interval),
-                "timepoint": int(timepoint),
-                "time_steps": int(time_steps),
-            }
-        },
-    )
 
 
 def create_fluidics_event(total_rounds: int, current_round: int) -> MDAEvent:

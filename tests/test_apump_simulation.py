@@ -1,9 +1,12 @@
+"""Test pressure-pump behavior through its simulated serial backend."""
+
 from __future__ import annotations
 
 from opm_v2.hardware.APump import APump
 
 
 def test_simulated_apump_tracks_flow_state_without_opening_a_serial_port() -> None:
+    """Verify simulated flow commands update state without opening a port."""
     pump = APump({"simulate_pump": True, "verbose": False})
 
     try:

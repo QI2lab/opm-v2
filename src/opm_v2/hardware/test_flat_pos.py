@@ -1,13 +1,7 @@
 """Exercise the configured adaptive-optics mirror flat position."""
 
-import json
-import time
-from pathlib import Path
-from typing import List
-
 import numpy as np
 import wavekit_py as wkpy
-from numpy.typing import NDArray
 
 DEBUGGING = True
 MIRROR_SETTLE_MS = 100

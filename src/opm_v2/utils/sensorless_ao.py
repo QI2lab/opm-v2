@@ -6,9 +6,9 @@ Sensorless adaptive optics and tools.
 """
 
 import time
+from collections.abc import Sequence
 from pathlib import Path
 from time import sleep
-from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import zarr
@@ -312,7 +312,7 @@ def round_to_sigfigs(x: float, signif_figs: int = DEFUALT_SIGN_FIGS) -> float:
 
 def run_ao_optimization(
     exposure_ms: float,
-    channel_states: Tuple[bool],
+    channel_states: tuple[bool],
     metric_to_use: str = "DCT",
     daq_mode: str = "projection",
     image_mirror_range_um: float = 100,
@@ -872,7 +872,7 @@ def plot_zernike_coeffs(
     ao_results: dict,
     zernike_mode_names: NDArray,
     save_dir_path: Path = None,
-    show_fig: Optional[bool] = False,
+    show_fig: bool | None = False,
     x_range=0.1,
 ) -> None:
     """Plot the Zernike coefficient values per iteration.
@@ -983,10 +983,10 @@ def plot_zernike_coeffs(
 def plot_metric_progress_depr(
     all_metrics: NDArray,
     num_iterations: int,
-    modes_to_optimize: List[int],
-    zernike_mode_names: List[str],
+    modes_to_optimize: list[int],
+    zernike_mode_names: list[str],
     save_dir_path: Path = None,
-    show_fig: Optional[bool] = False,
+    show_fig: bool | None = False,
 ) -> None:
     """Plot the metric magnitude throughout optimization.
 
@@ -1067,11 +1067,11 @@ def plot_metric_progress_depr(
 
 def plot_metric_progress(
     ao_results: dict,
-    zernike_mode_names: List[str],
+    zernike_mode_names: list[str],
     display_optimal: bool = True,
     display_zero: bool = True,
     save_dir_path: Path = None,
-    show_fig: Optional[bool] = False,
+    show_fig: bool | None = False,
 ) -> None:
     """Plot the metric magnitude throughout optimization.
 
@@ -1172,7 +1172,7 @@ def plot_metric_progress(
         fig.savefig(save_dir_path / Path("ao_metrics.png"))
 
 
-def plot_phase(phase: Dict, save_dir_path: Path = None, show_fig: bool = False) -> None:
+def plot_phase(phase: dict, save_dir_path: Path = None, show_fig: bool = False) -> None:
     """Plot the 2d Phase for a given set of modal coeffs.
 
     Parameters
@@ -1202,7 +1202,7 @@ def plot_phase(phase: Dict, save_dir_path: Path = None, show_fig: bool = False) 
     fig, ax = plt.subplots(figsize=(10, 6))
     vrange = np.max([np.abs(phase["min"]), np.abs(phase["max"])])
     im = ax.imshow(phase["phase"], cmap="seismic", vmin=-vrange, vmax=vrange)
-    cbar = plt.colorbar(im)
+    plt.colorbar(im)
     ax.set_title("Wavefront Phase")
     ax.set_xticks([])
     ax.set_yticks([])
@@ -1349,7 +1349,7 @@ def plot_2d_localization_fit_summary(
 # -------------------------------------------------#
 
 
-def get_image_center(image: NDArray, threshold: float) -> Tuple[int, int]:
+def get_image_center(image: NDArray, threshold: float) -> tuple[int, int]:
     """
     Calculate the center of an image using a thresh-holded binary mask.
 
@@ -1382,7 +1382,7 @@ def get_image_center(image: NDArray, threshold: float) -> Tuple[int, int]:
 
 
 def get_cropped_image(
-    image: NDArray, crop_size: int, center: Tuple[int, int]
+    image: NDArray, crop_size: int, center: tuple[int, int]
 ) -> NDArray:
     """
     Extract a square region from an image centered at a given point.
@@ -1703,9 +1703,9 @@ def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
             "normalize_roi() values (low_percentile, background, peak):"
             + str(bg_percentile)
             + ",  "
-            + "{0:2.3f}".format(bg)
+            + f"{bg:2.3f}"
             + ",  "
-            + "{0:2.3f}".format(peak)
+            + f"{peak:2.3f}"
         )
     return roi_normalized
 
@@ -1718,11 +1718,7 @@ def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
 def localize_2d_img(
     img,
     dxy,
-    localize_psf_filters={
-        "threshold": 300,
-        "amp_bounds": (200, 50000),
-        "sxy_bounds": (0.100, 1.0),
-    },
+    localize_psf_filters=None,
     save_dir_path: Path = None,
     label: str = "",
     showfig: bool = False,
@@ -1736,8 +1732,9 @@ def localize_2d_img(
         _description_
     dxy : _type_
         _description_
-    localize_psf_filters : dict, optional
-        _description_, has default
+    localize_psf_filters : dict or None, optional
+        Localization thresholds and parameter bounds. Uses standard OPM
+        localization bounds when omitted.
     save_dir_path : Path, optional
         _description_, by default None
     label : str, optional
@@ -1758,6 +1755,13 @@ def localize_2d_img(
         get_param_filter,
         localize_beads_generic,
     )
+
+    if localize_psf_filters is None:
+        localize_psf_filters = {
+            "threshold": 300,
+            "amp_bounds": (200, 50000),
+            "sxy_bounds": (0.100, 1.0),
+        }
 
     # Define fitting model and coordinates
     model = gaussian3d_psf_model()
@@ -1815,10 +1819,10 @@ def localize_2d_img(
 def metric_brightness(
     image: NDArray,
     crop_size: int = None,
-    threshold: Optional[float] = 100,
-    percentile: Optional[float] = None,
+    threshold: float | None = 100,
+    percentile: float | None = None,
     image_center: int = None,
-    return_image: Optional[bool] = False,
+    return_image: bool | None = False,
 ) -> float:
     """Compute weighted metric for 2D Gaussian.
 
@@ -1869,9 +1873,9 @@ def metric_shannon_dct(
     image: NDArray,
     psf_radius_px: float = 3,
     crop_size: int = None,
-    threshold: Optional[float] = 300,
+    threshold: float | None = 300,
     image_center: int = None,
-    return_image: Optional[bool] = False,
+    return_image: bool | None = False,
 ) -> float:
     """Compute the Shannon entropy metric using DCT.
 
@@ -1927,11 +1931,11 @@ def metric_shannon_dct(
 def metric_laplacian_variance(
     image: NDArray,
     crop_size: int | None = None,
-    threshold: Optional[float] = 1000,
+    threshold: float | None = 1000,
     image_center: tuple[int, int] | None = None,
     bg_percentile: float = 10.0,
     normalize: bool = True,
-    return_image: Optional[bool] = False,
+    return_image: bool | None = False,
 ) -> float:
     """Compute a focus metric from the variance of the image Laplacian.
 
@@ -1992,9 +1996,9 @@ def metric_laplacian_variance(
 def metric_gauss2d(
     image: NDArray,
     crop_size: int = 128,
-    threshold: Optional[float] = 1000,
+    threshold: float | None = 1000,
     image_center: int = None,
-    return_image: Optional[bool] = False,
+    return_image: bool | None = False,
 ) -> float:
     """Compute weighted metric for 2D gaussian.
 
@@ -2173,7 +2177,7 @@ def metric_localize_gauss2d(image: NDArray) -> float:
 
 def run_ao_grid_mapping(
     ao_dict: dict,
-    stage_positions: List,
+    stage_positions: list,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
     save_dir_path: Path = None,
@@ -2457,7 +2461,7 @@ def save_optimization_results(
     starting_metric: float,
     starting_image: NDArray,
     update_status: NDArray,
-    metadata: Dict,
+    metadata: dict,
     save_dir_path: Path,
 ) -> None:
     """Save the results from running AO-optimize.
@@ -2491,7 +2495,12 @@ def save_optimization_results(
         zarr destination path
     """
     results_path = save_dir_path / Path("ao_results.zarr")
-    root = zarr.open_group(str(results_path), mode="w")
+    attributes = {**metadata, "zernike_mode_names": list(mode_names)}
+    root = zarr.open_group(
+        str(results_path),
+        mode="w",
+        attributes=attributes,
+    )
 
     # Create datasets in the Zarr store
     root.create_array("all_images", data=all_images)
@@ -2503,8 +2512,6 @@ def save_optimization_results(
     root.create_array("starting_metric", data=np.asarray(starting_metric))
     root.create_array("starting_image", data=starting_image)
     root.create_array("update_status", data=update_status)
-    root.attrs.update(metadata)
-    root.attrs["zernike_mode_names"] = list(mode_names)
 
 
 def load_optimization_results(results_path: Path):
@@ -2528,7 +2535,7 @@ def load_optimization_results(results_path: Path):
     optimal_metrics = results["optimal_metrics"][:]
     optimal_coeffs = results["optimal_coeffs"][:]
     starting_coeffs = results["starting_coeffs"][:]
-    starting_metric = np.asarray(results["starting_metric"][:]).squeeze().item()
+    starting_metric = np.asarray(results["starting_metric"][...]).squeeze().item()
     starting_image = results["starting_image"][:]
     update_status = results["update_status"][:]
     metadata = dict(results.attrs)

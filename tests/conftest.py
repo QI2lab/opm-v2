@@ -2,37 +2,39 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import uuid
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
-from pathlib import Path
 
 os.environ.setdefault("PYTEST_RUNNING", "1")
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+import numpy as np
 import pytest
 import tensorstore as ts
 from pymmcore_plus import CMMCorePlus
-from pymmcore_plus.core import _mmcore_plus
 from useq import CustomAction, MDAEvent
 
-import opm_v2.hardware.AOMirror as ao_module
-import opm_v2.hardware.APump as pump_module
-import opm_v2.hardware.ElveFlow as ob1_module
-import opm_v2.hardware.OPMNIDAQ as daq_module
-import opm_v2.hardware.PicardShutter as shutter_module
 from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.APump import APump
+from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.hardware.PicardShutter import PicardShutter
 
 PROJECT_ROOT = Path(__file__).parents[1]
+TEST_RUN_ID = uuid.uuid4().hex[:6]
 CANONICAL_CONFIG_PATH = PROJECT_ROOT / "opm_config.json"
 GUI_INTEGRATION_CONFIG_PATH = (
     PROJECT_ROOT / "tests" / "configurations" / "gui_integration.json"
 )
+GUI_INTEGRATION_CONFIGURATIONS = json.loads(GUI_INTEGRATION_CONFIG_PATH.read_text())
 
 
 def _deep_update(target: dict[str, Any], updates: Mapping[str, Any]) -> None:
@@ -235,6 +237,57 @@ class SimulatedAcquisitionHardware:
     daq: OPMNIDAQ
 
 
+@dataclass
+class CameraFrameRecorder:
+    """Record frames and useq events emitted by the Micro-Manager camera.
+
+    Attributes
+    ----------
+    frames : list[np.ndarray]
+        Independent copies of frames in camera delivery order.
+    events : list[MDAEvent]
+        Events paired with the delivered frames.
+    """
+
+    frames: list[np.ndarray] = field(default_factory=list)
+    events: list[MDAEvent] = field(default_factory=list)
+
+    def frameReady(self, frame: np.ndarray, event: MDAEvent, _meta: Any) -> None:
+        """Record one camera-delivered frame and its event.
+
+        Parameters
+        ----------
+        frame : np.ndarray
+            Image emitted by pymmcore-plus.
+        event : MDAEvent
+            useq event associated with the image.
+        _meta : Any
+            Frame metadata emitted with the image.
+        """
+        self.frames.append(np.asarray(frame).copy())
+        self.events.append(event.model_copy(deep=True))
+
+    def assert_matches_store(
+        self, array: np.ndarray, storage_axes: Sequence[str]
+    ) -> None:
+        """Assert every delivered camera frame occupies its indexed store position.
+
+        Parameters
+        ----------
+        array : np.ndarray
+            Materialized TensorStore OME-Zarr array.
+        storage_axes : Sequence[str]
+            OME axes preceding the array's spatial ``y`` and ``x`` axes.
+        """
+        assert len(self.frames) == len(self.events)
+        assert len(self.frames) == int(np.prod(array.shape[:-2]))
+        for frame, event in zip(self.frames, self.events, strict=True):
+            omitted_axes = set(event.index) - set(storage_axes)
+            assert all(int(event.index[axis]) == 0 for axis in omitted_axes)
+            output_index = tuple(int(event.index[axis]) for axis in storage_axes)
+            np.testing.assert_array_equal(array[output_index], frame)
+
+
 @pytest.fixture
 def workspace_tmp_path(request: pytest.FixtureRequest) -> Path:
     """Return a deterministic workspace-local path for acquisition artifacts.
@@ -250,7 +303,9 @@ def workspace_tmp_path(request: pytest.FixtureRequest) -> Path:
         Workspace-local artifact directory.
     """
     test_name = request.node.name.replace("[", "_").replace("]", "_")
-    path = Path.cwd() / "pytest_workspace" / test_name
+    node_hash = hashlib.sha1(request.node.nodeid.encode()).hexdigest()[:8]
+    short_name = f"{test_name[:36]}_{node_hash}"
+    path = Path.cwd() / ".pytest_tmp" / TEST_RUN_ID / short_name
     path.mkdir(parents=True, exist_ok=True)
     return path
 
@@ -316,8 +371,7 @@ def demo_core() -> Iterator[CMMCorePlus]:
     CMMCorePlus
         Process-wide core instance loaded with Micro-Manager demo hardware.
     """
-    _mmcore_plus._instance = None
-    core = CMMCorePlus.instance()
+    core = CMMCorePlus()
     core.loadSystemConfiguration()
     try:
         yield core
@@ -327,7 +381,28 @@ def demo_core() -> Iterator[CMMCorePlus]:
         except Exception:
             pass
         core.unloadAllDevices()
-        _mmcore_plus._instance = None
+
+
+@pytest.fixture
+def camera_frame_recorder(demo_core: CMMCorePlus) -> Iterator[CameraFrameRecorder]:
+    """Record all camera frames emitted during one acquisition test.
+
+    Parameters
+    ----------
+    demo_core : CMMCorePlus
+        Core whose MDA runner emits camera frames.
+
+    Yields
+    ------
+    CameraFrameRecorder
+        Recorder connected through the standard pymmcore-plus MDA signal.
+    """
+    recorder = CameraFrameRecorder()
+    demo_core.mda.events.frameReady.connect(recorder.frameReady)
+    try:
+        yield recorder
+    finally:
+        demo_core.mda.events.frameReady.disconnect(recorder.frameReady)
 
 
 @pytest.fixture
@@ -352,16 +427,26 @@ def opm_config_factory(demo_core: CMMCorePlus) -> OpmConfigFactory:
     )
 
 
-@pytest.fixture(scope="session")
-def gui_integration_configurations() -> dict[str, dict[str, Any]]:
-    """Load reusable custom-widget acquisition scenarios.
+@pytest.fixture(
+    params=tuple(GUI_INTEGRATION_CONFIGURATIONS),
+    ids=tuple(GUI_INTEGRATION_CONFIGURATIONS),
+)
+def gui_integration_scenario(request: pytest.FixtureRequest) -> dict[str, Any]:
+    """Return one independent, named GUI-to-data acquisition scenario.
+
+    Parameters
+    ----------
+    request : pytest.FixtureRequest
+        Parameterized request naming a scenario in the shared JSON document.
 
     Returns
     -------
-    dict[str, dict[str, Any]]
-        Named mode configurations and their expected datastore results.
+    dict[str, Any]
+        Scenario values plus the stable ``name`` used for artifacts.
     """
-    return json.loads(GUI_INTEGRATION_CONFIG_PATH.read_text())
+    scenario = deepcopy(GUI_INTEGRATION_CONFIGURATIONS[str(request.param)])
+    scenario["name"] = str(request.param)
+    return scenario
 
 
 @pytest.fixture(autouse=True)
@@ -373,17 +458,23 @@ def reset_acquisition_singletons() -> Iterator[None]:
     None
         Control while all hardware singleton slots belong to the active test.
     """
-    ao_module._instance_mirror = None
-    pump_module._instance_pump = None
-    ob1_module._instance_ob1 = None
-    daq_module._instance_daq = None
-    shutter_module._instance_shutter = None
+    for hardware_class in (
+        AOMirror,
+        APump,
+        OB1Controller,
+        OPMNIDAQ,
+        PicardShutter,
+    ):
+        hardware_class.reset_instance()
     yield
-    ao_module._instance_mirror = None
-    pump_module._instance_pump = None
-    ob1_module._instance_ob1 = None
-    daq_module._instance_daq = None
-    shutter_module._instance_shutter = None
+    for hardware_class in (
+        AOMirror,
+        APump,
+        OB1Controller,
+        OPMNIDAQ,
+        PicardShutter,
+    ):
+        hardware_class.reset_instance()
 
 
 @pytest.fixture
@@ -438,6 +529,45 @@ def split_events() -> Callable[[Sequence[MDAEvent]], tuple[list[MDAEvent], list[
         return image_events, custom_actions
 
     return _split
+
+
+@pytest.fixture
+def assert_standard_image_fields() -> Callable[[Sequence[MDAEvent]], None]:
+    """Provide reusable assertions for fields executed by upstream MDAEngine.
+
+    Returns
+    -------
+    Callable[[Sequence[MDAEvent]], None]
+        Assertion checking standard position and exposure fields against OPM
+        metadata for each camera event.
+    """
+
+    def _assert(events: Sequence[MDAEvent]) -> None:
+        """Check standard useq fields on camera events.
+
+        Parameters
+        ----------
+        events : Sequence[MDAEvent]
+            Camera events generated by an OPM mode builder.
+        """
+        stage_scan_x: dict[int, float] = {}
+        for event in events:
+            stage = event.metadata["Stage"]
+            camera = event.metadata["Camera"]
+            if event.metadata["DAQ"]["mode"] != "stage":
+                assert event.x_pos == stage["x_pos"]
+            else:
+                # ASI advances X in hardware; the standard event retains the
+                # scan's starting X so MDAEngine never moves it between frames.
+                assert event.x_pos is not None
+                position_index = int(event.index.get("p", 0))
+                stage_scan_x.setdefault(position_index, float(event.x_pos))
+                assert event.x_pos == stage_scan_x[position_index]
+            assert event.y_pos == stage["y_pos"]
+            assert event.z_pos == stage["z_pos"]
+            assert event.exposure == camera["exposure_ms"]
+
+    return _assert
 
 
 @pytest.fixture

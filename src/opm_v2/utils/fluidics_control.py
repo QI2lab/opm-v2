@@ -9,9 +9,10 @@ douglas.shepherd@asu.edu
 ----------------------------------------------------------------------------------------
 """
 
-import numpy as np
-import time
 import sys
+import time
+
+import numpy as np
 
 
 def lookup_valve(source_name):

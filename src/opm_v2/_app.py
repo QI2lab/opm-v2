@@ -3,30 +3,25 @@
 from __future__ import annotations
 
 import json
-import os
-import sys
-import traceback
-from contextlib import suppress
+from copy import deepcopy
 from datetime import datetime
 from functools import partial
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal, cast
+from typing import Literal
 
 import numpy as np
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
+from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
-from pymmcore_plus.mda import MDAEngine
-from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QApplication, QDockWidget
+from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox
+from pymmcore_gui.actions import WidgetActionInfo
 
 from opm_v2._update_config_widget import OPMSettingsV2
+from opm_v2.engine.debug_printing import debug, info, warning
 from opm_v2.engine.opm_engine import OPMEngineV2
 from opm_v2.engine.setup_events import (
-    setup_mirrorscan,
+    OPMEventBuilder,
     setup_optimizenow,
-    setup_projection,
-    setup_stagescan,
-    setup_timelapse,
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
@@ -34,16 +29,69 @@ from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
 
 DEBUGGING = True
-DEBUG_SEPARATOR = "-" * 72
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
-IS_FROZEN = getattr(sys, "frozen", False)
 MIN_PROJECTION_EXPOSURE = 50  # ms
 DEFUALT_PROJECTION_EXPOSURE = 150
+OPM_WIDGET_KEY = "opm.settings"
 
-if TYPE_CHECKING:
-    from types import TracebackType
 
-    ExcTuple = tuple[type[BaseException], BaseException, TracebackType | None]
+def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
+    """Create the registered OPM widget for a Micro-Manager window.
+
+    Parameters
+    ----------
+    parent : MicroManagerGUI
+        Window that owns the widget and its OPM controller.
+
+    Returns
+    -------
+    OPMSettingsV2
+        OPM settings widget managed by pymmcore-gui.
+    """
+    controller: OPMAppController = parent.opm_controller
+    return OPMSettingsV2(controller.config_path, parent=parent)
+
+
+def _ensure_opm_widget_registered() -> None:
+    """Register the OPM settings widget with pymmcore-gui exactly once."""
+    try:
+        WidgetActionInfo.for_key(OPM_WIDGET_KEY)
+    except KeyError:
+        WidgetActionInfo(
+            key=OPM_WIDGET_KEY,
+            text="OPM Settings",
+            create_widget=_create_opm_settings_widget,
+            dock_area=DockWidgetArea.LeftDockWidgetArea,
+        )
+
+
+def enhance_main_window(main_window: MicroManagerGUI) -> OPMSettingsV2:
+    """Create and attach the OPM dock using pymmcore-gui widget APIs.
+
+    Parameters
+    ----------
+    main_window : MicroManagerGUI
+        Main window receiving the OPM settings dock.
+
+    Returns
+    -------
+    OPMSettingsV2
+        Attached OPM settings widget.
+    """
+    _ensure_opm_widget_registered()
+    widget = main_window.get_widget(OPM_WIDGET_KEY)
+    opm_dock = main_window.get_dock_widget(OPM_WIDGET_KEY)
+    try:
+        mda_dock = main_window.get_dock_widget(WidgetAction.MDA_WIDGET)
+    except Exception:
+        mda_dock = None
+    else:
+        if opm_dock.dockAreaWidget() is not mda_dock.dockAreaWidget():
+            main_window.dock_manager.addDockWidgetTabToArea(
+                opm_dock, mda_dock.dockAreaWidget()
+            )
+        mda_dock.raise_()
+    return widget
 
 
 class ConfigStore:
@@ -75,10 +123,27 @@ class ConfigStore:
         dict
             Shared configuration dictionary updated from disk.
         """
-        with open(self.path, "r") as config_file:
+        with open(self.path) as config_file:
             new_config = json.load(config_file)
         self.data.clear()
         self.data.update(new_config)
+        return self.data
+
+    def replace(self, config: dict) -> dict:
+        """Replace the active configuration with an isolated GUI snapshot.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration emitted by the OPM settings widget.
+
+        Returns
+        -------
+        dict
+            Shared controller dictionary updated in place.
+        """
+        self.data.clear()
+        self.data.update(deepcopy(config))
         return self.data
 
 
@@ -91,12 +156,16 @@ class OPMAppController:
         Path to the OPM JSON configuration file.
     """
 
+    debug = staticmethod(partial(debug, enabled=DEBUGGING))
+    info = staticmethod(info)
+    warning = staticmethod(warning)
+
     def __init__(
         self,
         config_path: Path = DEFAULT_CONFIG_PATH,
         *,
         mmcore=None,
-        mm_config: Path | str | None | Literal[False] = None,
+        mm_config: Path | str | Literal[False] | None = None,
         exec_app: bool = True,
         simulate_hardware: bool | None = None,
     ) -> None:
@@ -142,60 +211,9 @@ class OPMAppController:
         self.opm_nidaq = None
         self.opm_picard_shutter = None
         self.ob1_controller = None
+        self.opm_engine = None
+        self.data_handler = None
         self.bootstrap_complete = False
-
-    def _print_block(self, header: str, *lines: object) -> None:
-        """Print a visually separated console message block.
-
-        Parameters
-        ----------
-        header : str
-            Block heading.
-        *lines : object
-            Values to print beneath the heading.
-        """
-        print(f"\n{DEBUG_SEPARATOR}")
-        print(f"----- {header} -----")
-        for line in lines:
-            print(line)
-        print(DEBUG_SEPARATOR)
-
-    def debug(self, header: str, *lines: object) -> None:
-        """Print a debug block when module-level debugging is enabled.
-
-        Parameters
-        ----------
-        header : str
-            Block heading.
-        *lines : object
-            Values to print beneath the heading.
-        """
-        if DEBUGGING:
-            self._print_block(f"DEBUGGING: {header}", *lines)
-
-    def info(self, header: str, *lines: object) -> None:
-        """Print a status block.
-
-        Parameters
-        ----------
-        header : str
-            Block heading.
-        *lines : object
-            Values to print beneath the heading.
-        """
-        self._print_block(header, *lines)
-
-    def warning(self, header: str, *lines: object) -> None:
-        """Print a warning block.
-
-        Parameters
-        ----------
-        header : str
-            Block heading.
-        *lines : object
-            Values to print beneath the heading.
-        """
-        self._print_block(f"WARNING: {header}", *lines)
 
     def run(self) -> MicroManagerGUI:
         """Create the GUI, schedule OPM bootstrap, and optionally start Qt.
@@ -217,23 +235,21 @@ class OPMAppController:
 
     def finish_bootstrap(self) -> None:
         """Attach OPM UI and hardware after pymmcore-gui restores its layout."""
-        self.add_settings_widget()
         self.initialize_hardware()
+        self.opm_settings_widget = enhance_main_window(self.win)
+        self.opm_engine = OPMEngineV2(
+            self.mmc,
+            self.config_path,
+            simulate_hardware=self.simulate_hardware,
+            config=self.config,
+        )
+        self.mmc.register_mda_engine(self.opm_engine)
         self.connect_signals()
         self.bootstrap_complete = True
 
-    def reload_config(self) -> dict:
-        """Refresh the configuration while preserving its dictionary identity.
-
-        Returns
-        -------
-        dict
-            Reloaded shared configuration dictionary.
-        """
-        return self.config_store.reload()
-
     def create_gui(self) -> None:
-        """Create the Micro-Manager GUI and apply OPM-specific widget defaults."""
+        """Create Micro-Manager GUI using its public bootstrap and widget APIs."""
+        _ensure_opm_widget_registered()
         mm_config = self._mm_config
         if mm_config is None:
             mm_config = (
@@ -250,9 +266,6 @@ class OPMAppController:
         self.win.opm_controller = self
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
-        self.mda_widget.save_info.save_dir.setText(r"E:/")
-        self.mda_widget.tab_wdg.grid_plan.setMode("bounds")
-        self.mda_widget.tab_wdg.grid_plan._mode_bounds_radio.toggle()
 
         if DEBUGGING:
             self.mmc.enableDebugLog(True)
@@ -260,18 +273,7 @@ class OPMAppController:
         self.debug(
             "GUI CREATED",
             f"MM config: {mm_config}",
-            "MDA save directory: E:/",
-            "Grid plan mode: bounds",
         )
-
-    def add_settings_widget(self) -> None:
-        """Dock the custom OPM settings widget into the Micro-Manager GUI."""
-        self.opm_settings_widget = OPMSettingsV2(config_path=self.config_path)
-        dock_widget = QDockWidget("OPM Settings", self.win)
-        dock_widget.setWidget(self.opm_settings_widget)
-        dock_widget.setObjectName("OPMConfigurator")
-        self.win.addDockWidget(Qt.DockWidgetArea.LeftDockWidgetArea, dock_widget)
-        dock_widget.setFloating(False)
 
     def initialize_hardware(self) -> None:
         """Instantiate OPM hardware controllers and put them in startup states."""
@@ -367,6 +369,9 @@ class OPMAppController:
 
     def connect_signals(self) -> None:
         """Connect Micro-Manager and OPM widget signals to controller methods."""
+        self.opm_settings_widget.settings_changed.connect(self.update_config_snapshot)
+        self.opm_settings_widget.run_requested.connect(self.run_opm_acquisition)
+
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
         self.update_live_state()
@@ -381,16 +386,26 @@ class OPMAppController:
             self.setup_preview_mode_callback
         )
 
-        # Replace mda execution function
-        self.mda_widget.execute_mda = self.custom_execute_mda
-
         self.debug(
             "SIGNALS CONNECTED",
+            "OPM settings -> in-memory acquisition snapshot",
+            "OPM run button -> OPM acquisition",
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
-            "mda_widget.execute_mda -> custom_execute_mda",
         )
+
+    def update_config_snapshot(self, config: dict) -> None:
+        """Accept an immutable-at-dispatch snapshot from the OPM widget.
+
+        Parameters
+        ----------
+        config : dict
+            Complete OPM configuration represented by current GUI controls.
+        """
+        self.config_store.replace(config)
+        if self.opm_engine is not None:
+            self.opm_engine.set_config(self.config)
 
     def update_live_state(self, device_name=None, property_name=None) -> None:
         """Apply live camera, DAQ, and channel state after MM config changes.
@@ -405,7 +420,6 @@ class OPMAppController:
         property_name : str or None
             Device property that changed.
         """
-        self.reload_config()
         daq_config = self.config["acq_config"]["DAQ"]
         camera_roi = self.config["acq_config"]["camera_roi"]
 
@@ -539,7 +553,6 @@ class OPMAppController:
 
     def update_ao_mirror_state(self) -> None:
         """Apply the AO mirror state selected in the OPM settings widget."""
-        self.reload_config()
         ao_mirror_state = self.config["acq_config"]["AO"]["mirror_state"]
 
         if "system" in ao_mirror_state:
@@ -570,19 +583,21 @@ class OPMAppController:
                 f"Channel states: {self.opm_nidaq.channel_states}",
             )
 
-    def custom_execute_mda(self, output: Path | str | None) -> None:
-        """Route the MDA widget action to normal MDA or OPM custom events.
+    def run_opm_acquisition(self) -> None:
+        """Prepare the standard MDA plan and dispatch it through OPM controls."""
+        output = self.mda_widget.prepare_mda()
+        if output is False:
+            return
+        self.custom_execute_mda(output)
 
-        Non-zarr outputs run through the default pymmcore-plus engine. OPM zarr
-        outputs and optimize-now modes build custom events and use ``OPMEngineV2``.
+    def custom_execute_mda(self, output: Path | str | None) -> None:
+        """Build and run OPM events from the current in-memory GUI snapshot.
 
         Parameters
         ----------
         output : Path, str, or None
             Requested MDA output or ``"memory"`` for an in-memory acquisition.
         """
-        self.reload_config()
-
         opm_mode = self.config["acq_config"]["opm_mode"]
         ao_mode = self.config["acq_config"]["AO"]["ao_mode"]
         o2o3_mode = self.config["acq_config"]["o2o3_mode"]
@@ -594,18 +609,6 @@ class OPMAppController:
             output = None
 
         output = Path(output) if isinstance(output, str) else output
-        opm_acquisition = self.is_opm_acquisition(output, optimize_now)
-
-        if not opm_acquisition:
-            self.info(
-                "STANDARD MDA ACQUISITION",
-                f"Output: {output}",
-                "Engine: pymmcore-plus MDAEngine",
-            )
-            self.mmc.register_mda_engine(MDAEngine(self.mmc))
-            self.mmc.run_mda(self.mda_widget.value(), output=output)
-            return
-
         self.info(
             "OPM ACQUISITION",
             f"Output: {output}",
@@ -636,6 +639,7 @@ class OPMAppController:
         )
 
         opm_events, handler = self.create_opm_events(optimize_now, opm_mode, output)
+        self.data_handler = handler
 
         if opm_events is None:
             self.warning("ACQUISITION NOT STARTED", "OPM events are empty")
@@ -647,38 +651,8 @@ class OPMAppController:
             f"Handler: {handler}",
             "Engine: OPMEngineV2",
         )
-        self.mmc.register_mda_engine(
-            OPMEngineV2(
-                self.mmc,
-                self.config_path,
-                simulate_hardware=self.simulate_hardware,
-            )
-        )
+        self.opm_engine.set_config(self.config)
         self.mmc.run_mda(opm_events, output=handler)
-
-    def is_opm_acquisition(self, output: Path | None, optimize_now: bool) -> bool:
-        """Determine whether an MDA request should use OPM custom events.
-
-        Parameters
-        ----------
-        output : Path or None
-            Requested acquisition output.
-        optimize_now : bool
-            Whether an immediate autofocus or AO optimization was requested.
-
-        Returns
-        -------
-        bool
-            ``True`` when the OPM event builder should handle the request.
-        """
-        if output is None:
-            if optimize_now:
-                return True
-            else:
-                return False
-        if optimize_now:
-            return True
-        return len(output.suffixes) == 1 and output.suffix == ".zarr"
 
     def timestamped_output_path(self, output: Path) -> Path:
         """Create a timestamped OPM acquisition output path.
@@ -706,8 +680,6 @@ class OPMAppController:
         bool
             ``True`` when the user confirms readiness.
         """
-        from PyQt6.QtWidgets import QMessageBox
-
         response = QMessageBox.information(
             self.mda_widget,
             "!WARNING! ESI MUST BE RUNNING!",
@@ -746,35 +718,11 @@ class OPMAppController:
             return None, None
 
         sequence = self.mda_widget.value()
-        if "timelapse" in opm_mode:
-            opm_events, handler = setup_timelapse(
-                mmc=self.mmc,
-                config=self.config,
-                sequence=sequence,
-                output=output,
-            )
-        elif "stage" in opm_mode:
-            opm_events, handler = setup_stagescan(
-                mmc=self.mmc,
-                config=self.config,
-                sequence=sequence,
-                output=output,
-            )
-        elif "mirror" in opm_mode:
-            opm_events, handler = setup_mirrorscan(
-                mmc=self.mmc,
-                config=self.config,
-                sequence=sequence,
-                output=output,
-            )
-        elif "projection" in opm_mode:
-            opm_events, handler = setup_projection(
-                mmc=self.mmc,
-                config=self.config,
-                sequence=sequence,
-                output=output,
-            )
-        else:
+        try:
+            opm_events, handler = OPMEventBuilder(
+                self.mmc, self.config, sequence
+            ).build(output=output, mode=opm_mode)
+        except ValueError:
             self.warning("UNKNOWN OPM ACQUISITION MODE", f"OPM mode: {opm_mode}")
             return None, None
 
@@ -785,7 +733,7 @@ class OPMAppController:
 def launch_opm_app(
     *,
     config_path: Path | str = DEFAULT_CONFIG_PATH,
-    mm_config: Path | str | None | Literal[False] = None,
+    mm_config: Path | str | Literal[False] | None = None,
     mmcore=None,
     exec_app: bool = True,
     simulate_hardware: bool | None = None,
@@ -810,7 +758,6 @@ def launch_opm_app(
     MicroManagerGUI
         Configured Micro-Manager main window.
     """
-    _install_excepthook()
     controller = OPMAppController(
         Path(config_path),
         mmcore=mmcore,
@@ -836,126 +783,6 @@ def main(config_path: Path | str | None = None) -> int:
     """
     launch_opm_app(config_path=config_path or DEFAULT_CONFIG_PATH)
     return 0
-
-
-def _install_excepthook() -> None:
-    """Install a custom excepthook that does not raise sys.exit()."""
-    if hasattr(sys, "_original_excepthook_"):
-        return
-    sys._original_excepthook_ = sys.excepthook  # type: ignore
-    sys.excepthook = ndv_excepthook
-
-
-def rich_print_exception(
-    exc_type: type[BaseException],
-    exc_value: BaseException,
-    exc_traceback: TracebackType | None,
-) -> None:
-    """Render an exception using Rich.
-
-    Parameters
-    ----------
-    exc_type : type[BaseException]
-        Exception class.
-    exc_value : BaseException
-        Raised exception instance.
-    exc_traceback : TracebackType or None
-        Associated traceback.
-    """
-    import psygnal
-    from rich.console import Console
-    from rich.traceback import Traceback
-
-    tb = Traceback.from_exception(
-        exc_type,
-        exc_value,
-        exc_traceback,
-        suppress=[psygnal],
-        max_frames=100 if IS_FROZEN else 10,
-        show_locals=True,
-    )
-    Console(stderr=True).print(tb)
-
-
-def _print_exception(
-    exc_type: type[BaseException],
-    exc_value: BaseException,
-    exc_traceback: TracebackType | None,
-) -> None:
-    """Print an exception with Rich when available.
-
-    Parameters
-    ----------
-    exc_type : type[BaseException]
-        Exception class.
-    exc_value : BaseException
-        Raised exception instance.
-    exc_traceback : TracebackType or None
-        Associated traceback.
-    """
-    try:
-        rich_print_exception(exc_type, exc_value, exc_traceback)
-    except ImportError:
-        traceback.print_exception(exc_type, value=exc_value, tb=exc_traceback)
-
-
-EXCEPTION_LOG: list[ExcTuple] = []
-
-
-def ndv_excepthook(
-    exc_type: type[BaseException],
-    exc_value: BaseException,
-    tb: TracebackType | None,
-) -> None:
-    """Record, display, and emit an unhandled GUI exception.
-
-    Parameters
-    ----------
-    exc_type : type[BaseException]
-        Exception class.
-    exc_value : BaseException
-        Raised exception instance.
-    tb : TracebackType or None
-        Associated traceback.
-    """
-    EXCEPTION_LOG.append((exc_type, exc_value, tb))
-    _print_exception(exc_type, exc_value, tb)
-    if sig := getattr(QApplication.instance(), "exceptionRaised", None):
-        sig.emit(exc_value)
-    if not tb:
-        return
-
-    if (
-        (debugpy := sys.modules.get("debugpy"))
-        and debugpy.is_client_connected()
-        and ("pydevd" in sys.modules)
-    ):  # pragma: no cover
-        with suppress(Exception):
-            import threading
-
-            import pydevd  # pyright: ignore[reportMissingImports]
-
-            if (py_db := pydevd.get_global_debugger()) is None:
-                return
-
-            py_db = cast("pydevd.PyDB", py_db)
-            thread = threading.current_thread()
-            additional_info = py_db.set_additional_thread_info(thread)
-            additional_info.is_tracing += 1
-
-            try:
-                arg = (exc_type, exc_value, tb)
-                py_db.stop_on_unhandled_exception(py_db, thread, additional_info, arg)
-            finally:
-                additional_info.is_tracing -= 1
-    elif os.getenv("MMGUI_DEBUG_EXCEPTIONS"):
-        import pdb
-
-        pdb.post_mortem(tb)
-
-    if os.getenv("MMGUI_EXIT_ON_EXCEPTION"):
-        print("\nMMGUI_EXIT_ON_EXCEPTION is set, exiting.")
-        sys.exit(1)
 
 
 if __name__ == "__main__":

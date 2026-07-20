@@ -1,155 +1,170 @@
-"""
-Script for generating GIFs from opm data
-09/02/2025
-"""
+"""Generate an animated GIF from an OPM TensorStore array."""
 
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
+from pathlib import Path
+
+import imageio.v2 as imageio
 import numpy as np
-import imageio
+
+from opm_v2.utils.script_io import load_tensorstore
 
 
 def scale_to_uint8(
-    arr: np.ndarray,
+    array: np.ndarray,
     vmin: float | None = None,
     vmax: float | None = None,
     gamma: float = 1.0,
     contrast: float = 1.0,
 ) -> np.ndarray:
-    """
-    Scale an array to uint8 with adjustable contrast.
+    """Scale image data to unsigned 8-bit intensities.
 
     Parameters
     ----------
-    arr : ndarray
-        Input image data (any dtype).
-    vmin, vmax : float, optional
-        Intensity window to map -> 0..255. If None, min/max of data are used.
+    array : numpy.ndarray
+        Input image data.
+    vmin, vmax : float or None
+        Intensity window. Data extrema are used when omitted.
     gamma : float
-        Gamma correction (1.0 = none, <1 brighter shadows, >1 darker shadows).
+        Positive gamma correction exponent.
     contrast : float
-        Contrast factor (>1 increases, <1 decreases).
-    """
-    a = arr.astype(np.float32, copy=False)
-
-    # pick window
-    if vmin is None:
-        vmin = float(np.nanmin(a))
-    if vmax is None:
-        vmax = float(np.nanmax(a))
-
-    # apply window
-    a = (a - vmin) / max(vmax - vmin, 1e-12)
-    a = np.clip(a, 0, 1)
-
-    # gamma correction
-    if gamma != 1.0:
-        a = np.power(a, gamma)
-
-    # contrast stretch around 0.5
-    if contrast != 1.0:
-        a = 0.5 + contrast * (a - 0.5)
-        a = np.clip(a, 0, 1)
-
-    return (a * 255).astype(np.uint8)
-
-
-def save_gif(
-    arr: np.ndarray,
-    path: str,
-    fps: int = 10,
-    duration_ms: int = 1000,
-    loop: int = 0,
-    palettesize: int = 256,
-) -> None:
-    """
-    Save a NumPy array as an animated GIF.
-
-    Parameters
-    ----------
-    arr : np.ndarray
-        Shape (T,H,W) for grayscale or (T,H,W,C) with C in {1,3,4}.
-        Channels-first (T,C,H,W) is also accepted.
-        Dtype can be uint8, int, or float. Floats are assumed to be 0..1
-        (if max<=1.0) and are scaled to 0..255; otherwise they are clipped.
-    path : str
-        Output filename, e.g. 'out.gif'.
-    fps : int
-        Frames per second (controls speed).
-    loop : int
-        Number of loops for the GIF. 0 means loop forever.
-    palettesize : int
-        Color palette size (2..256). 256 usually looks best.
+        Non-negative contrast factor around mid-gray.
 
     Returns
     -------
-    None
+    numpy.ndarray
+        Unsigned 8-bit data with the input shape.
+
+    Raises
+    ------
+    ValueError
+        If gamma or contrast is outside its valid range.
     """
-    if arr.ndim not in (3, 4):
-        raise ValueError(f"Expected 3D or 4D array, got shape {arr.shape}")
+    if gamma <= 0 or contrast < 0:
+        raise ValueError("Gamma must be positive and contrast must be non-negative")
+    scaled = np.asarray(array, dtype=np.float32)
+    lower = float(np.nanmin(scaled)) if vmin is None else float(vmin)
+    upper = float(np.nanmax(scaled)) if vmax is None else float(vmax)
+    scaled = np.clip((scaled - lower) / max(upper - lower, 1e-12), 0, 1)
+    scaled = np.power(scaled, gamma)
+    scaled = np.clip(0.5 + contrast * (scaled - 0.5), 0, 1)
+    return (scaled * 255).astype(np.uint8)
 
-    a = scale_to_uint8(arr=arr, gamma=0.8, contrast=1.05)
 
-    # Arrange dimensions
-    if a.ndim == 3:
-        # (T,H,W) grayscale — fine as-is
-        frames = a
-    else:
-        # 4D: either (T,H,W,C) or (T,C,H,W)
-        if a.shape[-1] in (1, 3, 4):  # channels last
-            frames = a
-        elif a.shape[1] in (1, 3, 4):  # channels first -> move to last
-            frames = np.transpose(a, (0, 2, 3, 1))
-        else:
-            raise ValueError(f"Can't infer channel dim for shape {a.shape}")
+def frames_from_array(array: np.ndarray) -> np.ndarray:
+    """Flatten acquisition indices into a sequence of grayscale frames.
 
-        # If single-channel, squeeze to grayscale
-        if frames.shape[-1] == 1:
-            frames = frames[..., 0]
+    Parameters
+    ----------
+    array : numpy.ndarray
+        Array whose final two dimensions are Y and X.
 
-    # imageio expects a sequence of frames shaped (H,W) or (H,W,3/4)
-    duration = 1.0 / float(fps)
-    imageio.mimsave(
-        uri=path,
-        ims=list(frames),
-        format="GIF",
-        duration=duration_ms,
-        loop=loop,
-        palettesize=palettesize,
+    Returns
+    -------
+    numpy.ndarray
+        Three-dimensional ``(frame, y, x)`` array.
+
+    Raises
+    ------
+    ValueError
+        If the input has fewer than two dimensions.
+    """
+    data = np.asarray(array)
+    if data.ndim < 2:
+        raise ValueError("GIF input must contain Y and X dimensions")
+    return data.reshape((-1, *data.shape[-2:]))
+
+
+def save_gif(
+    array: np.ndarray,
+    path: Path | str,
+    *,
+    fps: float = 10.0,
+    loop: int = 0,
+    gamma: float = 0.8,
+    contrast: float = 1.05,
+) -> Path:
+    """Save image data as an animated GIF.
+
+    Parameters
+    ----------
+    array : numpy.ndarray
+        Acquisition data with Y and X as its final dimensions.
+    path : Path or str
+        Output GIF path.
+    fps : float
+        Playback frames per second.
+    loop : int
+        Number of animation loops, where zero repeats forever.
+    gamma : float
+        Gamma correction exponent.
+    contrast : float
+        Contrast factor around mid-gray.
+
+    Returns
+    -------
+    Path
+        Written GIF path.
+
+    Raises
+    ------
+    ValueError
+        If ``fps`` is not positive.
+    """
+    if fps <= 0:
+        raise ValueError("FPS must be positive")
+    output = Path(path)
+    output.parent.mkdir(parents=True, exist_ok=True)
+    frames = scale_to_uint8(frames_from_array(array), gamma=gamma, contrast=contrast)
+    imageio.mimsave(output, list(frames), format="GIF", duration=1.0 / fps, loop=loop)
+    return output
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("array", type=Path, help="Input Zarr v3 array node")
+    parser.add_argument("output", type=Path, help="Output GIF path")
+    parser.add_argument("--fps", type=float, default=10.0)
+    parser.add_argument("--loop", type=int, default=0)
+    parser.add_argument("--gamma", type=float, default=0.8)
+    parser.add_argument("--contrast", type=float, default=1.05)
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Load TensorStore pixels and save an animated GIF.
+
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    args = build_parser().parse_args(argv)
+    output = save_gif(
+        load_tensorstore(args.array),
+        args.output,
+        fps=args.fps,
+        loop=args.loop,
+        gamma=args.gamma,
+        contrast=args.contrast,
     )
+    print(f"Saved GIF to {output}")
+    return 0
 
 
-# ---- Example usage ----
 if __name__ == "__main__":
-    """
-    Put our own code to load data here and call function
-    """
-    from pathlib import Path
-    import zarr
-    import tensorstore as ts
-    from opm_v2.utils import sensorless_ao as ao
-
-    """Make a gif from OPM data"""
-    zarr_path = Path(
-        "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_noAO_max_z_decon_deskewed.zarr"
-    )
-
-    # open raw datastore
-    spec = {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(zarr_path)}}
-    # datastore = ts.open(spec).result()[0, :-1, 0, 0, 500:600, 1400:1500]
-    datastore = ts.open(spec).result()[0, :, 0, 0, :, :]
-    data = datastore.read().result()
-    data = data[:-1, 950:1025, 1000:1075]
-    save_gif(data, "paramecium_wo_AO_zoom.gif", duration_ms=1500)
-
-    """Make a gif from A.O. results"""
-    # data_path = Path(
-    #     r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/2025 828_161621_ao_optimizeNOW/ao_results.zarr'
-    # )
-
-    # results = ao.load_optimization_results(data_path)
-
-    # all_images = results['all_images']
-    # all_metrics = results['all_metrics']
-    # metrics_per_iteration = results['metrics_per_iteration']
-    # images_per_iteration = results['images_per_iteration']
-
-    # save_gif(images_per_iteration, "images_.gif", duration_ms=500)
+    raise SystemExit(main())

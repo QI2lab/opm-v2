@@ -71,3 +71,29 @@ uv run mmcore install --test-adapters --plain-output
 uv run pytest
 ```
 
+## Utility scripts
+
+Run scripts from the repository root through the locked environment. Every
+script exposes its current arguments through `--help`:
+
+```bash
+uv run python scripts/stage_positions.py --help
+uv run python scripts/ao_positions.py --help
+uv run python scripts/ao_grid_mapping.py --help
+```
+
+`stage_position_generation.py` and `stage_to_ao_grid_positions.py` remain as
+compatible entry points for the corresponding position utilities. Acquisition
+inspection and GIF generation accept a TensorStore Zarr v3 array node (for
+example, `acquisition.ome.zarr/0`). The AO inspection and plotting utilities
+accept the current `ao_results.zarr` layout; the explicitly deprecated parser
+is retained only for existing legacy AO result stores.
+
+Hardware-facing utilities are configurable and safe to exercise without
+physical devices:
+
+```bash
+uv run python scripts/fluidics_triggering.py --simulate --rounds 1
+uv run python scripts/push_pull.py --simulate-actuators 52
+```
+

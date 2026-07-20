@@ -5,18 +5,18 @@ Qt widget for editing the OPM configuration.
 """
 
 import json
-import sys
+from copy import deepcopy
 from pathlib import Path
 
-from PyQt6.QtCore import QSignalBlocker, Qt, pyqtSignal
-from PyQt6.QtWidgets import (
-    QApplication,
+from pymmcore_gui._qt.QtCore import QSignalBlocker, Qt, Signal
+from pymmcore_gui._qt.QtWidgets import (
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QPushButton,
     QSlider,
     QSpinBox,
     QVBoxLayout,
@@ -27,33 +27,36 @@ MIN_AO_POSITIONS = 1
 MAX_AO_POSITIONS = 20
 MAX_AO_ITERATIONS = 10
 MAX_STAGE_RANGE = 1000
-MIN_READOUT_US = 4.867647
-MAX_READOUT_US = 963.8
+MIN_READOUT_MS = 4.867647
+MAX_READOUT_MS = 963.8
 
 
 class OPMSettingsV2(QWidget):
     """Edit acquisition settings stored in the OPM JSON configuration."""
 
-    settings_changed = pyqtSignal()
+    settings_changed = Signal(dict)
+    run_requested = Signal()
 
-    def __init__(self, config_path: Path):
+    def __init__(self, config_path: Path, parent: QWidget | None = None):
         """Initialize settings controls from an OPM configuration file.
 
         Parameters
         ----------
         config_path : Path
             JSON configuration file updated by the widget.
+        parent : QWidget or None
+            Parent widget supplied by pymmcore-gui.
         """
-        super().__init__()
+        super().__init__(parent)
 
         self.config_path = config_path
-        with open(self.config_path, "r") as config_file:
+        with open(self.config_path) as config_file:
             config = json.load(config_file)
 
         self.config = config
         self.widgets = {}
         self.create_ui()
-        self.update_config(reload_from_disk=False)
+        self.update_config()
 
     def create_spinbox(
         self,
@@ -418,15 +421,15 @@ class OPMSettingsV2(QWidget):
         self.layout_camera_mode.addWidget(self.cmbx_ao_camera_mode)
 
         self.spbx_readout_time = self.create_dbspinbox(
-            value=self.config["acq_config"]["AO"]["readout_us"],
-            min=MIN_READOUT_US,
-            max=MAX_READOUT_US,
+            value=self.config["acq_config"]["AO"]["readout_ms"],
+            min=MIN_READOUT_MS,
+            max=MAX_READOUT_MS,
             precision=3,
             interval=1,
             connect_to_fn=self.update_config,
         )
         self.layout_readout_time = QHBoxLayout()
-        self.layout_readout_time.addWidget(QLabel("LS camera readout time (us):"))
+        self.layout_readout_time.addWidget(QLabel("LS camera readout time (ms):"))
         self.layout_readout_time.addWidget(self.spbx_readout_time)
 
         # --------------------------------------------------------------------#
@@ -482,7 +485,7 @@ class OPMSettingsV2(QWidget):
                 "metric_precision": self.spbx_metric_precision,
                 "mirror_state": self.cmbx_ao_mirror,
                 "lightsheet_mode": self.cmbx_ao_camera_mode,
-                "readout_us": self.spbx_readout_time,
+                "readout_ms": self.spbx_readout_time,
                 "num_averaged_frames": self.spbx_averaged_frames,
             }
         })
@@ -903,6 +906,9 @@ class OPMSettingsV2(QWidget):
         self.main_layout.addWidget(self.group_scan_settings)
         self.main_layout.addWidget(self.group_channels)
         self.main_layout.addWidget(self.group_camera_roi)
+        self.run_button = QPushButton("Run OPM Acquisition")
+        self.run_button.clicked.connect(self.run_requested.emit)
+        self.main_layout.addWidget(self.run_button)
         self.setLayout(self.main_layout)
         self.layout()
 
@@ -1056,27 +1062,21 @@ class OPMSettingsV2(QWidget):
             exposure_ms
         )
 
-        self.update_config(reload_from_disk=False)
+        self.update_config()
 
     # --------------------------------------------------------------------#
     # Methods to update configuration file and emit a signal when settings are updated.
     # --------------------------------------------------------------------#
 
-    def update_config(self, *_, reload_from_disk: bool = True):
+    def update_config(self, *_):
         """Update the in-memory and on-disk configuration.
 
         Parameters
         ----------
         *_ : object
             Ignored Qt signal arguments.
-        reload_from_disk : bool
-            Whether to reload unchanged values before applying widget values.
         """
-        if reload_from_disk:
-            with open(self.config_path, "r") as config_file:
-                config = json.load(config_file)
-        else:
-            config = self.config
+        config = self.config
 
         for key_id in self.widgets.keys():
             for key in self.widgets[key_id]:
@@ -1110,7 +1110,17 @@ class OPMSettingsV2(QWidget):
 
         self._write_config()
 
-        self.settings_changed.emit()
+        self.settings_changed.emit(self.value())
+
+    def value(self) -> dict:
+        """Return an isolated snapshot of the current GUI configuration.
+
+        Returns
+        -------
+        dict
+            Deep copy safe for use by an acquisition already in progress.
+        """
+        return deepcopy(self.config)
 
     def _write_config(self):
         """Atomically replace the JSON configuration with current settings."""
@@ -1118,27 +1128,3 @@ class OPMSettingsV2(QWidget):
         with open(tmp_path, "w") as file:
             json.dump(self.config, file, indent=4)
         tmp_path.replace(self.config_path)
-
-
-if __name__ == "__main__":
-    app = QApplication(sys.argv)
-    config_path = Path(Path(Path(sys.path[0]).parent).parent) / Path("opm_config.json")
-    window = OPMSettings(config_path)
-    window.show()
-
-    def signal_recieved(key=None, value=None):
-        """Print a diagnostic when the settings signal fires.
-
-        Parameters
-        ----------
-        key : object or None
-            Optional diagnostic key.
-        value : object or None
-            Optional diagnostic value.
-        """
-        print("signal triggered")
-        print("value")
-
-    window.settings_changed.connect(signal_recieved)
-
-    sys.exit(app.exec())

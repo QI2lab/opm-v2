@@ -1,129 +1,107 @@
+"""Load and inspect current sensorless-AO optimization results."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
 from pathlib import Path
+from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
-import zarr
 
-from opm_v2.utils import sensorless_ao as ao
-
-showfig = True
-
-root_dir = Path(
-    r"E:\20260127_Tetrahymena\20260126_151627_tetra_mirror_scan_withAO\tetra_mirror_scan_withAO.zarr"
-)
-root_dir = Path(r"E:\20260129_Autophagy\20260129_135513_timelapse\timelapse.zarr")
-
-grid_mode = False
-time_points = 0
-positions = 0
-
-ao_results_paths = list(root_dir.parent.rglob("ao_results.zarr"))
-
-# TODO Not robust for multi-position/timepoint experiments
-if "start" or "time" in ao_results_paths[0].name:
-    time_points = len(ao_results_paths)
-if "grid" in ao_results_paths[0].name:
-    grid_mode = True
-if "pos" in ao_results_paths[0].name:
-    positions = len(ao_results_paths)
+from opm_v2.utils.sensorless_ao import load_optimization_results
 
 
-data_path = Path(
-    r"E:\optimize_now\20260710_120248_ao_optimizeNOW\ao_results.zarr"
-    # "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/ao_results/20251222_130948_ao_optimizeNOW/ao_results.zarr"
-)
+def summarize_results(results: dict[str, Any]) -> dict[str, Any]:
+    """Summarize current AO result arrays and metadata.
 
-results = ao.load_optimization_results(data_path)
+    Parameters
+    ----------
+    results : dict[str, Any]
+        Result mapping returned by ``load_optimization_results``.
 
-all_images = results["all_images"]
-all_metrics = results["all_metrics"]
-metrics_per_iteration = results["metrics_per_iteration"]
-images_per_iteration = results["images_per_iteration"]
-
-starting_coeffs = results["starting_coeffs"]
-optimal_coeffs = results["optimal_coeffs"]
-modes_to_optimize = results["modes_to_optimize"]
-zernike_mode_names = results["mode_names"]
-modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
-num_iterations = results["num_iterations"]
-num_modes = len(modes_to_optimize)
-num_metrics = len(all_metrics)
-samples_per_mode = np.ceil(
-    (len(all_metrics) - 1) // num_iterations / len(modes_to_optimize)
-).astype(int)
+    Returns
+    -------
+    dict[str, Any]
+        Compact array and optimization summary.
+    """
+    metadata = results["metadata"]
+    return {
+        "image_count": int(np.asarray(results["all_images"]).shape[0]),
+        "metric_count": int(np.asarray(results["all_metrics"]).size),
+        "iterations": int(metadata["num_iterations"]),
+        "mode_samples": int(metadata["num_mode_samples"]),
+        "modes_to_optimize": list(metadata["modes_to_optimize"]),
+    }
 
 
-# Reshape into: (iterations, modes, samples)
-# metrics = np.array(all_metrics[1:])
+def show_image_stack(images: np.ndarray) -> None:
+    """Display an AO image stack with an interactive frame slider.
 
-# metrics_by_iteration = np.zeros(
-#     [int(num_iterations), int(num_modes), int(samples_per_mode)]
-# )
-# idx = 1
-# for kk in range(num_iterations):
-#     for jj in range(num_modes):
-#         for ii in range(samples_per_mode):
-#             metrics_by_iteration[kk, jj, ii] = all_metrics[idx]
-#             idx += 1
+    Parameters
+    ----------
+    images : numpy.ndarray
+        Image stack with Y and X as its final dimensions.
+    """
+    import matplotlib.pyplot as plt
+    from matplotlib.widgets import Slider
 
+    frames = np.asarray(images).reshape((-1, *np.asarray(images).shape[-2:]))
+    figure, axis = plt.subplots()
+    figure.subplots_adjust(bottom=0.2)
+    display = axis.imshow(frames[0], cmap="gray", aspect="equal")
+    slider_axis = figure.add_axes((0.2, 0.05, 0.6, 0.03))
+    slider = Slider(slider_axis, "Image", 0, len(frames) - 1, valinit=0, valstep=1)
 
-# metrics_by_iteration = metrics.reshape(
-#     num_iterations, num_modes, int(samples_per_mode)
-# )
+    def update(_value: float) -> None:
+        """Update the displayed image after a slider change.
 
-print(
-    f"samples per mode: {samples_per_mode}\n"
-    f"number of iterations: {num_iterations}\n"
-    f"number of metrics: {len(all_metrics)}\n"
-)
-
-# ao.plot_metric_progress(
-#     all_metrics = all_metrics,
-#     modes_to_optimize = modes_to_optimize,
-#     num_iterations = num_iterations,
-#     zernike_mode_names = zernike_mode_names,
-#     save_dir_path = data_path,
-#     show_fig = showfig,
-# )
-
-# ao.plot_zernike_coeffs(
-#     starting_coeffs=starting_coeffs,
-#     optimal_coeffs=optimal_coeffs,
-#     num_iterations=num_iterations,
-#     zernike_mode_names=zernike_mode_names,
-#     save_dir_path=data_path,
-#     show_fig=showfig,
-#     x_range=0.1
-# )
-
-
-import matplotlib.pyplot as plt
-from matplotlib.widgets import Slider
-
-
-def show_inter_plot(images, norm: bool = True):
-    # Create a new figure for each directory
-    fig, ax = plt.subplots()
-    plt.subplots_adjust(bottom=0.2)  # Adjust layout to fit slider
-
-    # Display the first image
-    img_display = ax.imshow(
-        images[0, :, :] / np.max(images[0, :, :]), cmap="gray", aspect="equal"
-    )
-    # Slider axis
-    slider_ax = plt.axes([0.2, 0.05, 0.6, 0.03])  # Positioning the slider
-    slider = Slider(slider_ax, "Image", 0, len(images) - 1, valinit=0, valstep=1)
-
-    # Function to update the displayed image
-    def update(val):
-        img_display.set_data(
-            images[int(slider.val), :, :] / np.max(images[int(slider.val), :, :])
-        )
-        fig.canvas.draw_idle()
+        Parameters
+        ----------
+        _value : float
+            New slider value.
+        """
+        display.set_data(frames[int(slider.val)])
+        figure.canvas.draw_idle()
 
     slider.on_changed(update)
-
     plt.show()
 
 
-show_inter_plot(images_per_iteration)
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, help="AO results.zarr path")
+    parser.add_argument("--show-images", action="store_true")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Load and summarize an AO result store.
+
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    args = build_parser().parse_args(argv)
+    results = load_optimization_results(args.results)
+    print(summarize_results(results))
+    if args.show_images:
+        show_image_stack(results["all_images"])
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

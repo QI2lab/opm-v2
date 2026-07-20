@@ -1,8 +1,9 @@
 #!/usr/bin/python
 """Control the Arduino interface to an Elveflow OB1 controller."""
 
-import pyfirmata2
 from time import perf_counter
+
+import pyfirmata2
 
 _instance_ob1 = None
 
@@ -29,12 +30,23 @@ class OB1Controller:
         Returns
         -------
         OB1Controller
-            Existing instance, or a new instance when uninitialized.
+            Existing initialized instance.
+
+        Raises
+        ------
+        RuntimeError
+            If no OB1 controller has been initialized by the application.
         """
         global _instance_ob1
         if _instance_ob1 is None:
-            _instance_ob1 = cls()
+            raise RuntimeError("OB1Controller must be initialized before instance()")
         return _instance_ob1
+
+    @classmethod
+    def reset_instance(cls) -> None:
+        """Release the process singleton reference for controlled teardown."""
+        global _instance_ob1
+        _instance_ob1 = None
 
     def __init__(
         self,
@@ -55,10 +67,16 @@ class OB1Controller:
             Arduino input pin receiving the OB1 acknowledgement.
         simulate : bool
             Whether to use the in-memory backend.
+
+        Raises
+        ------
+        RuntimeError
+            If another OB1 controller already owns the process singleton.
         """
         global _instance_ob1
-        if _instance_ob1 is None:
-            _instance_ob1 = self
+        if _instance_ob1 is not None:
+            raise RuntimeError("OB1Controller is already initialized; use instance()")
+        _instance_ob1 = self
 
         self.port = port
         self.simulate = simulate

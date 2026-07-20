@@ -1,79 +1,135 @@
+"""Trigger configured OB1 fluidics rounds with optional simulated hardware."""
+
+from __future__ import annotations
+
+import argparse
+import json
+import time
+from collections.abc import Sequence
+from pathlib import Path
+
 from opm_v2.hardware.ElveFlow import OB1Controller
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
-from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.utils.elveflow_control import run_fluidic_program
 
-from pathlib import Path
-import json
-from tqdm import trange
-import time
+DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "opm_config.json"
 
 
-def main():
-    # load hardware configuration file
-    config_path = Path(
-        r"C:\Users\qi2lab\Documents\github\opm_v2\opm_config_20250218.json"
+def create_controller(config_path: Path, *, simulate: bool) -> OB1Controller:
+    """Create the singleton-backed OB1 controller from current configuration.
+
+    Parameters
+    ----------
+    config_path : Path
+        Current OPM JSON configuration.
+    simulate : bool
+        Whether to use the in-memory OB1 backend.
+
+    Returns
+    -------
+    OB1Controller
+        Configured process-wide controller.
+
+    Raises
+    ------
+    RuntimeError
+        If another OB1 singleton was initialized before this controller.
+    """
+    config = json.loads(config_path.read_text())
+    controller = OB1Controller(
+        port=str(config["OB1"]["port"]),
+        to_OB1_pin=int(config["OB1"]["to_OB1_pin"]),
+        from_OB1_pin=int(config["OB1"]["from_OB1_pin"]),
+        simulate=simulate,
     )
-    with open(config_path, "r") as config_file:
-        config = json.load(config_file)
+    if OB1Controller.instance() is not controller:
+        raise RuntimeError("OB1 singleton was initialized before this script")
+    return controller
 
-    # Start the mirror in the flat_position position.
-    opmAOmirror = AOMirror(
-        wfc_config_file_path=Path(config["AOMirror"]["wfc_config_path"]),
-        haso_config_file_path=Path(config["AOMirror"]["haso_config_path"]),
-        interaction_matrix_file_path=Path(config["AOMirror"]["wfc_correction_path"]),
-        flat_positions_file_path=Path(config["AOMirror"]["wfc_flat_path"]),
-        n_modes=32,
-        n_positions=1,
-        modes_to_ignore=[],
+
+def run_rounds(
+    controller: OB1Controller,
+    *,
+    rounds: int,
+    imaging_seconds: float,
+    verbose: bool,
+) -> int:
+    """Run fluidics triggers separated by simulated imaging intervals.
+
+    Parameters
+    ----------
+    controller : OB1Controller
+        Singleton-backed OB1 controller.
+    rounds : int
+        Number of fluidics rounds.
+    imaging_seconds : float
+        Delay after each completed trigger.
+    verbose : bool
+        Whether to print trigger status.
+
+    Returns
+    -------
+    int
+        Number of completed rounds.
+
+    Raises
+    ------
+    ValueError
+        If rounds or the imaging delay is negative.
+    """
+    if rounds < 0 or imaging_seconds < 0:
+        raise ValueError("Rounds and imaging duration cannot be negative")
+    for _round in range(rounds):
+        run_fluidic_program(verbose=verbose)
+        if imaging_seconds:
+            time.sleep(imaging_seconds)
+    return rounds
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
+
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=DEFAULT_CONFIG)
+    parser.add_argument("--rounds", type=int, default=1)
+    parser.add_argument("--imaging-seconds", type=float, default=0.0)
+    parser.add_argument(
+        "--simulate",
+        action="store_true",
+        help="Use the in-memory OB1 driver instead of connected hardware",
     )
+    parser.add_argument("--verbose", action="store_true")
+    return parser
 
-    opmAOmirror.apply_system_flat_voltage()
 
-    # load OPM NIDAQ and OPM AO mirror classes
-    opmNIDAQ = OPMNIDAQ(
-        name=str(config["NIDAQ"]["name"]),
-        scan_type=str(config["NIDAQ"]["scan_type"]),
-        exposure_ms=float(config["Camera"]["exposure_ms"]),
-        laser_blanking=bool(config["NIDAQ"]["laser_blanking"]),
-        image_mirror_calibration=float(
-            str(config["NIDAQ"]["image_mirror_calibration"])
-        ),
-        projection_mirror_calibration=float(
-            str(config["NIDAQ"]["projection_mirror_calibration"])
-        ),
-        image_mirror_step_um=float(str(config["NIDAQ"]["image_mirror_step_um"])),
-        verbose=bool(config["NIDAQ"]["verbose"]),
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run configured OB1 fluidics rounds.
+
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    args = build_parser().parse_args(argv)
+    controller = create_controller(args.config, simulate=args.simulate)
+    completed = run_rounds(
+        controller,
+        rounds=args.rounds,
+        imaging_seconds=args.imaging_seconds,
+        verbose=args.verbose,
     )
-    opmNIDAQ.reset()
-
-    # Initialize ElveFlow OB1 Controller
-    opmOB1 = OB1Controller(
-        port=config["OB1"]["port"],
-        to_OB1_pin=config["OB1"]["to_OB1_pin"],
-        from_OB1_pin=config["OB1"]["from_OB1_pin"],
-    )
-
-    # ------------------------------------------------------#
-    # Run test
-    imaging_time = 1.0
-    dt = imaging_time * 60 * 60  # s
-    total_run = 12 * 60 * 60  # s
-    n_r = int(total_run // dt)
-    for r in trange(n_r, leave=True, desc="Imaging rounds"):
-        # Run fluidics by opening an instance of the OB1controller in the method.
-        run_fluidic_program(True)
-
-        # Initiate fake imaging round
-        for ii in trange(
-            0, int(dt), leave=True, desc=f"Fake {imaging_time:.1f} hr acquisition"
-        ):
-            time.sleep(1.0)
-
-    # ------------------------------------------------------#
-    print("Testing complete!")
-    opmOB1.close_board()
+    print(f"Completed {completed} fluidics rounds")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

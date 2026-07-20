@@ -1,51 +1,84 @@
+"""Plot current sensorless-AO optimization metrics and coefficients."""
+
+from __future__ import annotations
+
+import argparse
+from collections.abc import Sequence
 from pathlib import Path
-import matplotlib.pyplot as plt
+
 from opm_v2.utils import sensorless_ao as ao
-import numpy as np
-import zarr
 
 
-showfig = True
-data_path = Path(
-    r"/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_AO_ao_results/grid_pos_3/ao_results.zarr"
-)
+def plot_results(
+    results_path: Path, output_directory: Path | None = None, show: bool = False
+) -> dict:
+    """Load one AO result store and create its diagnostic plots.
 
-results = ao.load_optimization_results(data_path)
+    Parameters
+    ----------
+    results_path : Path
+        Current-format ``ao_results.zarr`` store.
+    output_directory : Path or None
+        Plot destination. Defaults to the result store's parent.
+    show : bool
+        Whether to display plots interactively.
 
-all_images = results["all_images"]
-all_metrics = results["all_metrics"]
-metrics_per_iteration = results["metrics_per_iteration"]
-images_per_iteration = results["images_per_iteration"]
+    Returns
+    -------
+    dict
+        Loaded AO result mapping.
+    """
+    results = ao.load_optimization_results(results_path)
+    output = output_directory or results_path.parent
+    output.mkdir(parents=True, exist_ok=True)
+    mode_names = results["mode_names"]
+    ao.plot_metric_progress(
+        ao_results=results,
+        zernike_mode_names=mode_names,
+        save_dir_path=output,
+        show_fig=show,
+    )
+    ao.plot_zernike_coeffs(
+        ao_results=results,
+        zernike_mode_names=mode_names,
+        save_dir_path=output,
+        show_fig=show,
+    )
+    return results
 
-optimal_coeffs = results["optimal_coeffs"]
-modes_to_optimize = results["modes_to_optimize"]
-zernike_mode_names = results["mode_names"]
-modes_to_use_names = [zernike_mode_names[i] for i in modes_to_optimize]
-num_iterations = results["num_iterations"]
-num_modes = len(modes_to_optimize)
-num_metrics = len(all_metrics)
-samples_per_mode = len(all_metrics) // num_iterations / len(modes_to_optimize)
 
-print(
-    f"samples per mode: {samples_per_mode}\n"
-    f"number of iterations: {num_iterations}\n"
-    f"number of metrics: {len(all_metrics)}\n"
-)
+def build_parser() -> argparse.ArgumentParser:
+    """Build the command-line parser.
 
-ao.plot_metric_progress(
-    all_metrics=all_metrics,
-    modes_to_optimize=modes_to_optimize,
-    num_iterations=num_iterations,
-    zernike_mode_names=zernike_mode_names,
-    save_dir_path=data_path,
-    show_fig=True,
-)
+    Returns
+    -------
+    argparse.ArgumentParser
+        Configured parser.
+    """
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("results", type=Path, help="AO results.zarr path")
+    parser.add_argument("--output", type=Path, help="Plot output directory")
+    parser.add_argument("--show", action="store_true")
+    return parser
 
-ao.plot_zernike_coeffs(
-    optimal_coeffs=optimal_coeffs,
-    num_iterations=num_iterations,
-    zernike_mode_names=zernike_mode_names,
-    save_dir_path=data_path,
-    show_fig=True,
-    x_range=0.1,
-)
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Create plots for a current AO result store.
+
+    Parameters
+    ----------
+    argv : Sequence[str] or None
+        Command-line arguments, excluding the executable name.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    args = build_parser().parse_args(argv)
+    plot_results(args.results, args.output, args.show)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

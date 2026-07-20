@@ -8,8 +8,9 @@ Shepherd 11/2022
 """
 
 import numpy as np
-from scipy import ndimage
 from pymmcore_plus import CMMCorePlus
+from scipy import ndimage
+
 from opm_v2.hardware.PicardShutter import PicardShutter
 
 

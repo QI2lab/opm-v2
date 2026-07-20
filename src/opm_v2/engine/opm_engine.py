@@ -11,19 +11,24 @@ Change Log:
 
 import json
 import logging
+from collections.abc import Iterable
+from copy import deepcopy
 from pathlib import Path
-from time import perf_counter, sleep
-from typing import Iterable
+from time import sleep
 
 import numpy as np
 from numpy.typing import NDArray
 from pymmcore_plus.mda import MDAEngine
 from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
-from PyQt6.QtCore import QThread
 from useq import CustomAction, MDAEvent, MDASequence
 
-from opm_v2.hardware.AOMirror import AOMirror
-from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.engine.debug_printing import (
+    debug as _debug,
+)
+from opm_v2.engine.debug_printing import (
+    info,
+    warning,
+)
 from opm_v2.engine.opm_custom_events import (
     ACTION_AO_GRID,
     ACTION_AO_MIRROR_UPDATE,
@@ -34,13 +39,9 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_MIRROR_MOVE,
     ACTION_O2O3_AUTOFOCUS,
     ACTION_STAGE_MOVE,
-    ACTION_TIMELAPSE,
 )
-from opm_v2.engine.debug_printing import (
-    debug as _debug,
-    info,
-    warning,
-)
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 from opm_v2.utils.elveflow_control import run_fluidic_program
 from opm_v2.utils.sensorless_ao import run_ao_grid_mapping, run_ao_optimization
@@ -52,14 +53,14 @@ POWER_STR = " - PowerSetpoint (%)"
 
 
 def debug(header: str, *lines: object) -> None:
-    """Print a debug block when module-level debugging is enabled.
+    """Log a debug message when module-level debugging is enabled.
 
     Parameters
     ----------
     header : str
-        Block heading.
+        Message heading.
     *lines : object
-        Values to print beneath the heading.
+        Detail values included in the message.
     """
     _debug(header, *lines, enabled=DEBUGGING)
 
@@ -85,6 +86,7 @@ class OPMEngineV2(MDAEngine):
         config_path: Path,
         use_hardware_sequencing: bool = True,
         simulate_hardware: bool | None = None,
+        config: dict | None = None,
     ) -> None:
         """Initialize the OPM acquisition engine.
 
@@ -98,21 +100,23 @@ class OPMEngineV2(MDAEngine):
             Whether pymmcore-plus may sequence compatible camera events.
         simulate_hardware : bool or None
             Override for external OPM hardware simulation.
+        config : dict or None
+            In-memory OPM configuration snapshot. The JSON file is read only
+            when no snapshot is supplied.
         """
         super().__init__(
             mmc,
             use_hardware_sequencing=use_hardware_sequencing,
-            restore_initial_state=False,
         )
-        self._mmc = mmc
         self.opmDAQ = OPMNIDAQ.instance()
         self.AOMirror = AOMirror.instance()
         self.start_asi_scan_after_camera_sequence = False
-        self.start_time = None
-        self.elapsed_time = None
         self._config_path = config_path
-        self._config = None
-        self.update_config()
+        self._config = {}
+        if config is None:
+            self.update_config()
+        else:
+            self.set_config(config)
         configured_simulation = bool(
             self._config.get("OPM", {}).get("simulate_hardware", False)
         )
@@ -124,11 +128,22 @@ class OPMEngineV2(MDAEngine):
         self.simulated_laser_powers: dict[str, float] = {}
         self.simulated_asi_state: dict[str, float | str] = {}
         self.simulated_asi_transitions: list[str] = []
+        self.simulated_custom_actions: list[str] = []
 
     def update_config(self):
-        """Update the class config dict. from file."""
-        with open(self._config_path, "r") as config_file:
+        """Load configuration from disk for standalone engine construction."""
+        with open(self._config_path) as config_file:
             self._config = json.load(config_file)
+
+    def set_config(self, config: dict) -> None:
+        """Set the isolated configuration used by the next acquisition.
+
+        Parameters
+        ----------
+        config : dict
+            Complete OPM configuration snapshot from the GUI controller.
+        """
+        self._config = deepcopy(config)
 
     def configure_camera(self, data_dict: dict, setting: str = None):
         """Set the camera ROI and exposure.
@@ -140,11 +155,10 @@ class OPMEngineV2(MDAEngine):
         setting : str or None
             Camera configuration context.
         """
-        if not (int(data_dict["Camera"]["camera_crop"][3]) == self._mmc.getROI()[-1]):
-            current_roi = self._mmc.getROI()
-            self._mmc.clearROI()
-            self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-            self._mmc.setROI(
+        if not (int(data_dict["Camera"]["camera_crop"][3]) == self.mmcore.getROI()[-1]):
+            self.mmcore.clearROI()
+            self.mmcore.waitForDevice(str(self._config["Camera"]["camera_id"]))
+            self.mmcore.setROI(
                 data_dict["Camera"]["camera_crop"][0],
                 data_dict["Camera"]["camera_crop"][1],
                 data_dict["Camera"]["camera_crop"][2],
@@ -155,13 +169,13 @@ class OPMEngineV2(MDAEngine):
             exposure_ms = np.max(data_dict["Camera"]["exposure_channels"])
         else:
             exposure_ms = data_dict["Camera"]["exposure_ms"]
-        self._mmc.setProperty(
+        self.mmcore.setProperty(
             str(self._config["Camera"]["camera_id"]),
             "Exposure",
             np.round(float(exposure_ms), 2),
         )
-        self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
-        self._mmc.getROI()
+        self.mmcore.waitForDevice(str(self._config["Camera"]["camera_id"]))
+        self.mmcore.getROI()
 
     def configure_stage_camera_trigger(self) -> None:
         """Configure the camera hardware to accept the ASI stage-sync trigger."""
@@ -172,14 +186,14 @@ class OPMEngineV2(MDAEngine):
             ("TRIGGER SOURCE", "EXTERNAL"),
         )
         for property_name, value in trigger_properties:
-            if not self._mmc.hasProperty(camera, property_name):
+            if not self.mmcore.hasProperty(camera, property_name):
                 continue
-            self._mmc.setProperty(camera, property_name, value)
-            self._mmc.waitForDevice(camera)
-            while self._mmc.getProperty(camera, property_name) != value:
+            self.mmcore.setProperty(camera, property_name, value)
+            self.mmcore.waitForDevice(camera)
+            while self.mmcore.getProperty(camera, property_name) != value:
                 sleep(0.1)
-                self._mmc.setProperty(camera, property_name, value)
-                self._mmc.waitForDevice(camera)
+                self.mmcore.setProperty(camera, property_name, value)
+                self.mmcore.waitForDevice(camera)
 
     def configure_lasers(self, data_dict: dict, setting: str):
         """Set laser powers.
@@ -228,7 +242,7 @@ class OPMEngineV2(MDAEngine):
                 if self.simulate_hardware:
                     self.simulated_laser_powers[laser_name] = laser_power
                 else:
-                    self._mmc.setProperty(
+                    self.mmcore.setProperty(
                         self._config["Lasers"]["name"],
                         laser_name + " - PowerSetpoint (%)",
                         laser_power,
@@ -237,7 +251,7 @@ class OPMEngineV2(MDAEngine):
                 if self.simulate_hardware:
                     self.simulated_laser_powers[laser_name] = 0.0
                 else:
-                    self._mmc.setProperty(
+                    self.mmcore.setProperty(
                         self._config["Lasers"]["name"],
                         laser_name + " - PowerSetpoint (%)",
                         0.0,
@@ -261,14 +275,12 @@ class OPMEngineV2(MDAEngine):
         SummaryMetaV1 or None
             Summary metadata returned by the base engine.
         """
-        self.start_time = perf_counter()
-        self.elapsed_time = 0
         buffer_mb = (
             64
             if self.simulate_hardware
             else int(self._config["OPM"].get("circular_buffer_mb", 32000))
         )
-        self._mmc.setCircularBufferMemoryFootprint(buffer_mb)
+        self.mmcore.setCircularBufferMemoryFootprint(buffer_mb)
         return super().setup_sequence(sequence)
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -297,36 +309,33 @@ class OPMEngineV2(MDAEngine):
                 self.configure_camera(data_dict)
 
             elif action_name == ACTION_STAGE_MOVE:
-                # update config from file for up-to-date stage move speed
-                self.update_config()
-
                 # --------------------------------------------------------#
                 # Move stage to position, with normal speed
                 stage_move_speed = self._config["OPM"]["stage_move_speed"]
-                xy_stage = self._mmc.getXYStageDevice()
-                if self._mmc.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
-                    self._mmc.setProperty(
+                xy_stage = self.mmcore.getXYStageDevice()
+                if self.mmcore.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
+                    self.mmcore.setProperty(
                         xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed
                     )
-                if self._mmc.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
-                    self._mmc.setProperty(
+                if self.mmcore.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
+                    self.mmcore.setProperty(
                         xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed
                     )
-                self._mmc.setPosition(np.round(float(data_dict["Stage"]["z_pos"]), 2))
-                self._mmc.waitForDevice(self._mmc.getFocusDevice())
+                self.mmcore.setPosition(np.round(float(data_dict["Stage"]["z_pos"]), 2))
+                self.mmcore.waitForDevice(self.mmcore.getFocusDevice())
                 target_x = np.round(float(data_dict["Stage"]["x_pos"]), 2)
                 target_y = np.round(float(data_dict["Stage"]["y_pos"]), 2)
-                current_x, current_y = self._mmc.getXYPosition()
+                current_x, current_y = self.mmcore.getXYPosition()
                 old_x = current_x
                 old_y = current_y
-                self._mmc.setXYPosition(target_x, target_y)
+                self.mmcore.setXYPosition(target_x, target_y)
                 counter = 0
                 # Move stage and wait until we are within 1um of the target position.
                 while not (np.isclose(current_x, target_x, rtol=0.0, atol=1.0)) or not (
                     np.isclose(current_y, target_y, rtol=0.0, atol=1.0)
                 ):
                     sleep(0.5)
-                    current_x, current_y = self._mmc.getXYPosition()
+                    current_x, current_y = self.mmcore.getXYPosition()
                     if old_x == current_x and old_y == current_y:
                         counter = counter + 1
                         debug(
@@ -368,68 +377,70 @@ class OPMEngineV2(MDAEngine):
                 addrStageSync = int(
                     self._config["PLC"]["signalid"]
                 )  # 46 TTL5 on Tiger backplane = stage sync signal
-                self._mmc.setProperty(plcName, propPosition, addrOutputBNC1)
-                self._mmc.setProperty(plcName, propCellConfig, addrStageSync)
+                self.mmcore.setProperty(plcName, propPosition, addrOutputBNC1)
+                self.mmcore.setProperty(plcName, propCellConfig, addrStageSync)
 
                 # --------------------------------------------------------#
                 # Set stage speed, scan axis (x) and tile axis (y)
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(),
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(),
                     "MotorSpeedX-S(mm/s)",
                     np.round(data_dict["ASI"]["scan_axis_speed_mm_s"], 4),
                 )
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(),
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(),
                     "MotorSpeedY-S(mm/s)",
                     self._config["OPM"]["stage_move_speed"],
                 )
 
                 # --------------------------------------------------------#
                 # Set scan axis to true 1D scan with no backlash
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(), "ScanPattern", "Raster"
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanPattern", "Raster"
                 )
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(), "ScanSlowAxis", "Null (1D scan)"
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanSlowAxis", "Null (1D scan)"
                 )
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(), "ScanFastAxis", "1st axis"
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanFastAxis", "1st axis"
                 )
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(), "ScanSettlingTime(ms)", 3000
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanSettlingTime(ms)", 3000
                 )
 
                 # --------------------------------------------------------#
                 # Set scan axis start/end positions
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(),
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(),
                     "ScanFastAxisStartPosition(mm)",
                     np.round(data_dict["ASI"]["scan_axis_start_mm"], 2),
                 )
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(),
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(),
                     "ScanFastAxisStopPosition(mm)",
                     np.round(data_dict["ASI"]["scan_axis_end_mm"], 2),
                 )
 
                 # --------------------------------------------------------#
                 # Set the scan state
-                self._mmc.setProperty(self._mmc.getXYStageDevice(), "ScanState", "Idle")
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanState", "Idle"
+                )
 
                 if DEBUGGING:
                     actual_speed_x = float(
-                        self._mmc.getProperty(
-                            self._mmc.getXYStageDevice(), "MotorSpeedX-S(mm/s)"
+                        self.mmcore.getProperty(
+                            self.mmcore.getXYStageDevice(), "MotorSpeedX-S(mm/s)"
                         )
                     )
-                    scanaxis_start = self._mmc.getProperty(
-                        self._mmc.getXYStageDevice(), "ScanFastAxisStartPosition(mm)"
+                    scanaxis_start = self.mmcore.getProperty(
+                        self.mmcore.getXYStageDevice(), "ScanFastAxisStartPosition(mm)"
                     )
-                    scanaxis_stop = self._mmc.getProperty(
-                        self._mmc.getXYStageDevice(), "ScanFastAxisStopPosition(mm)"
+                    scanaxis_stop = self.mmcore.getProperty(
+                        self.mmcore.getXYStageDevice(), "ScanFastAxisStopPosition(mm)"
                     )
-                    scan_settling_ms = self._mmc.getProperty(
-                        self._mmc.getXYStageDevice(), "ScanSettlingTime(ms)"
+                    scan_settling_ms = self.mmcore.getProperty(
+                        self.mmcore.getXYStageDevice(), "ScanSettlingTime(ms)"
                     )
                     scanaxis_speed = np.round(
                         data_dict["ASI"]["scan_axis_speed_mm_s"], 4
@@ -486,16 +497,15 @@ class OPMEngineV2(MDAEngine):
 
                     # Set ASI stage speed for moves
                     stage_move_speed = self._config["OPM"]["stage_move_speed"]
-                    self._mmc.setProperty(
-                        self._mmc.getXYStageDevice(),
-                        "MotorSpeedX-S(mm/s)",
-                        stage_move_speed,
-                    )
-                    self._mmc.setProperty(
-                        self._mmc.getXYStageDevice(),
-                        "MotorSpeedY-S(mm/s)",
-                        stage_move_speed,
-                    )
+                    xy_stage = self.mmcore.getXYStageDevice()
+                    if self.mmcore.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
+                        self.mmcore.setProperty(
+                            xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed
+                        )
+                    if self.mmcore.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
+                        self.mmcore.setProperty(
+                            xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed
+                        )
 
             elif action_name == ACTION_DAQ:
                 # --------------------------------------------------------#
@@ -527,7 +537,7 @@ class OPMEngineV2(MDAEngine):
                         exposure_ms=exposure_ms,
                     )
                     # # Setup camera in progressive scan mode
-                    # self._mmc.setProperty(
+                    # self.mmcore.setProperty(
                     #     str(self._config["Camera"]["camera_id"]),
                     #     "SENSOR MODE",
                     #     "PROGRESSIVE",
@@ -559,17 +569,17 @@ class OPMEngineV2(MDAEngine):
                 # Setup camera properties
                 self.configure_camera(data_dict, setting="DAQ")
 
-                self._mmc.setProperty(
+                self.mmcore.setProperty(
                     str(self._config["Camera"]["camera_id"]), "Exposure", exposure_ms
                 )
-                self._mmc.waitForDevice(str(self._config["Camera"]["camera_id"]))
+                self.mmcore.waitForDevice(str(self._config["Camera"]["camera_id"]))
 
                 # Wait for MM core
-                self._mmc.waitForSystem()
+                self.mmcore.waitForSystem()
 
                 debug(
                     "CAMERA EXPOSURES",
-                    f"actual: {np.round(self._mmc.getExposure(), 2)}",
+                    f"actual: {np.round(self.mmcore.getExposure(), 2)}",
                     f"requested: {exposure_ms}",
                 )
 
@@ -580,9 +590,9 @@ class OPMEngineV2(MDAEngine):
                 self.opmDAQ.clear_tasks()
 
                 # Modify the image neutral position
-                self.opmDAQ._ao_neutral_positions[0] = data_dict["DAQ"][
-                    "image_mirror_v"
-                ]
+                self.opmDAQ.set_mirror_neutral_position(
+                    image_mirror_v=float(data_dict["DAQ"]["image_mirror_v"])
+                )
 
                 self.opmDAQ.set_acquisition_params(scan_type="2d")
                 debug(
@@ -607,8 +617,8 @@ class OPMEngineV2(MDAEngine):
                 self.simulated_asi_state["scan_state"] = "Running"
                 self.simulated_asi_transitions.append("Running")
             else:
-                self._mmc.setProperty(
-                    self._mmc.getXYStageDevice(), "ScanState", "Running"
+                self.mmcore.setProperty(
+                    self.mmcore.getXYStageDevice(), "ScanState", "Running"
                 )
             self.start_asi_scan_after_camera_sequence = False
 
@@ -635,6 +645,15 @@ class OPMEngineV2(MDAEngine):
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
+            if self.simulate_hardware:
+                self.simulated_custom_actions.append(action_name)
+                if action_name in {
+                    ACTION_O2O3_AUTOFOCUS,
+                    ACTION_AO_OPTIMIZE,
+                    ACTION_AO_GRID,
+                    ACTION_FLUIDICS,
+                }:
+                    return ()
 
             if action_name == ACTION_O2O3_AUTOFOCUS:
                 manage_O3_focus(
@@ -716,29 +735,6 @@ class OPMEngineV2(MDAEngine):
                 )
                 run_fluidic_program(True)
 
-            elif action_name == ACTION_TIMELAPSE:
-                interval = data_dict["plan"]["interval"]
-                self.elapsed_time = perf_counter() - self.start_time
-                sleep_time = interval - self.elapsed_time
-                if sleep_time < 0:
-                    sleep_time = 1
-                    debug(
-                        "TIMELAPSE INTERVAL",
-                        "Imaging did not finish before interval time.",
-                        "Running now.",
-                    )
-
-                QThread.sleep(int(sleep_time))
-                self.start_time = perf_counter()
-
-                debug(
-                    "TIMELAPSE",
-                    f"elapsed: {self.elapsed_time}",
-                    f"start time: {self.start_time}",
-                    f"requested interval: {interval}",
-                    f"sleep time: {sleep_time}",
-                )
-
             elif action_name == ACTION_AO_MIRROR_UPDATE:
                 coeffs = data_dict["AOmirror"]["modal_coeffs"]
                 if coeffs is not None:
@@ -756,9 +752,8 @@ class OPMEngineV2(MDAEngine):
                         "AO MIRROR UPDATE",
                         "No coefficients or positions sent.",
                     )
-        else:
-            result = super().exec_event(event)
-            return result
+            return ()
+        return super().exec_event(event) or ()
 
     def teardown_event(self, event):
         """Release per-event state after execution.
@@ -769,7 +764,8 @@ class OPMEngineV2(MDAEngine):
             Event that has completed.
         """
         if isinstance(event.action, CustomAction):
-            self._mmc.clearCircularBuffer()
+            self.mmcore.clearCircularBuffer()
+            return
         super().teardown_event(event)
 
     def teardown_sequence(self, sequence: MDASequence) -> None:
@@ -785,43 +781,43 @@ class OPMEngineV2(MDAEngine):
         # Shut down DAQ
         self.opmDAQ.clear_tasks()
         self.opmDAQ.reset()
-        self.opmDAQ._ao_neutral_positions[0] = self._config["NIDAQ"][
-            "image_mirror_neutral_v"
-        ]
+        self.opmDAQ.set_mirror_neutral_position(
+            image_mirror_v=float(self._config["NIDAQ"]["image_mirror_neutral_v"])
+        )
         if self.simulate_hardware and self.simulated_asi_state:
             self.simulated_asi_state["scan_state"] = "Idle"
             self.simulated_asi_transitions.append("Idle")
 
         # Put cameras that expose the Hamamatsu trigger properties back in internal mode.
         camera = str(self._config["Camera"]["camera_id"])
-        if self._mmc.hasProperty(camera, "TriggerPolarity"):
-            self._mmc.setProperty(camera, "TriggerPolarity", "POSITIVE")
-            self._mmc.waitForDevice(camera)
-        if self._mmc.hasProperty(camera, "TRIGGER SOURCE"):
-            self._mmc.setProperty(camera, "TRIGGER SOURCE", "INTERNAL")
-            self._mmc.waitForDevice(camera)
+        if self.mmcore.hasProperty(camera, "TriggerPolarity"):
+            self.mmcore.setProperty(camera, "TriggerPolarity", "POSITIVE")
+            self.mmcore.waitForDevice(camera)
+        if self.mmcore.hasProperty(camera, "TRIGGER SOURCE"):
+            self.mmcore.setProperty(camera, "TRIGGER SOURCE", "INTERNAL")
+            self.mmcore.waitForDevice(camera)
 
         stage_move_speed = self._config["OPM"]["stage_move_speed"]
-        xy_stage = self._mmc.getXYStageDevice()
-        if self._mmc.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
-            self._mmc.setProperty(xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed)
-        if self._mmc.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
-            self._mmc.setProperty(xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed)
+        xy_stage = self.mmcore.getXYStageDevice()
+        if self.mmcore.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
+            self.mmcore.setProperty(xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed)
+        if self.mmcore.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
+            self.mmcore.setProperty(xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed)
 
         # Set all lasers to zero emission
         for laser in self._config["Lasers"]["laser_names"]:
             if self.simulate_hardware:
                 self.simulated_laser_powers[laser] = 0.0
             else:
-                self._mmc.setProperty(
+                self.mmcore.setProperty(
                     self._config["Lasers"]["name"], laser + " - PowerSetpoint (%)", 0.0
                 )
 
         # save mirror positions array
         if self.AOMirror.output_path:
             self.AOMirror.save_positions_array()
-        self._mmc.clearCircularBuffer()
+        self.mmcore.clearCircularBuffer()
         # TODO
-        # self._mmc.setCircularBufferMemoryFootprint(16000)
+        # self.mmcore.setCircularBufferMemoryFootprint(16000)
 
         super().teardown_sequence(sequence)

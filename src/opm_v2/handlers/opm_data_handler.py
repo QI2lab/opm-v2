@@ -12,10 +12,11 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 from ome_writers import (
     AcquisitionSettings,
-    Dimension,
     OMEStream,
     OmeZarrFormat,
+    Position,
     create_stream,
+    dims_from_standard_axes,
 )
 
 if TYPE_CHECKING:
@@ -36,6 +37,11 @@ class OpmDataHandler:
         Whether ome-writers may replace an existing destination.
     acquisition_order : Sequence[str] or None
         Frame-arrival axis order. Defaults to ``index_sizes`` insertion order.
+    events : Sequence[MDAEvent] or None
+        Prepared camera events used to retain channel labels, stage coordinates,
+        and physical axis scales in OME metadata.
+    acquisition_metadata : Mapping[str, Any] or None
+        Complete acquisition configuration to store with the OME-Zarr root.
     """
 
     def __init__(
@@ -45,6 +51,8 @@ class OpmDataHandler:
         index_sizes: Mapping[str, int],
         delete_existing: bool = False,
         acquisition_order: Sequence[str] | None = None,
+        events: Sequence[MDAEvent] | None = None,
+        acquisition_metadata: Mapping[str, Any] | None = None,
     ) -> None:
         """Initialize an indexed TensorStore-backed acquisition writer.
 
@@ -58,6 +66,10 @@ class OpmDataHandler:
             Whether ome-writers may replace an existing destination.
         acquisition_order : Sequence[str] or None
             Frame-arrival axis order.
+        events : Sequence[MDAEvent] or None
+            Prepared camera events describing semantic dimension coordinates.
+        acquisition_metadata : Mapping[str, Any] or None
+            Complete acquisition configuration persisted as global metadata.
 
         Raises
         ------
@@ -71,14 +83,19 @@ class OpmDataHandler:
         if not self.index_sizes:
             raise ValueError("index_sizes must contain at least one positive axis size")
         self.acquisition_order = tuple(acquisition_order or self.index_sizes)
-        if set(self.acquisition_order) != set(self.index_sizes):
+        if len(self.acquisition_order) != len(self.index_sizes) or set(
+            self.acquisition_order
+        ) != set(self.index_sizes):
             raise ValueError("acquisition_order must contain every indexed axis once")
+        self._events = tuple(events or ())
+        self._acquisition_metadata = dict(acquisition_metadata or {})
         self.delete_existing = bool(delete_existing)
         self._stream: OMEStream | None = None
         self._summary_meta: dict[str, Any] = {}
         self._next_frame = 0
         self._frame_count = int(np.prod(tuple(self.index_sizes.values())))
         self._is_finalized = False
+        self._was_canceled = False
 
     @property
     def indice_sizes(self) -> dict[str, int]:
@@ -102,6 +119,17 @@ class OpmDataHandler:
         """
         return self._is_finalized
 
+    @property
+    def was_canceled(self) -> bool:
+        """Whether the most recent sequence ended by cancellation.
+
+        Returns
+        -------
+        bool
+            ``True`` only after ``sequenceCanceled`` is received.
+        """
+        return self._was_canceled
+
     def sequenceStarted(
         self, _sequence: MDASequence, meta: SummaryMetaV1 | dict[str, Any]
     ) -> None:
@@ -116,6 +144,7 @@ class OpmDataHandler:
         """
         self.close()
         self._is_finalized = False
+        self._was_canceled = False
         self._summary_meta = dict(meta or {})
         self._next_frame = 0
 
@@ -135,6 +164,8 @@ class OpmDataHandler:
         ------
         ValueError
             If the frame is not two-dimensional or arrives out of order.
+        IndexError
+            If the event lies outside the configured acquisition shape.
         """
         image = np.asarray(frame)
         if image.ndim != 2:
@@ -143,6 +174,10 @@ class OpmDataHandler:
             self._stream = self._create_stream(image)
 
         target_frame = self._flat_event_index(event)
+        if target_frame >= self._frame_count:
+            raise IndexError(
+                f"Event index {dict(event.index)} exceeds configured frame count"
+            )
         if target_frame < self._next_frame:
             raise ValueError(
                 f"Event index {dict(event.index)} arrived after its output position"
@@ -160,8 +195,18 @@ class OpmDataHandler:
         ----------
         _sequence : MDASequence
             Completed sequence.
+
+        Raises
+        ------
+        RuntimeError
+            If fewer camera frames arrived than the configured acquisition shape.
         """
         self.close()
+        if self._next_frame != self._frame_count:
+            raise RuntimeError(
+                "OPM acquisition finished with "
+                f"{self._next_frame} of {self._frame_count} expected frames"
+            )
         self._is_finalized = True
 
     def sequenceCanceled(self, _sequence: MDASequence) -> None:
@@ -173,7 +218,8 @@ class OpmDataHandler:
             Canceled sequence.
         """
         self.close()
-        self._is_finalized = True
+        self._is_finalized = False
+        self._was_canceled = True
 
     def close(self) -> None:
         """Flush and close the active ome-writers stream."""
@@ -197,28 +243,23 @@ class OpmDataHandler:
         image_info = next(iter(self._summary_meta.get("image_infos", ())), {})
         pixel_size_um = image_info.get("pixel_size_um")
         height, width = frame.shape
+        standard_sizes = {
+            axis: self._semantic_axis_value(axis) for axis in self.acquisition_order
+        }
+        standard_sizes.update({"y": height, "x": width})
+        dimensions = dims_from_standard_axes(standard_sizes)
+        scales = {
+            "t": self._axis_scale("t"),
+            "z": self._axis_scale("z"),
+            "y": pixel_size_um,
+            "x": pixel_size_um,
+        }
         dimensions = [
-            self._dimension(axis, self.index_sizes[axis])
-            for axis in self.acquisition_order
+            dimension.model_copy(update={"scale": scales[dimension.name]})
+            if scales.get(dimension.name) is not None
+            else dimension
+            for dimension in dimensions
         ]
-        dimensions.extend([
-            Dimension(
-                name="y",
-                count=height,
-                chunk_size=height,
-                type="space",
-                unit="micrometer",
-                scale=pixel_size_um,
-            ),
-            Dimension(
-                name="x",
-                count=width,
-                chunk_size=width,
-                type="space",
-                unit="micrometer",
-                scale=pixel_size_um,
-            ),
-        ])
         settings = AcquisitionSettings(
             root_path=str(self.path),
             dimensions=dimensions,
@@ -239,37 +280,82 @@ class OpmDataHandler:
                 "index_sizes": dict(self.index_sizes),
                 "acquisition_order": list(self.acquisition_order),
                 "summary_metadata": _json_safe(self._summary_meta),
+                "configuration": _json_safe(self._acquisition_metadata),
+                "storage_backend": "tensorstore",
             },
         )
         return stream
 
-    def _dimension(self, axis: str, count: int) -> Dimension:
-        """Create an ome-writers dimension for an acquisition axis.
+    def _semantic_axis_value(self, axis: str) -> int | list[str | Position]:
+        """Return semantic coordinates for one indexed axis.
 
         Parameters
         ----------
         axis : str
             useq axis identifier.
-        count : int
-            Number of positions along the axis.
 
         Returns
         -------
-        Dimension
-            Described ome-writers dimension.
+        int or list[str or Position]
+            Count, channel labels, or physical stage positions.
         """
-        kwargs: dict[str, Any] = {"name": axis, "count": count, "chunk_size": 1}
+        count = self.index_sizes[axis]
+        if axis == "c":
+            labels = [str(index) for index in range(count)]
+            for event in self._events:
+                if "c" in event.index:
+                    label = event.metadata.get("DAQ", {}).get("current_channel")
+                    if label is not None:
+                        labels[int(event.index["c"])] = str(label)
+            return labels
         if axis == "p":
-            kwargs["type"] = "position"
-        elif axis == "c":
-            kwargs["type"] = "channel"
-        elif axis == "t":
-            kwargs.update(type="time", unit="second")
-        elif axis == "z":
-            kwargs.update(type="space", unit="micrometer")
-        else:
-            kwargs["type"] = "other"
-        return Dimension(**kwargs)
+            positions = [Position(name=str(index)) for index in range(count)]
+            for event in self._events:
+                if "p" not in event.index:
+                    continue
+                index = int(event.index["p"])
+                stage = event.metadata.get("Stage", {})
+                positions[index] = Position(
+                    name=str(index),
+                    x_coord=_optional_float(stage.get("x_pos")),
+                    y_coord=_optional_float(stage.get("y_pos")),
+                    z_coord=_optional_float(stage.get("z_pos")),
+                )
+            return positions
+        return count
+
+    def _axis_scale(self, axis: str) -> float | None:
+        """Infer a physical axis scale from prepared OPM camera events.
+
+        Parameters
+        ----------
+        axis : str
+            Indexed axis name.
+
+        Returns
+        -------
+        float or None
+            Scale in the axis unit, when represented by the event metadata.
+        """
+        if axis == "z":
+            for event in self._events:
+                daq = event.metadata.get("DAQ", {})
+                for key in ("scan_axis_step_um", "image_mirror_step_um"):
+                    if daq.get(key) is not None:
+                        return abs(float(daq[key]))
+        if axis == "t":
+            times = sorted({
+                float(event.min_start_time)
+                for event in self._events
+                if event.min_start_time is not None
+            })
+            if len(times) > 1:
+                return min(
+                    later - earlier
+                    for earlier, later in zip(times, times[1:], strict=False)
+                    if later > earlier
+                )
+        return None
 
     def _flat_event_index(self, event: MDAEvent) -> int:
         """Convert an event's multidimensional index to stream order.
@@ -371,3 +457,19 @@ def _json_safe(value: Any) -> Any:
     except TypeError:
         return str(value)
     return value
+
+
+def _optional_float(value: Any) -> float | None:
+    """Convert an optional coordinate to a floating-point value.
+
+    Parameters
+    ----------
+    value : Any
+        Coordinate value or ``None``.
+
+    Returns
+    -------
+    float or None
+        Floating-point coordinate when one was supplied.
+    """
+    return None if value is None else float(value)

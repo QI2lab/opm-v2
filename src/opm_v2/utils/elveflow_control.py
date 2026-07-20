@@ -2,9 +2,10 @@
 
 """Trigger an Elveflow OB1 fluidics sequence."""
 
-from opm_v2.hardware.ElveFlow import OB1Controller
-import time
 import datetime
+import time
+
+from opm_v2.hardware.ElveFlow import OB1Controller
 
 
 def run_fluidic_program(verbose: bool = False):
