@@ -21,7 +21,7 @@ The goal is to utilize [Pymmcore-plus](https://github.com/pymmcore-plus/pymmcore
 - Remote autofocus
 - Configurator for setting custom acquisition settings
 - Custom multi-dimensional acquisition event strutures
-- Custom data handler using *zarr* + *tensorstore*  
+- OME-Zarr data handler using *ome-writers* with the TensorStore backend
 
 ## Installation
 
@@ -31,28 +31,43 @@ Clone the repository:
 git clone https://github.com/QI2lab/opm-v2.git
 cd opm-v2
 ```
-Create and activate conda environment:
-```
-conda create -n opm-v2 python=3.12
-conda activate opm-v2
-```
-Install opm_v2 package:
-```
-pip install .
-```
-Some hardware control modules may require vendor SDKs:
-- NI-DAQ (nidaqmx)
-- Imagine Optic Mirao52E (wavekit_py)
+Install the locked Python environment with [uv](https://docs.astral.sh/uv/):
 
-To install wavekit_py, navigate to the directory and run the install coommand
+```bash
+uv sync --extra test --locked
 ```
-conda activate opm_v2
-python .\install_wavekit_python.py
+
+`pymmcore` is intentionally not a direct project dependency. The pinned GitHub
+revision of `pymmcore-plus` installs the compatible prebuilt `pymmcore` wheel.
+
+Install Micro-Manager and its device adapters through the pymmcore-plus CLI:
+
+```bash
+uv run mmcore install
 ```
-If Micro-Manager is not installed in the pymmcore-plus path, install it using:
-```
-mmcore install
-```
+
+Vendor SDKs are still required for physical NI-DAQ and Imagine Optic hardware.
+They are not required for demo mode or automated tests.
 
 ## Usage
+
+Launch against Micro-Manager's installed demo devices and simulated external OPM
+controllers:
+
+```bash
+uv run opm-v2 --demo
+```
+
+Launch the physical instrument with an explicit Micro-Manager configuration:
+
+```bash
+uv run opm-v2 --config opm_config.json --mm-config OPM_mmgr.cfg
+```
+
+Install the official Micro-Manager test adapters and run the behavior suite:
+
+```bash
+uv run mmcore install --test-adapters --plain-output
+uv run pytest
+```
 

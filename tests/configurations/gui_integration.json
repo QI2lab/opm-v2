@@ -1,0 +1,51 @@
+{
+    "projection": {
+        "active_channels": [0, 2],
+        "channel_powers": [11.0, 33.0],
+        "channel_exposures_ms": [6.0, 8.0],
+        "camera_shape": [64, 32],
+        "scan_range_um": 8.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "pc",
+        "expected_shape": [1, 2, 8, 64],
+        "expected_acquisition_order": ["t", "p", "c"],
+        "expected_daq_mode": "projection"
+    },
+    "mirror": {
+        "active_channels": [0, 2],
+        "channel_powers": [11.0, 33.0],
+        "channel_exposures_ms": [6.0, 6.0],
+        "camera_shape": [64, 32],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "tpzc",
+        "expected_shape": [1, 2, 2, 32, 64],
+        "expected_acquisition_order": ["t", "p", "z", "c"],
+        "expected_daq_mode": "mirror"
+    },
+    "timelapse": {
+        "active_channels": [0, 2],
+        "channel_powers": [11.0, 33.0],
+        "channel_exposures_ms": [6.0, 8.0],
+        "camera_shape": [64, 32],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "pztc",
+        "time_loops": 2,
+        "expected_shape": [2, 2, 2, 32, 64],
+        "expected_acquisition_order": ["p", "z", "t", "c"],
+        "expected_daq_mode": "2d"
+    },
+    "stage": {
+        "active_channels": [0, 2],
+        "channel_powers": [11.0, 33.0],
+        "channel_exposures_ms": [6.0, 6.0],
+        "camera_shape": [64, 32],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "tpgzc",
+        "expected_shape": [1, 2, 5, 32, 64],
+        "expected_acquisition_order": ["t", "p", "z", "c"],
+        "expected_daq_mode": "stage"
+    }
+}

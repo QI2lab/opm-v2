@@ -5,7 +5,9 @@ import json
 import matplotlib.pyplot as plt
 
 zarr_folder_path = Path(r"G:\20250220_test\opm_ao_mda_test.ome.zarr\data.zarr")
-positions_path = Path(r"G:\20250220_test\opm_ao_mda_test.ome.zarr\exp_ao_positions.json")
+positions_path = Path(
+    r"G:\20250220_test\opm_ao_mda_test.ome.zarr\exp_ao_positions.json"
+)
 
 with open(positions_path, "r") as f:
     positions_list = json.load(f)

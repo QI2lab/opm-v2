@@ -1,59 +1,87 @@
 #!/usr/bin/python
+"""Control the Arduino interface to an Elveflow OB1 controller."""
 
 import pyfirmata2
 from time import perf_counter
 
 _instance_ob1 = None
 
-class OB1Controller():
-    """_summary_
-    """
-    @classmethod
-    def instance(cls) -> 'OB1Controller':
-        """Return the global singleton instance of `OB1Controller`.
 
+class OB1Controller:
+    """Control OB1 handshake signals through Arduino pins.
+
+    Parameters
+    ----------
+    port : str
+        Arduino serial port.
+    to_OB1_pin : int
+        Arduino output pin connected to the OB1.
+    from_OB1_pin : int
+        Arduino input pin receiving the OB1 acknowledgement.
+    simulate : bool
+        Whether to use the in-memory backend.
+    """
+
+    @classmethod
+    def instance(cls) -> "OB1Controller":
+        """Return the process-wide OB1 controller instance.
+
+        Returns
+        -------
+        OB1Controller
+            Existing instance, or a new instance when uninitialized.
         """
         global _instance_ob1
         if _instance_ob1 is None:
             _instance_ob1 = cls()
         return _instance_ob1
-        
 
-    def __init__( self,
-                  port: str = 'COM9',
-                  to_OB1_pin: int = 7,
-                  from_OB1_pin: int = 8):
-        """Arduino controller for the Elveflow OB1 controller.
-        Send and receive signals to the input/output ports
+    def __init__(
+        self,
+        port: str = "COM9",
+        to_OB1_pin: int = 7,
+        from_OB1_pin: int = 8,
+        simulate: bool = False,
+    ):
+        """Initialize the Arduino interface to the OB1 controller.
 
         Parameters
         ----------
-        port : str, optional
-            _description_, by default 'COM7'
-        to_OB1_pin : int, optional
-            _description_, by default 8
-        from_OB1_pin : int, optional
-            _description_, by default 6
+        port : str
+            Arduino serial port.
+        to_OB1_pin : int
+            Arduino output pin connected to the OB1.
+        from_OB1_pin : int
+            Arduino input pin receiving the OB1 acknowledgement.
+        simulate : bool
+            Whether to use the in-memory backend.
         """
-        
         global _instance_ob1
         if _instance_ob1 is None:
             _instance_ob1 = self
-        
+
         self.port = port
-        self.to_OB1_pin_location= f'd:{to_OB1_pin}:o'
-        self.from_OB1_pin_location = f'd:{from_OB1_pin}:i'
+        self.simulate = simulate
+        self.to_OB1_pin_location = f"d:{to_OB1_pin}:o"
+        self.from_OB1_pin_location = f"d:{from_OB1_pin}:i"
         self._from_OB1_pin_high = False
+        self.board = None
+        self.from_OB1_pin = None
+        self.to_OB1_pin = None
+        self.trigger_count = 0
+        self.last_pulse_duration = None
+        self.polling_rate_ms = 1000
 
         # SJS: Should we not init board in the _init_? This way we can init and close in the fluidics loop?
         # self.init_board()
-        
+
     def init_board(self):
-        """
-        Initialize Arduino connection 
-        - open connection
-        - configure pins
-        """
+        """Initialize the Arduino connection and configure OB1 pins."""
+        if self.simulate:
+            self.board = True
+            self._from_OB1_pin_high = False
+            return
+
         self.board = pyfirmata2.Arduino(self.port)
 
         # start polling
@@ -62,60 +90,89 @@ class OB1Controller():
         # Configure DO pin to ElveFlow controller
         self.to_OB1_pin = self.board.get_pin(self.to_OB1_pin_location)
         self.to_OB1_pin.write(False)
-        
+
         # Configure DI pin received from ElveFlow controller
         self.from_OB1_pin = self.board.get_pin(self.from_OB1_pin_location)
         self.from_OB1_pin.register_callback(self._input_callback)
         self.from_OB1_pin.enable_reporting()
-    
+
     def close_board(self):
+        """Close the Arduino connection and reset pin state."""
+        if self.simulate:
+            self.board = None
+            self.from_OB1_pin = None
+            self.to_OB1_pin = None
+            self._from_OB1_pin_high = False
+            return
         self.to_OB1_pin.write(False)
         self.board.exit()
         self.board = None
         self.from_OB1_pin = None
         self.to_OB1_pin = None
-                
-    def set_polling_rate(self,polling_rate_ms: int = 1000):
-        """
-        Set the sampling interval for the Arduino
-        Note: should be set such that there is no possibility the output
-              pulse from the ElveFlow controller is missed.
-        """
-        self.board.setSamplingInterval(polling_rate_ms)
 
-    def _input_callback(self,
-                        data: float = None,
-                        verbose: bool = False):
+    def set_polling_rate(self, polling_rate_ms: int = 1000):
+        """Set the Arduino sampling interval.
+
+        The interval should be short enough to observe every OB1 output pulse.
+
+        Parameters
+        ----------
+        polling_rate_ms : int
+            Sampling interval in milliseconds.
         """
-        Function to recognize when the input goes high.
+        self.polling_rate_ms = polling_rate_ms
+        if not self.simulate:
+            self.board.setSamplingInterval(polling_rate_ms)
+
+    def _input_callback(self, data: float = None, verbose: bool = False):
+        """Record an OB1 input-state transition.
+
+        Parameters
+        ----------
+        data : float or None
+            Digital input value supplied by pyfirmata2.
+        verbose : bool
+            Whether to print received triggers.
         """
         if data == 1:
             self._from_OB1_pin_high = True
             if verbose:
-                print('received trigger')
+                print("received trigger")
         else:
             self._from_OB1_pin_high = False
 
     def wait_for_OB1(self):
-        """
-        Function to pause program until a high pulse is received
+        """Wait until the OB1 acknowledgement input goes high.
+
+        Raises
+        ------
+        RuntimeError
+            If called in simulation before a trigger has been issued.
         """
         while not self._from_OB1_pin_high:
+            if self.simulate:
+                raise RuntimeError("Simulated OB1 has not been triggered")
             self.board.iterate()
-        
+
         # reset the input to false
         self._from_OB1_pin_high = False
-        
 
     def trigger_OB1(self, pulse_duration: float = 0.500):
+        """Send a high pulse to the OB1 controller.
+
+        Parameters
+        ----------
+        pulse_duration : float
+            Pulse duration in seconds.
         """
-        Send high pulse to_OB1_pin.
-        """
+        self.trigger_count += 1
+        self.last_pulse_duration = float(pulse_duration)
+        if self.simulate:
+            self._from_OB1_pin_high = True
+            return
+
         timer_start = perf_counter()
         self.to_OB1_pin.write(True)
-        while (perf_counter() - timer_start < pulse_duration):
+        while perf_counter() - timer_start < pulse_duration:
             continue
         self.to_OB1_pin.write(False)
-
-    
-    

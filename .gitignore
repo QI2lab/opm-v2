@@ -87,6 +87,9 @@ celerybeat-schedule
 
 # virtualenv
 .venv
+.uv-cache/
+.pytest_tmp/
+pytest_workspace/
 venv/
 ENV/
 

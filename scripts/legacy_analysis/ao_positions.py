@@ -1,15 +1,16 @@
 from scipy.spatial import cKDTree
 import numpy as np
+
 num_scan_positions = 3
 num_tile_positions = 3
-verbose=True
+verbose = True
 # Example list of stage positions
 
 stage_positions = [
     {"z": 180, "y": 1350.15, "x": -12990},
     {"z": 196.67, "y": 1350.15, "x": -12990},
     {"z": 213.33, "y": 1350.15, "x": -12990},
-    {"z": 230., "y": 1350.15, "x": -12990},
+    {"z": 230.0, "y": 1350.15, "x": -12990},
 ]
 stage_positions = [
     {"z": 0.1, "y": 0, "x": 1},
@@ -31,13 +32,13 @@ stage_positions = [
     {"z": 5.2, "y": 10, "x": 2},
     {"z": 5.3, "y": 10, "x": 3},
     {"z": 5.4, "y": 10, "x": 4},
-    {"z": 5.5, "y": 10, "x": 5}
+    {"z": 5.5, "y": 10, "x": 5},
 ]
 
 # Convert to array for easier manipulation
-stage_positions_array = np.array(
-    [(pos["z"], pos["y"], pos["x"]) for pos in stage_positions]
-)
+stage_positions_array = np.array([
+    (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
+])
 
 z_vals = stage_positions_array[:, 0]
 y_vals = stage_positions_array[:, 1]
@@ -66,7 +67,7 @@ for z in ao_z:
             ao_stage_positions.append({
                 "z": round(matched[0], 2),
                 "y": round(matched[1], 2),
-                "x": round(matched[2], 2)
+                "x": round(matched[2], 2),
             })
 
 if verbose:

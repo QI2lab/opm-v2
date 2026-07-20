@@ -9,13 +9,24 @@ from typing import Any
 
 from useq import MDAEvent
 
-from opm_v2.engine.debug_printing_v2 import info
+from opm_v2.engine.debug_printing import info
 
 REQUIRED_IMAGE_METADATA_KEYS = ("DAQ", "Camera", "OPM", "Stage")
 
 
 def event_to_jsonable(event: MDAEvent) -> dict:
-    """Convert an MDAEvent to a JSON-safe dictionary."""
+    """Convert an MDA event to a JSON-safe dictionary.
+
+    Parameters
+    ----------
+    event : MDAEvent
+        Event to serialize.
+
+    Returns
+    -------
+    dict
+        JSON-safe event representation.
+    """
     try:
         return event.model_dump(mode="json")
     except TypeError:
@@ -23,13 +34,35 @@ def event_to_jsonable(event: MDAEvent) -> dict:
 
 
 def _event_action_name(event: MDAEvent) -> str | None:
-    """Return the custom action name for an event, if present."""
+    """Read the custom action name for an event.
+
+    Parameters
+    ----------
+    event : MDAEvent
+        Event to inspect.
+
+    Returns
+    -------
+    str or None
+        Custom action name, if present.
+    """
     action = getattr(event, "action", None)
     return getattr(action, "name", None)
 
 
 def _event_index_dict(event: MDAEvent) -> dict:
-    """Return an event index as a normal dict."""
+    """Convert an event index to a dictionary.
+
+    Parameters
+    ----------
+    event : MDAEvent
+        Event whose index should be converted.
+
+    Returns
+    -------
+    dict
+        Event index, or an empty dictionary when no index is present.
+    """
     if event.index is None:
         return {}
     return dict(event.index)
@@ -39,7 +72,20 @@ def summarize_event_structure(
     opm_events: list[MDAEvent],
     handler: Any = None,
 ) -> dict:
-    """Summarize event order, action counts, image indices, and metadata keys."""
+    """Summarize event order, actions, image indices, and metadata keys.
+
+    Parameters
+    ----------
+    opm_events : list[MDAEvent]
+        Events to summarize.
+    handler : Any
+        Optional output handler whose indexed shape should be included.
+
+    Returns
+    -------
+    dict
+        Event-structure summary and any detected warnings.
+    """
     action_counts: Counter[str] = Counter()
     image_count = 0
     index_max: dict[str, int] = {}
@@ -109,7 +155,20 @@ def summarize_event_structure(
 
 
 def validate_event_structure(opm_events: list[MDAEvent], handler: Any = None) -> dict:
-    """Return a structured validation report for an OPM event list."""
+    """Validate an OPM event list.
+
+    Parameters
+    ----------
+    opm_events : list[MDAEvent]
+        Events to validate.
+    handler : Any
+        Optional output handler used to validate indexed bounds.
+
+    Returns
+    -------
+    dict
+        Validation status, errors, and event summary.
+    """
     summary = summarize_event_structure(opm_events, handler)
     errors: list[str] = []
 
@@ -143,7 +202,24 @@ def save_event_structure_review(
     handler: Any = None,
     include_events: bool = True,
 ) -> dict:
-    """Save an event review JSON file and return the validation report."""
+    """Save an event-review JSON file.
+
+    Parameters
+    ----------
+    opm_events : list[MDAEvent]
+        Events to validate and optionally serialize.
+    filepath : Path
+        Destination JSON path.
+    handler : Any
+        Optional output handler used during validation.
+    include_events : bool
+        Whether to include full serialized events.
+
+    Returns
+    -------
+    dict
+        Validation report written to the review file.
+    """
     filepath = Path(filepath)
     filepath.parent.mkdir(parents=True, exist_ok=True)
 
@@ -162,13 +238,30 @@ def save_event_structure_review(
 
 
 def load_event_structure_review(filepath: Path) -> dict:
-    """Load a saved event review JSON file."""
+    """Load a saved event-review JSON file.
+
+    Parameters
+    ----------
+    filepath : Path
+        Review file to load.
+
+    Returns
+    -------
+    dict
+        Decoded review payload.
+    """
     with open(filepath, "r") as file:
         return json.load(file)
 
 
 def print_event_structure_review(review: dict) -> None:
-    """Print a compact event review summary to the console."""
+    """Print a compact event-review summary.
+
+    Parameters
+    ----------
+    review : dict
+        Review payload or nested validation report.
+    """
     report = review.get("review", review)
     summary = report.get("summary", {})
     lines = [

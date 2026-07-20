@@ -1,491 +1,560 @@
-"""
-Methods to create OPM acquisition custom events
+"""Provide factories and constants for canonical OPM custom MDA events."""
 
-2025/09/05 SJS: initialization
-"""
+from __future__ import annotations
+
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Mapping, Sequence
 
 from useq import CustomAction, MDAEvent
 
+ACTION_TIMELAPSE = "Timelapse"
+ACTION_FLUIDICS = "Fluidics"
+ACTION_AO_OPTIMIZE = "AO-optimize"
+ACTION_AO_GRID = "AO-grid"
+ACTION_AO_MIRROR_UPDATE = "AO-mirrorUpdate"
+ACTION_O2O3_AUTOFOCUS = "O2O3-autofocus"
+ACTION_MIRROR_MOVE = "Mirror-Move"
+ACTION_DAQ = "DAQ"
+ACTION_STAGE_MOVE = "Stage-Move"
+ACTION_ASI_SETUP_SCAN = "ASI-setupscan"
+
+VALID_DAQ_MODES = {"2d", "projection", "mirror", "stage"}
+
+
+def _as_list(value: Any) -> list | None:
+    """Convert an array-like value to a JSON-friendly list.
+
+    Parameters
+    ----------
+    value : Any
+        Value to convert.
+
+    Returns
+    -------
+    list or None
+        Converted list, or ``None`` when the input is ``None``.
+    """
+    if value is None:
+        return None
+    if hasattr(value, "tolist"):
+        return value.tolist()
+    return list(value)
+
+
+def _custom_event(name: str, data: Mapping[str, Any]) -> MDAEvent:
+    """Create a custom MDA event with a consistent action payload.
+
+    Parameters
+    ----------
+    name : str
+        Custom action name.
+    data : Mapping[str, Any]
+        Action payload.
+
+    Returns
+    -------
+    MDAEvent
+        Custom-action event.
+    """
+    return MDAEvent(action=CustomAction(name=name, data=dict(data)))
+
+
+def _camera_crop_from_center(
+    camera_center: Sequence[float],
+    camera_crop: Sequence[float],
+) -> list[int]:
+    """Convert center and crop values to Micro-Manager ROI coordinates.
+
+    Parameters
+    ----------
+    camera_center : Sequence[float]
+        ROI center in pixels as X and Y.
+    camera_crop : Sequence[float]
+        ROI width and height in pixels.
+
+    Returns
+    -------
+    list[int]
+        ROI as X, Y, width, and height.
+    """
+    return [
+        int(camera_center[0] - camera_crop[0] // 2),
+        int(camera_center[1] - camera_crop[1] // 2),
+        int(camera_crop[0]),
+        int(camera_crop[1]),
+    ]
+
+
+def _ao_camera_crop(config: dict) -> tuple[int, int, int, int]:
+    """Read AO camera center and crop values from configuration.
+
+    Parameters
+    ----------
+    config : dict
+        OPM configuration.
+
+    Returns
+    -------
+    tuple[int, int, int, int]
+        Center X, center Y, crop width, and crop height.
+
+    Raises
+    ------
+    ValueError
+        If the configured AO acquisition mode is unsupported.
+    """
+    acq_config = config["acq_config"]
+    ao_config = acq_config["AO"]
+    camera_crop_x = int(acq_config["camera_roi"]["crop_x"])
+    camera_center_y = int(acq_config["camera_roi"]["center_y"])
+    camera_center_x = int(acq_config["camera_roi"]["center_x"])
+
+    daq_mode = str(ao_config["daq_mode"])
+    if "2d" in daq_mode:
+        camera_crop_y = int(acq_config["camera_roi"]["crop_y"])
+    elif "projection" in daq_mode:
+        camera_crop_y = int(
+            acq_config["AO"]["image_mirror_range_um"] / config["OPM"]["pixel_size_um"]
+        )
+    else:
+        raise ValueError(f"Unknown AO daq mode: {daq_mode}")
+
+    return camera_center_x, camera_center_y, camera_crop_x, camera_crop_y
+
+
+def _ao_channel_settings(config: dict) -> tuple[list[bool], list[float]]:
+    """Read AO channel states and powers from configuration.
+
+    Parameters
+    ----------
+    config : dict
+        OPM configuration.
+
+    Returns
+    -------
+    tuple[list[bool], list[float]]
+        Channel-enabled flags and laser powers.
+
+    Raises
+    ------
+    ValueError
+        If every configured AO laser power is zero.
+    """
+    ao_config = config["acq_config"]["AO"]
+    channel_ids = config["OPM"]["channel_ids"]
+    active_channel_id = ao_config["active_channel_id"]
+
+    channel_states = [channel_id == active_channel_id for channel_id in channel_ids]
+    channel_powers = [0.0] * len(channel_ids)
+    for index, is_active in enumerate(channel_states):
+        if is_active:
+            channel_powers[index] = float(ao_config["active_channel_power"])
+
+    if sum(channel_powers) == 0:
+        raise ValueError("All AO laser powers are set to 0.")
+
+    return channel_states, channel_powers
+
+
+def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
+    """Build the payload shared by AO optimization and grid events.
+
+    Parameters
+    ----------
+    config : dict
+        OPM configuration.
+    output_dir_path : Path or None
+        AO result directory.
+
+    Returns
+    -------
+    dict
+        AO custom-action payload.
+    """
+    ao_config = config["acq_config"]["AO"]
+    channel_states, channel_powers = _ao_channel_settings(config)
+    return {
+        "channel_states": channel_states,
+        "channel_powers": channel_powers,
+        "mirror_state": str(ao_config["mirror_state"]),
+        "metric_acceptance": str(ao_config["metric_acceptance"]),
+        "daq_mode": str(ao_config["daq_mode"]),
+        "exposure_ms": float(ao_config["exposure_ms"]),
+        "modal_delta": float(ao_config["mode_delta"]),
+        "metric_precision": int(ao_config["metric_precision"]),
+        "num_averaged_frames": int(ao_config["num_averaged_frames"]),
+        "modal_alpha": float(ao_config["mode_alpha"]),
+        "iterations": int(ao_config["num_iterations"]),
+        "num_mode_samples": int(ao_config["num_mode_samples"]),
+        "metric": str(ao_config["metric"]),
+        "modes_to_optimize": str(ao_config["modes_to_optimize"]),
+        "image_mirror_range_um": ao_config["image_mirror_range_um"],
+        "lightsheet_mode": str(ao_config["lightsheet_mode"]),
+        "readout_ms": float(ao_config["readout_ms"]),
+        "apply_existing": False,
+        "pos_idx": 0,
+        "scan_idx": 0,
+        "time_idx": 0,
+        "output_path": output_dir_path,
+    }
+
 
 def create_timelapse_event(interval: int, time_steps: int, timepoint: int) -> MDAEvent:
-    """Create an event that pauses the acquisition
+    """Create an event that pauses until the next timepoint.
 
     Parameters
     ----------
     interval : int
-        time interval for pause in seconds
+        Timepoint interval in seconds.
     time_steps : int
-        number of time points in acquisition
+        Total number of timepoints.
     timepoint : int
-        the current time point
+        Current timepoint index.
 
     Returns
     -------
     MDAEvent
-        Custom event which pauses the running acquisition
+        Timelapse custom-action event.
     """
-    timelapse_event = MDAEvent(
-        action=CustomAction(
-            name='Timelapse',
-            data = {
-                'plan' : {                    
-                    'interval' : interval,
-                    'timepoint' : timepoint,
-                    'time_steps': time_steps
-                }
+    return _custom_event(
+        ACTION_TIMELAPSE,
+        {
+            "plan": {
+                "interval": int(interval),
+                "timepoint": int(timepoint),
+                "time_steps": int(time_steps),
             }
-        )
+        },
     )
-    return timelapse_event
 
-def create_fluidics_event(total_rounds: int, current_round:int) -> MDAEvent:
-    """Create an event that runs the fluidics program
+
+def create_fluidics_event(total_rounds: int, current_round: int) -> MDAEvent:
+    """Create an event that runs a fluidics round.
 
     Parameters
     ----------
     total_rounds : int
-        number of fluidics rounds 
+        Total fluidics rounds.
     current_round : int
-        current fluidics round to run
+        Current fluidics round index.
 
     Returns
     -------
     MDAEvent
-        Custom event that runs the current fluidics round
+        Fluidics custom-action event.
     """
-    FP_event = MDAEvent(
-        # exposure = exposure_ms,
-        action=CustomAction(
-            name='Fluidics',
-            data = {
-                'Fluidics' : {
-                    'total_rounds' : int(total_rounds),
-                    'current_round' : int(current_round)
-                }
-                }
-        )
+    return _custom_event(
+        ACTION_FLUIDICS,
+        {
+            "Fluidics": {
+                "total_rounds": int(total_rounds),
+                "current_round": int(current_round),
+            }
+        },
     )
-    return FP_event
+
 
 def create_ao_optimize_event(
-    config: Dict,
-    output_dir_path: Optional[Path] = None
+    config: dict,
+    output_dir_path: Path | None = None,
 ) -> MDAEvent:
-    """_summary_
+    """Create a sensorless AO optimization event.
 
     Parameters
     ----------
-    config : Dict
-        OPM configuration from disk
-    output_dir_path : Optional[Path], optional
-        Path to save optimization results, by default None
+    config : dict
+        OPM configuration.
+    output_dir_path : Path or None
+        AO result directory.
 
     Returns
     -------
     MDAEvent
-        Custom event that runs the sensorless A.O.
+        AO optimization event.
     """
-    # Break up config dict to simplify use
-    acq_config = config['acq_config']
-    ao_config = config['acq_config']['AO']
-    num_channels = len(config['OPM']['channel_ids'])
-    
-    # set the camera FOV based on the daq mode
-    daq_mode = str(ao_config['daq_mode'])
-    camera_crop_x = int(acq_config['camera_roi']['crop_x'])
-    camera_center_y = int(acq_config['camera_roi']['center_y'])
-    camera_center_x = int(acq_config['camera_roi']['center_x'])    
-    if '2d' in daq_mode:
-        camera_crop_y = int(acq_config['camera_roi']['crop_y'])
-    elif 'projection' in daq_mode:
-        camera_crop_y = int(
-            acq_config['AO']['image_mirror_range_um']/config['OPM']['pixel_size_um']
-            )
-    
-    # Create channel selection lists
-    channel_states = [False] * num_channels
-    channel_powers = [0.] * num_channels
-    active_channel_id = ao_config['active_channel_id']
-    for chan_idx, chan_str in enumerate(config['OPM']['channel_ids']):
-        if active_channel_id==chan_str:
-            channel_states[chan_idx] = True
-            channel_powers[chan_idx] = ao_config['active_channel_power']
-            
-    # check to make sure there exist a laser power > 0
-    if sum(channel_powers)==0:
-        print('All AO laser powers are set to 0!')
-        return None
-        
-    # Event for running AO optimization
-    ao_optimize_event = MDAEvent(
-        action=CustomAction(
-            name='AO-optimize',
-            data = {
-                'AO' : {
-                    'channel_states': channel_states,
-                    'channel_powers' : channel_powers,
-                    'mirror_state': str(ao_config['mirror_state']),
-                    'metric_acceptance': str(ao_config['metric_acceptance']),
-                    'daq_mode': str(ao_config['daq_mode']),
-                    'exposure_ms': float(ao_config['exposure_ms']),
-                    'modal_delta': float(ao_config['mode_delta']),
-                    'metric_precision':int(ao_config['metric_precision']),
-                    'num_averaged_frames': int(ao_config['num_averaged_frames']),
-                    'modal_alpha':float(ao_config['mode_alpha']),                        
-                    'iterations': int(ao_config['num_iterations']),
-                    'num_mode_samples': int(ao_config['num_mode_samples']),
-                    'metric': str(ao_config['metric']),
-                    'modes_to_optimize': str(ao_config['modes_to_optimize']),
-                    'image_mirror_range_um' : ao_config['image_mirror_range_um'],
-                    'lightsheet_mode': str(ao_config['lightsheet_mode']),
-                    'readout_ms': float(ao_config['readout_ms']),
-                    'apply_existing': bool(False),
-                    'pos_idx': int(0),
-                    'scan_idx': int(0),
-                    'time_idx': int(0),
-                    'output_path':output_dir_path
-                },
-                'Camera' : {
-                    'exposure_ms': int(ao_config['exposure_ms']),
-                    'camera_crop' : [
-                        int(camera_center_x - camera_crop_x//2),
-                        int(camera_center_y - camera_crop_y//2),
-                        int(camera_crop_x),
-                        int(camera_crop_y)
-                    ]
-                }
-            }
-        )
+    ao_config = config["acq_config"]["AO"]
+    camera_center_x, camera_center_y, camera_crop_x, camera_crop_y = _ao_camera_crop(
+        config
     )
-    
-    return ao_optimize_event
+    return _custom_event(
+        ACTION_AO_OPTIMIZE,
+        {
+            "AO": _ao_payload(config, output_dir_path),
+            "Camera": {
+                "exposure_ms": int(ao_config["exposure_ms"]),
+                "camera_crop": _camera_crop_from_center(
+                    [camera_center_x, camera_center_y],
+                    [camera_crop_x, camera_crop_y],
+                ),
+            },
+        },
+    )
+
 
 def create_ao_grid_event(
-    config: Dict,
-    output_dir_path: Optional[Path] = None
+    config: dict,
+    output_dir_path: Path | None = None,
 ) -> MDAEvent:
-    """Custom MDA event to run AO grid function
+    """Create an AO grid-optimization event.
 
     Parameters
     ----------
-    config : Dict
-        OPM configuration from disk
-    output_dir_path : Optional[Path], optional
-        Path to save optimization results, by default None
+    config : dict
+        OPM configuration.
+    output_dir_path : Path or None
+        AO result directory.
 
     Returns
     -------
     MDAEvent
-        custom event to run ao grid
+        AO grid event.
     """
-    # Break up config dict to simplify use
-    acq_config = config['acq_config']
-    ao_config = config['acq_config']['AO']
-    num_channels = len(config['OPM']['channel_ids'])
-    
-    # set the camera FOV based on the daq mode
-    daq_mode = str(ao_config['daq_mode'])
-    camera_crop_x = int(acq_config['camera_roi']['crop_x'])
-    camera_center_y = int(acq_config['camera_roi']['center_y'])
-    camera_center_x = int(acq_config['camera_roi']['center_x'])    
-    if '2d' in daq_mode:
-        camera_crop_y = int(acq_config['camera_roi']['crop_y'])
-    elif 'projection' in daq_mode:
-        camera_crop_y = int(
-            acq_config['AO']['image_mirror_range_um']/config['OPM']['pixel_size_um']
-            )
-    
-    # Create channel selection lists
-    channel_states = [False] * num_channels
-    channel_powers = [0.] * num_channels
-    active_channel_id = ao_config['active_channel_id']
-    for chan_idx, chan_str in enumerate(config['OPM']['channel_ids']):
-        if active_channel_id==chan_str:
-            channel_states[chan_idx] = True
-            channel_powers[chan_idx] = ao_config['active_channel_power']
-            
-    # check to make sure there exist a laser power > 0
-    if sum(channel_powers)==0:
-        print('All AO laser powers are set to 0!')
-        return None
-    
-    ao_grid_event = MDAEvent(
-        action=CustomAction(
-            name='AO-grid',
-            data = {
-                'AO' : 
-                    {
-                    'stage_positions': None,
-                    'num_scan_positions':ao_config['num_scan_positions'],
-                    'num_tile_positions':ao_config['num_tile_positions'],
-                    'output_path': output_dir_path,
-                    'apply_ao_map': bool(False),
-                    'pos_idx': int(0),
-                    'scan_idx': int(0),
-                    'time_idx': int(0),
-                    'ao_dict': {
-                        'channel_states': channel_states,
-                        'channel_powers' : channel_powers,
-                        'mirror_state': str(ao_config['mirror_state']),
-                        'metric_acceptance': str(ao_config['metric_acceptance']),
-                        'daq_mode': str(ao_config['daq_mode']),
-                        'exposure_ms': float(ao_config['exposure_ms']),
-                        'modal_delta': float(ao_config['mode_delta']),
-                        'metric_precision':int(ao_config['metric_precision']),
-                        'num_averaged_frames': int(ao_config['num_averaged_frames']),
-                        'modal_alpha':float(ao_config['mode_alpha']),                        
-                        'iterations': int(ao_config['num_iterations']),
-                        'num_mode_samples': int(ao_config['num_mode_samples']),
-                        'metric': str(ao_config['metric']),
-                        'modes_to_optimize': str(ao_config['modes_to_optimize']),
-                        'image_mirror_range_um' : ao_config['image_mirror_range_um'],
-                        'lightsheet_mode': str(ao_config['lightsheet_mode']),
-                        'readout_ms': float(ao_config['readout_ms']),
-                        'apply_existing': bool(False),
-                    }
-                },
-                'Camera' : {
-                    'exposure_ms': int(ao_config['exposure_ms']),
-                    'camera_crop' : [
-                        int(camera_center_x - camera_crop_x//2),
-                        int(camera_center_y - camera_crop_y//2),
-                        int(camera_crop_x),
-                        int(camera_crop_y)
-                    ]
-                }
-            }
-        )
+    ao_config = config["acq_config"]["AO"]
+    camera_center_x, camera_center_y, camera_crop_x, camera_crop_y = _ao_camera_crop(
+        config
     )
-    return ao_grid_event
+    ao_payload = _ao_payload(config, output_dir_path)
+    return _custom_event(
+        ACTION_AO_GRID,
+        {
+            "AO": {
+                "stage_positions": None,
+                "num_scan_positions": ao_config["num_scan_positions"],
+                "num_tile_positions": ao_config["num_tile_positions"],
+                "output_path": output_dir_path,
+                "apply_ao_map": False,
+                "pos_idx": 0,
+                "scan_idx": 0,
+                "time_idx": 0,
+                "ao_dict": ao_payload,
+            },
+            "Camera": {
+                "exposure_ms": int(ao_config["exposure_ms"]),
+                "camera_crop": _camera_crop_from_center(
+                    [camera_center_x, camera_center_y],
+                    [camera_crop_x, camera_crop_y],
+                ),
+            },
+        },
+    )
+
 
 def create_ao_mirror_update_event(
-    mirror_coeffs: Optional[List] = None,
-    mirror_positions: Optional[List] = None
-) -> MDAEvent:
-    """Create an event to set the AO mirror state
+    mirror_coeffs: Sequence[float] | None = None,
+    mirror_positions: Sequence[float] | None = None,
+) -> MDAEvent | None:
+    """Create an event to apply a known AO mirror state.
+
+    ``modal_coeffs`` is preserved for compatibility with the current engine.
+    ``positions`` is included when supplied so future engine logic can apply
+    actuator positions directly without changing the event schema again.
 
     Parameters
     ----------
-    mirror_coeffs : Optional[List], optional
-        Mirror modal coefficients, by default None
-    mirror_positions : Optional[List], optional
-        Mirror voltage values, by default None
+    mirror_coeffs : Sequence[float] or None
+        Modal coefficients to apply.
+    mirror_positions : Sequence[float] or None
+        Direct actuator positions to apply.
 
     Returns
     -------
-    MDAEvent
-        custom event to set mirror state
+    MDAEvent or None
+        Mirror-update event, or ``None`` when no state was supplied.
     """
     if mirror_coeffs is None and mirror_positions is None:
-        return None 
-    else:
-        ao_mirror_update = MDAEvent(
-            action=CustomAction(
-                name='AO-mirrorUpdate',
-                data = {
-                    'AOmirror' : {
-                        'modal_coeffs' : mirror_coeffs.tolist(),
-                    }
-                }
-            )
-        )
-        return ao_mirror_update
-    
+        return None
+    return _custom_event(
+        ACTION_AO_MIRROR_UPDATE,
+        {
+            "AOmirror": {
+                "modal_coeffs": _as_list(mirror_coeffs),
+                "positions": _as_list(mirror_positions),
+            }
+        },
+    )
+
+
 def create_o2o3_autofocus_event(
     exposure_ms: int,
-    camera_center: List[int],
-    camera_crop: List[int]
+    camera_center: Sequence[int],
+    camera_crop: Sequence[int],
 ) -> MDAEvent:
-    """Create a custom MDA event to run the o2-o3 autofocus
+    """Create an O2/O3 autofocus event.
 
     Parameters
     ----------
     exposure_ms : int
-        camera exposure in ms
-    camera_center : List[int]
-        camera center, [x, y]
-    camera_crop : List[int]
-        camera crop, [x, y]
+        Autofocus exposure in milliseconds.
+    camera_center : Sequence[int]
+        Camera ROI center.
+    camera_crop : Sequence[int]
+        Camera ROI width and height.
 
     Returns
     -------
     MDAEvent
-        Custom event that runs the o2-o3 autofocus routine
+        Autofocus event.
     """
-    af_event = MDAEvent(
-        action=CustomAction(
-            name='O2O3-autofocus',
-            data = {
-                'Camera' : {                    
-                    'exposure_ms' : exposure_ms,
-                    'camera_crop' : [
-                        int(camera_center[0] - camera_crop[0]//2),
-                        int(camera_center[1] - camera_crop[1]//2),
-                        int(camera_crop[0]),
-                        int(camera_crop[1]),
-                    ]
-                }
+    return _custom_event(
+        ACTION_O2O3_AUTOFOCUS,
+        {
+            "Camera": {
+                "exposure_ms": int(exposure_ms),
+                "camera_crop": _camera_crop_from_center(camera_center, camera_crop),
             }
-        )
+        },
     )
-    return af_event
+
 
 def create_daq_move_event(image_mirror_v: float) -> MDAEvent:
-    """Create a custom event to modify the image mirror nuetral position
+    """Create an event that changes the image-mirror neutral voltage.
 
     Parameters
     ----------
     image_mirror_v : float
-        mirror voltage to apply as nuetral position
+        Requested image-mirror voltage.
 
     Returns
     -------
     MDAEvent
-        Custom event that modifies the image mirror neutral position 
+        Mirror-move event.
     """
-    daq_move_event = MDAEvent(
-        action=CustomAction(
-            name='Mirror-Move',
-            data = {
-                'DAQ' : {
-                    'image_mirror_v': image_mirror_v
-                }
-            }
-        )
+    return _custom_event(
+        ACTION_MIRROR_MOVE,
+        {"DAQ": {"image_mirror_v": float(image_mirror_v)}},
     )
-    return daq_move_event
-    
+
+
 def create_daq_event(
-    mode: str = '2d',
-    channel_states: List[bool] = [False, False, False, False, False],
-    channel_powers: List[bool] = [0, 0, 0, 0, 0],
-    channel_exposures_ms: List[int] = [0, 0, 0, 0, 0],
-    camera_center: List[int] = [0, 0],
-    camera_crop: List[int] = [0, 0],
+    mode: str = "2d",
+    channel_states: Sequence[bool] | None = None,
+    channel_powers: Sequence[float] | None = None,
+    channel_exposures_ms: Sequence[float] | None = None,
+    camera_center: Sequence[int] | None = None,
+    camera_crop: Sequence[int] | None = None,
     interleaved: bool = False,
     laser_blanking: bool = True,
-    image_mirror_range_um: Optional[float] = 0,
-    image_mirror_step_um: Optional[float] = 0.4
+    image_mirror_range_um: float | None = 0,
+    image_mirror_step_um: float | None = 0.4,
 ) -> MDAEvent:
-    """Creates a daq event that updates the daq state to run in a given mode
+    """Create an event that programs DAQ and camera acquisition state.
 
     Parameters
     ----------
-    mode : str, optional
-        daq mode to use, [2d, projection, mirror, stage], by default 2d
-    channel_states : List[bool], optional
-        channel states for all sources, by default [False, False, False, False, False]
-    channel_powers : List[bool], optional
-        laser powers for each channel, by default [0, 0, 0, 0, 0]
-    channel_exposures_ms : List[int], optional
-        camera exposures for each channel, by default [0, 0, 0, 0, 0]
-    camera_center : List[int], optional
-        camera center [x,y], by default [0, 0]
-    camera_crop : List[int], optional
-        camera crop [x,y], by default [0, 0]
-    interleaved : bool, optional
-        by default False
-    laser_blanking : bool, optional
-        by default True
-    image_mirror_range_um : Optional[float], optional
-        by default 0
-    image_mirror_step_um : Optional[float], optional
-        by default 0.4
+    mode : str
+        DAQ acquisition mode.
+    channel_states : Sequence[bool] or None
+        Enabled laser channels.
+    channel_powers : Sequence[float] or None
+        Laser powers for each channel.
+    channel_exposures_ms : Sequence[float] or None
+        Camera exposures for each channel.
+    camera_center : Sequence[int] or None
+        Camera ROI center.
+    camera_crop : Sequence[int] or None
+        Camera ROI width and height.
+    interleaved : bool
+        Whether channels share an interleaved scan.
+    laser_blanking : bool
+        Whether camera exposure gates laser output.
+    image_mirror_range_um : float or None
+        Image-mirror scan range in micrometers.
+    image_mirror_step_um : float or None
+        Image-mirror step in micrometers.
 
     Returns
     -------
     MDAEvent
-        Custom event that programs the daq
-    """
-    # create DAQ hardware setup event
-    DAQ_event = MDAEvent(
-        action=CustomAction(
-            name='DAQ',
-            data = {
-                'DAQ' : {
-                    'mode' : mode,
-                    'channel_states' : channel_states,
-                    'channel_powers' : channel_powers,
-                    'interleaved' : interleaved,
-                    'blanking' : laser_blanking, 
-                    'image_mirror_range_um': image_mirror_range_um,
-                    'image_mirror_step_um': image_mirror_step_um
-                },
-                'Camera' : {
-                    'exposure_channels' : channel_exposures_ms,
-                    'camera_crop' : [
-                        int(camera_center[0] - camera_crop[0]//2),
-                        int(camera_center[1] - camera_crop[1]//2),
-                        int(camera_crop[0]),
-                        int(camera_crop[1]),
-                    ]
-                }
-            }
-        )
-    )
-    return DAQ_event
+        DAQ configuration event.
 
-def create_stage_event(stage_position:Dict) -> MDAEvent:
-    """Create an event that moves the stage to given position
+    Raises
+    ------
+    ValueError
+        If ``mode`` is not a supported DAQ mode.
+    """
+    if mode not in VALID_DAQ_MODES:
+        raise ValueError(f"Unknown DAQ mode: {mode}")
+
+    channel_states = list(channel_states or [False] * 5)
+    channel_powers = list(channel_powers or [0.0] * len(channel_states))
+    channel_exposures_ms = list(channel_exposures_ms or [0.0] * len(channel_states))
+    camera_center = list(camera_center or [0, 0])
+    camera_crop = list(camera_crop or [0, 0])
+
+    return _custom_event(
+        ACTION_DAQ,
+        {
+            "DAQ": {
+                "mode": mode,
+                "channel_states": channel_states,
+                "channel_powers": channel_powers,
+                "interleaved": bool(interleaved),
+                "blanking": bool(laser_blanking),
+                "image_mirror_range_um": image_mirror_range_um,
+                "image_mirror_step_um": image_mirror_step_um,
+            },
+            "Camera": {
+                "exposure_channels": channel_exposures_ms,
+                "camera_crop": _camera_crop_from_center(camera_center, camera_crop),
+            },
+        },
+    )
+
+
+def create_stage_event(stage_position: Mapping[str, float]) -> MDAEvent:
+    """Create an event that moves the XYZ stage.
 
     Parameters
     ----------
-    stage_position : Dict
-        Dict containing the 'x', 'y' and 'z' stage position
+    stage_position : Mapping[str, float]
+        Target X, Y, and Z coordinates.
 
     Returns
     -------
     MDAEvent
-        Custom event that moves the xyz stage
+        Stage-move event.
     """
-    stage_event = MDAEvent(
-        action=CustomAction(
-            name= 'Stage-Move',
-            data = {
-                'Stage' : {
-                    'x_pos' : stage_position['x'],
-                    'y_pos' : stage_position['y'],
-                    'z_pos' : stage_position['z'],
-                }
+    return _custom_event(
+        ACTION_STAGE_MOVE,
+        {
+            "Stage": {
+                "x_pos": stage_position["x"],
+                "y_pos": stage_position["y"],
+                "z_pos": stage_position["z"],
             }
-        )
+        },
     )
-    return stage_event
 
-def create_asi_scan_setup_event(start_mm: float,
-                                end_mm: float, 
-                                speed_mm_s:float) -> MDAEvent:
-    """Create a custom event that sets the ASI controller up for stage scan
-    NOTE: positions are in mm and rounded to 2
-    
+
+def create_asi_scan_setup_event(
+    start_mm: float,
+    end_mm: float,
+    speed_mm_s: float,
+) -> MDAEvent:
+    """Create an event that configures ASI stage-scan hardware.
+
     Parameters
     ----------
     start_mm : float
-        scan start position in mm
+        Stage-scan start coordinate in millimeters.
     end_mm : float
-        scan end position in mm
-    speed_mm_s : _type_
-        stage scan speed in mm/s
+        Stage-scan end coordinate in millimeters.
+    speed_mm_s : float
+        Stage speed in millimeters per second.
 
     Returns
     -------
     MDAEvent
-        Custom event that sets the ASI controller up for a stage scan along X-axis
+        ASI hardware-configuration event.
     """
-    asi_setup_event = MDAEvent(
-        action=CustomAction(
-            name='ASI-setupscan',
-            data = {
-                'ASI' : {
-                    'mode' : 'scan',
-                    'scan_axis_start_mm' : start_mm,
-                    'scan_axis_end_mm' : end_mm,
-                    'scan_axis_speed_mm_s' : speed_mm_s
-                }
+    return _custom_event(
+        ACTION_ASI_SETUP_SCAN,
+        {
+            "ASI": {
+                "mode": "scan",
+                "scan_axis_start_mm": float(start_mm),
+                "scan_axis_end_mm": float(end_mm),
+                "scan_axis_speed_mm_s": float(speed_mm_s),
             }
-        )
+        },
     )
-
-    return asi_setup_event

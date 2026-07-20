@@ -5,16 +5,22 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from opm_v2.engine.event_review_v2 import (
+from opm_v2.engine.event_review import (
     load_event_structure_review,
     print_event_structure_review,
 )
 
 
 def parse_args() -> argparse.Namespace:
-    """Parse command-line arguments."""
+    """Parse command-line arguments.
+
+    Returns
+    -------
+    argparse.Namespace
+        Parsed event-review arguments.
+    """
     parser = argparse.ArgumentParser(
-        description="Display an event structure review JSON created by setup_events_v2."
+        description="Display an event-structure review JSON created by setup_events."
     )
     parser.add_argument("review_json", type=Path, help="Path to review JSON file.")
     return parser.parse_args()

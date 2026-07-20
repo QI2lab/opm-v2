@@ -6,12 +6,13 @@ Script for generating GIFs from opm data
 import numpy as np
 import imageio
 
+
 def scale_to_uint8(
     arr: np.ndarray,
     vmin: float | None = None,
     vmax: float | None = None,
     gamma: float = 1.0,
-    contrast: float = 1.0
+    contrast: float = 1.0,
 ) -> np.ndarray:
     """
     Scale an array to uint8 with adjustable contrast.
@@ -50,12 +51,15 @@ def scale_to_uint8(
 
     return (a * 255).astype(np.uint8)
 
-def save_gif(arr: np.ndarray,
-             path: str,
-             fps: int = 10,
-             duration_ms: int = 1000,
-             loop: int = 0,
-             palettesize: int = 256) -> None:
+
+def save_gif(
+    arr: np.ndarray,
+    path: str,
+    fps: int = 10,
+    duration_ms: int = 1000,
+    loop: int = 0,
+    palettesize: int = 256,
+) -> None:
     """
     Save a NumPy array as an animated GIF.
 
@@ -81,7 +85,7 @@ def save_gif(arr: np.ndarray,
     """
     if arr.ndim not in (3, 4):
         raise ValueError(f"Expected 3D or 4D array, got shape {arr.shape}")
-        
+
     a = scale_to_uint8(arr=arr, gamma=0.8, contrast=1.05)
 
     # Arrange dimensions
@@ -90,9 +94,9 @@ def save_gif(arr: np.ndarray,
         frames = a
     else:
         # 4D: either (T,H,W,C) or (T,C,H,W)
-        if a.shape[-1] in (1, 3, 4):          # channels last
+        if a.shape[-1] in (1, 3, 4):  # channels last
             frames = a
-        elif a.shape[1] in (1, 3, 4):         # channels first -> move to last
+        elif a.shape[1] in (1, 3, 4):  # channels first -> move to last
             frames = np.transpose(a, (0, 2, 3, 1))
         else:
             raise ValueError(f"Can't infer channel dim for shape {a.shape}")
@@ -112,9 +116,9 @@ def save_gif(arr: np.ndarray,
         palettesize=palettesize,
     )
 
+
 # ---- Example usage ----
 if __name__ == "__main__":
-    
     """
     Put our own code to load data here and call function
     """
@@ -124,22 +128,18 @@ if __name__ == "__main__":
     from opm_v2.utils import sensorless_ao as ao
 
     """Make a gif from OPM data"""
-    zarr_path = Path('/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_noAO_max_z_decon_deskewed.zarr')
+    zarr_path = Path(
+        "/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/in_IB_noAO_max_z_decon_deskewed.zarr"
+    )
 
     # open raw datastore
-    spec = {
-        "driver" : "zarr3",
-        "kvstore" : {
-            "driver" : "file",
-            "path" : str(zarr_path)
-        }
-    }
+    spec = {"driver": "zarr3", "kvstore": {"driver": "file", "path": str(zarr_path)}}
     # datastore = ts.open(spec).result()[0, :-1, 0, 0, 500:600, 1400:1500]
     datastore = ts.open(spec).result()[0, :, 0, 0, :, :]
     data = datastore.read().result()
-    data = data[:-1, 950:1025,1000:1075]
+    data = data[:-1, 950:1025, 1000:1075]
     save_gif(data, "paramecium_wo_AO_zoom.gif", duration_ms=1500)
-    
+
     """Make a gif from A.O. results"""
     # data_path = Path(
     #     r'/home/steven/Documents/qi2lab/projects/local_working_files/OPM/opm_ao/2025 828_161621_ao_optimizeNOW/ao_results.zarr'
@@ -153,4 +153,3 @@ if __name__ == "__main__":
     # images_per_iteration = results['images_per_iteration']
 
     # save_gif(images_per_iteration, "images_.gif", duration_ms=500)
-    
