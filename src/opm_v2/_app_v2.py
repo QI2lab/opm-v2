@@ -89,7 +89,7 @@ class OPMAppController:
     def _print_block(self, header: str, *lines: object) -> None:
         """Print a visually separated console message block."""
         print(f"\n{DEBUG_SEPARATOR}")
-        print(f"----- {header} -----")
+        print(f"----- [OPM APP] {header} -----")
         for line in lines:
             print(line)
         print(DEBUG_SEPARATOR)
@@ -97,11 +97,11 @@ class OPMAppController:
     def debug(self, header: str, *lines: object) -> None:
         """Print a debug block when module-level debugging is enabled."""
         if DEBUGGING:
-            self._print_block(f"DEBUGGING: {header}", *lines)
+            self._print_block(f"DEBUG: {header}", *lines)
 
     def info(self, header: str, *lines: object) -> None:
         """Print a non-debug status block that should always be visible."""
-        self._print_block(header, *lines)
+        self._print_block(f"INFO: {header}", *lines)
 
     def warning(self, header: str, *lines: object) -> None:
         """Print a warning block that should always be visible."""
@@ -171,7 +171,7 @@ class OPMAppController:
         )
         self.opm_ao_mirror.apply_system_flat_voltage()
 
-        self.debug(
+        self.info(
             "AO MIRROR INITIALIZED",
             f"System flat: {self.config['AOMirror']['wfc_flat_path']}",
             "Startup state: system flat voltage applied",
@@ -205,7 +205,7 @@ class OPMAppController:
         )
         self.opm_nidaq.reset()
 
-        self.debug(
+        self.info(
             "NIDAQ INITIALIZED",
             f"Name: {self.config['NIDAQ']['name']}",
         )
@@ -220,7 +220,7 @@ class OPMAppController:
         )
         self.opm_picard_shutter.closeShutter()
 
-        self.debug(
+        self.info(
             "O2-O3 SHUTTER INITIALIZED",
             f"Shutter id: {self.config['O2O3-autofocus']['shutter_id']}",
             "Startup state: closed",
@@ -232,9 +232,9 @@ class OPMAppController:
 
         if bool(self.config["OPM"]["fluidics_enabled"]):
             self.ob1_controller = OB1Controller()
-            self.debug("FLUIDICS INITIALIZED", "OB1 controller enabled")
+            self.info("FLUIDICS INITIALIZED", "OB1 controller enabled")
         else:
-            self.debug("FLUIDICS SKIPPED", "config['OPM']['fluidics_enabled'] is false")
+            self.info("FLUIDICS SKIPPED", "config['OPM']['fluidics_enabled'] is false")
 
     def connect_signals(self) -> None:
         """Connect Micro-Manager and OPM widget signals to controller methods."""
@@ -256,7 +256,7 @@ class OPMAppController:
         # Replace mda execution function
         self.mda_widget.execute_mda = self.custom_execute_mda
 
-        self.debug(
+        self.info(
             "SIGNALS CONNECTED",
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
@@ -276,7 +276,7 @@ class OPMAppController:
         if device_name == self.mmc.getShutterDevice() and property_name == "State":
             return
 
-        self.debug(
+        self.info(
             "LIVE STATE TRIGGERED",
             f"Device name: {device_name}",
             f"Property name: {property_name}",
@@ -312,7 +312,7 @@ class OPMAppController:
         # Get the current camera exposure
         exposure_ms = round(
             float(self.mmc.getProperty(self.config["Camera"]["camera_id"], "Exposure")),
-            0,
+            1,
         )
         
         # Get the current active laser channel, limits to one channel at a time
@@ -408,7 +408,7 @@ class OPMAppController:
         elif "zeros" in ao_mirror_state:
             self.opm_ao_mirror.apply_zeros_voltage()
 
-        self.debug("AO MIRROR STATE UPDATED", f"Mirror state: {ao_mirror_state}")
+        self.info("AO MIRROR STATE UPDATED", f"Mirror state: {ao_mirror_state}")
 
     def setup_preview_mode_callback(self) -> None:
         """Program the OPM NIDAQ waveform before continuous preview starts."""
@@ -471,6 +471,8 @@ class OPMAppController:
             return
 
         if output:
+            # TEMP fix for output path
+            output = output.parent/Path(output.stem[:-4]+".zarr")
             output = self.timestamped_output_path(output)
 
         if ("none" not in fluidics_mode) and not optimize_now:
@@ -486,7 +488,6 @@ class OPMAppController:
             f"Fluidics mode: {fluidics_mode}",
             f"Output path: {output}",
         )
-
         opm_events, handler = self.create_opm_events(optimize_now, opm_mode, output)
 
         if opm_events is None:
@@ -511,13 +512,15 @@ class OPMAppController:
                 return False
         if optimize_now:
             return True
-        return len(output.suffixes) == 1 and output.suffix == ".zarr"
+        return output.suffixes[-1] == ".zarr"
 
     def timestamped_output_path(self, output: Path) -> Path:
         """Create the timestamped output path used for OPM acquisitions."""
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
         new_dir.mkdir(exist_ok=True)
+
+        self.debug("OPM ACQUISITION SETTINGS", f"Output path: {output}", f"Output directory: {new_dir}")
         return new_dir / Path(output.name)
 
     def confirm_fluidics_ready(self) -> bool:

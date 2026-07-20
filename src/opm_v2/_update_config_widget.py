@@ -42,14 +42,13 @@ class OPMSettings(QWidget):
         with open(self.config_path, 'r') as config_file:
             config = json.load(config_file)
         
-        # Force all channel_states to False
+        # Start with all acquisition channels disabled.  Preserve the configured
+        # powers and exposures so opening the widget cannot erase valid settings.
         n_channels = len(config['acq_config']['stage_scan']['channel_states'])
         for mode in config['OPM']['imaging_modes']:
             key = f"{mode}_scan" 
             try:
                 config['acq_config'][f"{key}"]['channel_states'] = [False] * n_channels
-                config['acq_config'][f"{key}"]['channel_powers'] = [0] * n_channels
-                config['acq_config'][f"{key}"]['channel_exposures_ms'] = [0] * n_channels
             except KeyError:
                 continue
         config['acq_config']['timelapse']['channel_states'] = [False] * n_channels
@@ -959,15 +958,22 @@ class OPMSettings(QWidget):
 
         self.config = config
 
-        self._write_config()
-        
-        self.settings_changed.emit()
+        if self._write_config():
+            self.settings_changed.emit()
 
     def _write_config(self):
-        tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
-        with open(tmp_path, 'w') as file:
-            json.dump(self.config, file, indent=4)
-        tmp_path.replace(self.config_path)
+        try:
+            with open(self.config_path, 'w', encoding='utf-8') as file:
+                json.dump(self.config, file, indent=4)
+            return True
+        except OSError as exc:
+            print(
+                "------- OPMSettings WARNING -------",
+                f"Could not write config file: {self.config_path}",
+                f"{type(exc).__name__}: {exc}",
+                sep="\n",
+            )
+            return False
         
 
 if __name__ ==  '__main__':

@@ -48,6 +48,30 @@ class OPMEngine(MDAEngine):
         self._config_path = config_path
         self._config = None
         self.update_config()
+
+        self._debug(
+            "ENGINE INITIALIZED",
+            f"engine={type(self).__name__}",
+            f"hardware_sequencing={use_hardware_sequencing}",
+            f"config={self._config_path}",
+        )
+
+    def _debug(self, heading: str, *details: object) -> None:
+        """Print consistently formatted engine diagnostics when enabled."""
+        if not DEBUGGING:
+            return
+        print(f"\n[OPMEngine] {heading}", flush=True)
+        for detail in details:
+            print(f"  {detail}", flush=True)
+
+    def _debug_event(self, phase: str, event: MDAEvent) -> None:
+        """Print the identity of an event entering an engine lifecycle phase."""
+        action = event.action
+        action_name = action.name if isinstance(action, CustomAction) else "IMAGE"
+        self._debug(
+            f"{phase}: {action_name}",
+            f"index={dict(event.index)}",
+        )
         
     def update_config(self):
         """Update the class config dict. from file
@@ -77,9 +101,27 @@ class OPMEngine(MDAEngine):
             )
 
         if setting=="DAQ":
-            exposure_ms = np.max(data_dict["Camera"]["exposure_channels"])
+            channel_states = data_dict["DAQ"]["channel_states"]
+            channel_exposures = data_dict["Camera"]["exposure_channels"]
+            active_exposures = [
+                float(exposure)
+                for enabled, exposure in zip(channel_states, channel_exposures)
+                if enabled
+            ]
+            if not active_exposures:
+                raise ValueError("DAQ event has no active acquisition channels")
+            if any(exposure <= 0 for exposure in active_exposures):
+                raise ValueError(
+                    "Every active DAQ channel must have an exposure greater than "
+                    f"0 ms; received {active_exposures}"
+                )
+            exposure_ms = max(active_exposures)
         else:
             exposure_ms = data_dict["Camera"]["exposure_ms"]
+            if float(exposure_ms) <= 0:
+                raise ValueError(
+                    f"Camera exposure must be greater than 0 ms; received {exposure_ms}"
+                )
         self._mmc.setProperty(
             str(self._config["Camera"]["camera_id"]), 
             "Exposure", 
@@ -111,6 +153,12 @@ class OPMEngine(MDAEngine):
             if chan_bool:
                 if setting=="DAQ":
                     exposure_ms = float(data_dict["Camera"]["exposure_channels"][chan_idx])
+                    if exposure_ms <= 0:
+                        raise ValueError(
+                            "Active DAQ channel "
+                            f"{laser_name} must have an exposure greater than 0 ms; "
+                            f"received {exposure_ms}"
+                        )
                 if setting=="AO_grid":
                     laser_power = float(
                         data_dict["AO"]["ao_dict"]["channel_powers"][chan_idx]
@@ -139,6 +187,11 @@ class OPMEngine(MDAEngine):
         """
         self.start_time = perf_counter()
         self.elapsed_time = 0
+        self._debug(
+            "SEQUENCE SETUP STARTED",
+            f"sequence_type={type(sequence).__name__}",
+            f"camera={self._config['Camera']['camera_id']}",
+        )
         # TODO
         self._mmc.setCircularBufferMemoryFootprint(32000)
         # self._mmc.setCircularBufferMemoryFootprint(16000)
@@ -152,6 +205,7 @@ class OPMEngine(MDAEngine):
         The engine should be in a state where it can call `exec_event`
         without any additional preparation.
         """
+        self._debug_event("SETUP EVENT", event)
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
@@ -387,6 +441,13 @@ class OPMEngine(MDAEngine):
                     )
             
             elif action_name == "DAQ":
+                self._debug(
+                    "DAQ PROGRAMMING STARTED",
+                    f"mode={data_dict['DAQ']['mode']}",
+                    f"channel_states={data_dict['DAQ']['channel_states']}",
+                    f"channel_powers={data_dict['DAQ']['channel_powers']}",
+                    f"exposures_ms={data_dict['Camera']['exposure_channels']}",
+                )
                 #--------------------------------------------------------#
                 # Update daq waveform values and setup daq for playback
                 self.opmDAQ.stop_waveform_playback()
@@ -432,7 +493,9 @@ class OPMEngine(MDAEngine):
                         exposure_ms = exposure_ms
                     )
                 self.opmDAQ.generate_waveforms()
+                self._debug("DAQ WAVEFORMS GENERATED")
                 self.opmDAQ.program_daq_waveforms()
+                self._debug("DAQ WAVEFORMS PROGRAMMED")
                 
                 #--------------------------------------------------------#
                 # Setup camera properties
@@ -447,6 +510,11 @@ class OPMEngine(MDAEngine):
                 
                 # Wait for MM core
                 self._mmc.waitForSystem()
+                self._debug(
+                    "DAQ SETUP COMPLETE",
+                    f"camera_exposure_ms={np.round(self._mmc.getExposure(), 2)}",
+                    f"daq_running={self.opmDAQ.running()}",
+                )
                 
                 if DEBUGGING:
                     print(
@@ -494,6 +562,7 @@ class OPMEngine(MDAEngine):
         executing the event. The default assumption is to acquire an image,
         but more elaborate events will be possible.
         """
+        self._debug_event("EXEC EVENT", event)
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
             data_dict = event.action.data
@@ -567,7 +636,12 @@ class OPMEngine(MDAEngine):
                     )
                                        
             elif action_name == "DAQ":
+                self._debug("DAQ PLAYBACK STARTING")
                 self.opmDAQ.start_waveform_playback()
+                self._debug(
+                    "DAQ PLAYBACK STARTED",
+                    f"daq_running={self.opmDAQ.running()}",
+                )
                 
             elif action_name == "Fluidics":
                 print("\nSending ttl pulse to OB1 to CLEAVE and apply READOUTS")
@@ -609,6 +683,7 @@ class OPMEngine(MDAEngine):
                     print("\nAO-mirrorUpdate: No coefficients or positions sent!")
         else:
             result = super().exec_event(event)
+            self._debug("IMAGE EVENT SUBMITTED", f"index={dict(event.index)}")
             return result
         
     def teardown_event(self, event):
@@ -617,6 +692,7 @@ class OPMEngine(MDAEngine):
         super().teardown_event(event)
         
     def teardown_sequence(self, sequence: MDASequence) -> None:
+        self._debug("SEQUENCE TEARDOWN STARTED")
         if DEBUGGING:
             print("Acq finished, tearing down.")
         

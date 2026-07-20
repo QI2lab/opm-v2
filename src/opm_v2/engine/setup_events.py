@@ -1248,6 +1248,10 @@ def setup_mirrorscan(
             "Static mirror scan acquisition selected.",
         )
     else:
+        info(
+            "MIRROR SCAN",
+            f"Mirror scan acquisition selected. Range: {scan_range_um} um, Step: {scan_step_um} um",
+        )
         scan_mode = "mirror"
         OPMdaq_setup.set_acquisition_params(
             scan_type="mirror",
@@ -1435,16 +1439,16 @@ def setup_mirrorscan(
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
     debug(
         "MIRRORSCAN ACQUISITION",
-        f"\n  timepoints / interval: {n_time_steps} / {time_interval}",
-        f"\n  Stage positions: {n_stage_positions}",
-        f"\n  Active channels: {n_active_channels}",
-        f"\n  AO frequency: {ao_mode}",
-        f"\n  o2o3 focus frequency: {o2o3_mode}",
+        f"  timepoints / interval: {n_time_steps} / {time_interval}",
+        f"  Stage positions: {n_stage_positions}",
+        f"  Active channels: {n_active_channels}",
+        f"  AO frequency: {ao_mode}",
+        f"  o2o3 focus frequency: {o2o3_mode}",
         "\nMirror scan settings:",
-        f"\n  num scan steps: {n_scan_steps}",
-        f"\n  scan range (um): {scan_range_um}",
-        f"\n  scan step (um): {scan_step_um}",
-        f"\n  DAQ scan mode: {scan_mode}",
+        f"  num scan steps: {n_scan_steps}",
+        f"  scan range (um): {scan_range_um}",
+        f"  scan step (um): {scan_step_um}",
+        f"  DAQ scan mode: {scan_mode}",
         enabled=DEBUGGING,
     )
 
@@ -1689,7 +1693,7 @@ def setup_mirrorscan(
                             )
                             opm_events.append(image_event)
                             current_chan_idx += 1
-
+    print(f"Total number of events: {len(opm_events)}")
     # Check if path ends if .zarr. If so, use our OutputHandler
     if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
         indice_sizes = {

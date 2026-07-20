@@ -407,14 +407,18 @@ def main() -> None:
             
         print(output)
         opm_events, handler = None, None
+        # TODO: allow for the mda widget to not automatically set the output suffix. 
+        # Current work around is if path suffix is ome.zarr, then we assume it is an OPM acquisition. Otherwise, we assume it is a standard MDA acquisition.
         if output is not None:
             if isinstance(output, str):
                 print("output was a string")
                 output = Path(output)
-
-            # Check if the path matches the OPM acquisition type
-            if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
+            # Temp work around
+            if Path(output).suffixes[-1] == ".zarr":
                 OPM_ACQUISITION = True
+            # Check if the path matches the OPM acquisition type
+            # if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
+            #     OPM_ACQUISITION = True
             elif optimize_now:
                 OPM_ACQUISITION = True
             else:
@@ -437,11 +441,9 @@ def main() -> None:
                 return
 
             if output:
-                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-                new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
-                new_dir.mkdir(exist_ok=True)
-                new_output = new_dir / Path(output.name)
-                output = new_output
+                # TEMP fix for output path
+                output = output.stem[:-4]+".zarr"
+                output = timestamped_output_path(output)
 
             if ("none" not in fluidics_mode) and not (optimize_now):
                 # load dialog to have user verify ESI is running.
