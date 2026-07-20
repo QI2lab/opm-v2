@@ -648,6 +648,18 @@ class OPMAppController:
         fluidics_mode = self.config["acq_config"]["fluidics"]
         optimize_now = ("now" in ao_mode) or ("now" in o2o3_mode)
 
+        if optimize_now:
+            immediate_actions = []
+            if "now" in o2o3_mode:
+                immediate_actions.append("O2-O3")
+            if "now" in ao_mode:
+                immediate_actions.append("AO")
+            self.info(
+                "OPTIMIZE NOW OVERRIDES ACQUISITION",
+                f"Only optimizing {' and '.join(immediate_actions)}",
+                "No OPM images will be acquired",
+            )
+
         if output == "memory":
             print("No output path supplied")
             output = None

@@ -141,8 +141,8 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
-        "o2o3_mode": "none",
+        "opm_mode": "projection",
+        "o2o3_mode": "optimize now",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
@@ -151,51 +151,51 @@
             "crop_y": 386.0
         },
         "AO": {
-            "mirror_state": "system flat",
+            "mirror_state": "last optimized",
             "metric": "DCT",
             "mode_delta": 0.15,
             "mode_alpha": 0.5,
             "num_iterations": 2,
             "num_mode_samples": 3,
-            "image_mirror_range_um": 150.0,
-            "channel_id": "405nm",
-            "channel_power": 10.0,
-            "exposure_ms": 150.0,
+            "image_mirror_range_um": 100.0,
+            "channel_id": "561nm",
+            "channel_power": 20.0,
+            "exposure_ms": 400.0,
             "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
             "save_dir_path": "e:/optimize_now",
-            "daq_mode": "2d",
+            "daq_mode": "projection",
             "lightsheet_mode": "on",
             "readout_ms": 4.868,
             "metric_precision": 6,
             "modes_to_optimize": "spherical first",
-            "metric_acceptance": "zero",
+            "metric_acceptance": "optimal",
             "num_averaged_frames": 1,
             "mode_accept": "zero",
             "time_interval": 6,
-            "active_channel_id": "405nm",
-            "active_channel_power": 10.0
+            "active_channel_id": "561nm",
+            "active_channel_power": 20.0
         },
         "DAQ": {
             "channel_states": [
-                false,
-                false,
-                false,
+                true,
+                true,
+                true,
                 false,
                 false
             ],
             "channel_powers": [
-                15.0,
-                8.0,
-                0.0,
+                20.0,
+                20.0,
+                20.0,
                 15.0,
                 0
             ],
             "channel_exposures_ms": [
-                10.0,
-                10.0,
-                10.0,
+                400.0,
+                400.0,
+                400.0,
                 0.0,
                 0
             ],
