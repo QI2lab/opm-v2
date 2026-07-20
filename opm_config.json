@@ -146,21 +146,21 @@
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
-            "center_y": 1154.0,
+            "center_y": 1151.0,
             "crop_x": 1900.0,
-            "crop_y": 512.0
+            "crop_y": 386.0
         },
         "AO": {
             "mirror_state": "system flat",
             "metric": "DCT",
-            "mode_delta": 0.13,
-            "mode_alpha": 0.6,
-            "num_iterations": 4,
-            "num_mode_samples": 5,
-            "image_mirror_range_um": 100.0,
+            "mode_delta": 0.15,
+            "mode_alpha": 0.5,
+            "num_iterations": 2,
+            "num_mode_samples": 3,
+            "image_mirror_range_um": 150.0,
             "channel_id": "405nm",
-            "channel_power": 1.0,
-            "exposure_ms": 100.0,
+            "channel_power": 10.0,
+            "exposure_ms": 150.0,
             "ao_mode": "none",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
@@ -168,14 +168,14 @@
             "daq_mode": "2d",
             "lightsheet_mode": "on",
             "readout_ms": 4.868,
-            "metric_precision": 5,
+            "metric_precision": 6,
             "modes_to_optimize": "spherical first",
             "metric_acceptance": "zero",
             "num_averaged_frames": 1,
             "mode_accept": "zero",
             "time_interval": 6,
             "active_channel_id": "405nm",
-            "active_channel_power": 1.0
+            "active_channel_power": 10.0
         },
         "DAQ": {
             "channel_states": [
@@ -186,17 +186,17 @@
                 false
             ],
             "channel_powers": [
-                0,
+                15.0,
+                8.0,
                 0.0,
-                0,
-                0,
+                15.0,
                 0
             ],
             "channel_exposures_ms": [
-                0,
+                10.0,
+                10.0,
+                10.0,
                 0.0,
-                0,
-                0,
                 0
             ],
             "scan_axis_step_um": 0.4,
@@ -207,10 +207,10 @@
             "coverslip_slope_x": 0.0,
             "coverslip_slope_y": 0.0,
             "coverslip_max_dz": 2.0,
-            "scan_axis_overlap_um": 40,
-            "scan_axis_overlap": 0.2,
-            "tile_axis_overlap": 0.2,
-            "z_axis_overlap": 0.2
+            "scan_axis_overlap_um": 30,
+            "scan_axis_overlap": 0.15,
+            "tile_axis_overlap": 0.15,
+            "z_axis_overlap": 0.15
         },
         "timelapse": {
             "": "none"

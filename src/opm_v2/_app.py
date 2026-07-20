@@ -470,7 +470,7 @@ class OPMAppController:
         # Get the current camera exposure
         exposure_ms = round(
             float(self.mmc.getProperty(self.config["Camera"]["camera_id"], "Exposure")),
-            0,
+            1,
         )
 
         # Get the current active laser channel, limits to one channel at a time

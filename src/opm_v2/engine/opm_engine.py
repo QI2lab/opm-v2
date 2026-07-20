@@ -154,6 +154,12 @@ class OPMEngineV2(MDAEngine):
             Custom action data dict
         setting : str or None
             Camera configuration context.
+
+        Raises
+        ------
+        ValueError
+            If a DAQ event has no enabled channel with a positive exposure or
+            a non-DAQ camera exposure is not positive.
         """
         if not (int(data_dict["Camera"]["camera_crop"][3]) == self.mmcore.getROI()[-1]):
             self.mmcore.clearROI()
@@ -166,9 +172,13 @@ class OPMEngineV2(MDAEngine):
             )
 
         if setting == "DAQ":
-            exposure_ms = np.max(data_dict["Camera"]["exposure_channels"])
+            exposure_ms = max(self._active_daq_exposures(data_dict))
         else:
-            exposure_ms = data_dict["Camera"]["exposure_ms"]
+            exposure_ms = float(data_dict["Camera"]["exposure_ms"])
+            if exposure_ms <= 0:
+                raise ValueError(
+                    f"Camera exposure must be greater than 0 ms; received {exposure_ms}"
+                )
         self.mmcore.setProperty(
             str(self._config["Camera"]["camera_id"]),
             "Exposure",
@@ -176,6 +186,51 @@ class OPMEngineV2(MDAEngine):
         )
         self.mmcore.waitForDevice(str(self._config["Camera"]["camera_id"]))
         self.mmcore.getROI()
+
+    @staticmethod
+    def _active_daq_exposures(data_dict: dict) -> list[float]:
+        """Return validated exposures for enabled DAQ channels.
+
+        Parameters
+        ----------
+        data_dict : dict
+            DAQ custom-action payload containing channel states and exposures.
+
+        Returns
+        -------
+        list[float]
+            Positive exposure times for enabled channels, in channel order.
+
+        Raises
+        ------
+        ValueError
+            If no DAQ channel is enabled, the state and exposure arrays differ
+            in length, or an enabled channel has a non-positive exposure.
+        """
+        channel_states = data_dict["DAQ"]["channel_states"]
+        channel_exposures = data_dict["Camera"]["exposure_channels"]
+        try:
+            active_exposures = [
+                float(exposure)
+                for enabled, exposure in zip(
+                    channel_states,
+                    channel_exposures,
+                    strict=True,
+                )
+                if enabled
+            ]
+        except ValueError as exc:
+            raise ValueError(
+                "DAQ channel states and camera exposures must have equal lengths"
+            ) from exc
+        if not active_exposures:
+            raise ValueError("DAQ event has no active acquisition channels")
+        if any(exposure <= 0 for exposure in active_exposures):
+            raise ValueError(
+                "Every active DAQ channel must have an exposure greater than "
+                f"0 ms; received {active_exposures}"
+            )
+        return active_exposures
 
     def configure_stage_camera_trigger(self) -> None:
         """Configure the camera hardware to accept the ASI stage-sync trigger."""
@@ -221,6 +276,8 @@ class OPMEngineV2(MDAEngine):
             and not (setting == "AO_grid")
         ):
             raise Exception("Engine laser configuration missing setting")
+        if setting == "DAQ":
+            self._active_daq_exposures(data_dict)
         if setting == "AO_grid":
             enumerator = enumerate(data_dict["AO"]["ao_dict"]["channel_states"])
         else:

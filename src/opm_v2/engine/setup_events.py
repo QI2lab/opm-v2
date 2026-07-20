@@ -1264,6 +1264,12 @@ def setup_timelapse(
         mirror_voltages = np.array([config["NIDAQ"]["image_mirror_neutral_v"]])
     else:
         scan_mode = "mirror"
+        info(
+            "MIRROR SCAN",
+            "Mirror scan acquisition selected.",
+            f"Range: {scan_range_um} um",
+            f"Step: {scan_step_um} um",
+        )
         OPMdaq_setup.set_acquisition_params(
             scan_type=scan_mode,
             channel_states=channel_states,

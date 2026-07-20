@@ -18,8 +18,6 @@ from scipy.fft import dct
 from scipy.ndimage import center_of_mass, laplace
 from scipy.optimize import curve_fit
 
-from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
-
 try:
     from opm_v2.hardware.AOMirror import AOMirror
     from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -503,6 +501,8 @@ def run_ao_optimization(
     active_coeffs: Modal coefficients to apply to the mirror before acquiring an image
                    and metric. This array is only used for perturbing the mirror.
     """
+    from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
+
     # Saved lists, covert to arrays at the end
     all_images = []
     all_metrics = []
@@ -2204,7 +2204,33 @@ def run_ao_grid_mapping(
     -------
     bool
         Whether grid mapping completed successfully.
+
+    Raises
+    ------
+    KeyError
+        If the AO configuration omits a required optimization setting.
     """
+    required_ao_keys = {
+        "channel_states",
+        "daq_mode",
+        "exposure_ms",
+        "image_mirror_range_um",
+        "iterations",
+        "metric",
+        "metric_acceptance",
+        "metric_precision",
+        "mirror_state",
+        "modal_alpha",
+        "modal_delta",
+        "modes_to_optimize",
+        "num_averaged_frames",
+        "num_mode_samples",
+    }
+    missing_ao_keys = required_ao_keys.difference(ao_dict)
+    if missing_ao_keys:
+        missing = ", ".join(sorted(missing_ao_keys))
+        raise KeyError(f"AO grid ao_dict is missing required keys: {missing}")
+
     if verbose:
         print(
             "\n++++++++++++++++ RUNNING SENSORLESS GRID AO ++++++++++++++++\n",
@@ -2379,7 +2405,7 @@ def run_ao_grid_mapping(
             metric_precision=ao_dict["metric_precision"],
             modes_to_optimize=ao_dict["modes_to_optimize"],
             starting_mirror_state=mirror_state,
-            mode_acceptance=ao_dict["mode_acceptance"],
+            mode_acceptance=ao_dict["metric_acceptance"],
             num_averaged_frames=ao_dict["num_averaged_frames"],
             pos_idx=None,
             save_dir_path=current_save_dir,

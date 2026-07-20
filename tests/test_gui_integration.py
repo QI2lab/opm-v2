@@ -9,7 +9,6 @@ from typing import Any
 import pytest
 from pymmcore_gui._qt.QtCore import Qt
 from pymmcore_gui._qt.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
-from useq import MDASequence
 
 from opm_v2._app import launch_opm_app
 from opm_v2._update_config_widget import OPMSettingsV2
@@ -237,6 +236,54 @@ def test_custom_widget_loads_reusable_configuration_without_resetting_it(
     ]
 
 
+def test_custom_widget_does_not_emit_settings_after_failed_write(
+    workspace_tmp_path,
+    qtbot,
+    opm_config_factory,
+    monkeypatch,
+    capsys,
+) -> None:
+    """Report a write failure without publishing settings that were not saved.
+
+    Parameters
+    ----------
+    workspace_tmp_path : pathlib.Path
+        Workspace-local output directory.
+    qtbot : pytestqt.qtbot.QtBot
+        Qt test helper managing the settings widget.
+    opm_config_factory : OpmConfigFactory
+        Reusable OPM demo-configuration factory.
+    monkeypatch : pytest.MonkeyPatch
+        Fixture replacing the final filesystem write.
+    capsys : pytest.CaptureFixture[str]
+        Fixture capturing the user-facing warning.
+    """
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="projection"),
+        workspace_tmp_path / "unwritable_widget.json",
+    )
+    settings = OPMSettingsV2(config_path)
+    qtbot.addWidget(settings)
+    emitted_settings = []
+    settings.settings_changed.connect(emitted_settings.append)
+
+    def fail_write(*_args, **_kwargs) -> None:
+        """Simulate an operating-system write failure.
+
+        Raises
+        ------
+        PermissionError
+            Always, to represent an unwritable configuration file.
+        """
+        raise PermissionError("configuration is read-only")
+
+    monkeypatch.setattr(Path, "write_text", fail_write)
+    settings.update_config()
+
+    assert emitted_settings == []
+    assert "Could not write config file" in capsys.readouterr().out
+
+
 def test_every_custom_combo_box_option_persists(
     workspace_tmp_path, qtbot, opm_config_factory
 ) -> None:
@@ -408,38 +455,6 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
             assert persisted["channel_states"][channel_index] is checked
 
 
-def _sequence_for_scenario(mode: str, scenario: dict[str, Any]) -> MDASequence:
-    """Build the standard sequence envelope consumed by an OPM mode.
-
-    This does not test the standard MDA widget; it supplies only the plans that
-    the custom OPM event builder reads.
-
-    Parameters
-    ----------
-    mode : str
-        OPM acquisition mode.
-    scenario : dict[str, Any]
-        Reusable integration scenario.
-
-    Returns
-    -------
-    MDASequence
-        Sequence containing the required position, grid, and time plans.
-    """
-    if mode == "stage":
-        return MDASequence(
-            grid_plan={"top": 0.0, "left": 0.0, "bottom": 0.0, "right": 10.0},
-            axis_order=scenario["axis_order"],
-        )
-    kwargs: dict[str, Any] = {
-        "stage_positions": [(0.0, 0.0, 0.0)],
-        "axis_order": scenario["axis_order"],
-    }
-    if mode == "timelapse":
-        kwargs["time_plan"] = {"interval": 0, "loops": scenario["time_loops"]}
-    return MDASequence(**kwargs)
-
-
 @pytest.mark.parametrize(
     ("ao_mode", "o2o3_mode", "expected_action"),
     [
@@ -528,32 +543,14 @@ def test_custom_gui_selection_reaches_engine_and_tensorstore(
     opm_config_factory,
     read_tensorstore_array,
     camera_frame_recorder,
+    opm_config_from_scenario,
+    sequence_for_scenario,
 ) -> None:
     """Run every configured OPM mode and option through persisted pixels."""
     scenario = gui_integration_scenario
     mode = scenario["mode"]
     ao_options = scenario["ao_options"]
-    config = opm_config_factory(
-        mode=mode,
-        active_channels=scenario["active_channels"],
-        channel_powers=scenario["channel_powers"],
-        channel_exposures_ms=scenario["channel_exposures_ms"],
-        camera_shape=tuple(scenario["camera_shape"]),
-        scan_range_um=scenario["scan_range_um"],
-        scan_axis_step_um=scenario["scan_axis_step_um"],
-        updates={
-            "acq_config": {
-                "o2o3_mode": scenario["o2o3_mode"],
-                "fluidics": scenario["fluidics"],
-                "AO": {"ao_mode": scenario["ao_mode"], **ao_options},
-                "DAQ": {"laser_blanking": scenario["laser_blanking"]},
-                "stage_scan": {
-                    "excess_start_frames": scenario.get("excess_start_frames", 0),
-                    "excess_end_frames": scenario.get("excess_end_frames", 0),
-                },
-            }
-        },
-    )
+    config = opm_config_from_scenario(scenario)
     config_path = opm_config_factory.write(
         config, workspace_tmp_path / f"{scenario['name']}_gui.json"
     )
@@ -673,7 +670,7 @@ def test_custom_gui_selection_reaches_engine_and_tensorstore(
         }.items():
             assert persisted["acq_config"]["AO"][option] == value
 
-        sequence = _sequence_for_scenario(mode, scenario)
+        sequence = sequence_for_scenario(scenario)
         controller.mda_widget.value = lambda: sequence
         requested_output = workspace_tmp_path / "data.zarr"
         controller.confirm_fluidics_ready = lambda: True

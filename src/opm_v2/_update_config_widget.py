@@ -1108,9 +1108,8 @@ class OPMSettingsV2(QWidget):
 
         self.config = config
 
-        self._write_config()
-
-        self.settings_changed.emit(self.value())
+        if self._write_config():
+            self.settings_changed.emit(self.value())
 
     def value(self) -> dict:
         """Return an isolated snapshot of the current GUI configuration.
@@ -1122,9 +1121,25 @@ class OPMSettingsV2(QWidget):
         """
         return deepcopy(self.config)
 
-    def _write_config(self):
-        """Atomically replace the JSON configuration with current settings."""
-        tmp_path = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
-        with open(tmp_path, "w") as file:
-            json.dump(self.config, file, indent=4)
-        tmp_path.replace(self.config_path)
+    def _write_config(self) -> bool:
+        """Persist current settings to the widget's configuration file.
+
+        Returns
+        -------
+        bool
+            Whether the complete configuration was written successfully.
+        """
+        try:
+            self.config_path.write_text(
+                json.dumps(self.config, indent=4),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            print(
+                "------- OPMSettings WARNING -------",
+                f"Could not write config file: {self.config_path}",
+                f"{type(exc).__name__}: {exc}",
+                sep="\n",
+            )
+            return False
+        return True

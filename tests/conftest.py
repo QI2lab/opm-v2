@@ -20,7 +20,7 @@ import numpy as np
 import pytest
 import tensorstore as ts
 from pymmcore_plus import CMMCorePlus
-from useq import CustomAction, MDAEvent
+from useq import CustomAction, MDAEvent, MDASequence
 
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.APump import APump
@@ -172,7 +172,23 @@ class OpmConfigFactory:
                         "crop_x": crop_x,
                         "crop_y": crop_y,
                     },
-                    "AO": {"ao_mode": "none"},
+                    "AO": {
+                        "ao_mode": "none",
+                        "mirror_state": "system flat",
+                        "metric": "DCT",
+                        "mode_delta": 0.15,
+                        "mode_alpha": 0.5,
+                        "num_iterations": 2,
+                        "num_mode_samples": 3,
+                        "image_mirror_range_um": 150.0,
+                        "active_channel_id": "405nm",
+                        "active_channel_power": 10.0,
+                        "exposure_ms": 150.0,
+                        "readout_ms": 4.868,
+                        "metric_precision": 6,
+                        "metric_acceptance": "zero",
+                        "num_averaged_frames": 1,
+                    },
                     "DAQ": {
                         "channel_states": states,
                         "channel_powers": powers,
@@ -447,6 +463,112 @@ def gui_integration_scenario(request: pytest.FixtureRequest) -> dict[str, Any]:
     scenario = deepcopy(GUI_INTEGRATION_CONFIGURATIONS[str(request.param)])
     scenario["name"] = str(request.param)
     return scenario
+
+
+@pytest.fixture
+def opm_config_from_scenario(
+    opm_config_factory: OpmConfigFactory,
+) -> Callable[[Mapping[str, Any]], dict[str, Any]]:
+    """Build an OPM configuration from a reusable acquisition scenario.
+
+    Parameters
+    ----------
+    opm_config_factory : OpmConfigFactory
+        Canonical demo-configuration factory.
+
+    Returns
+    -------
+    Callable[[Mapping[str, Any]], dict[str, Any]]
+        Function converting one scenario mapping into an isolated configuration.
+    """
+
+    def _build(scenario: Mapping[str, Any]) -> dict[str, Any]:
+        """Build one scenario configuration.
+
+        Parameters
+        ----------
+        scenario : Mapping[str, Any]
+            Acquisition mode and custom-widget selections.
+
+        Returns
+        -------
+        dict[str, Any]
+            Independent OPM configuration for the scenario.
+        """
+        return opm_config_factory(
+            mode=str(scenario["mode"]),
+            active_channels=scenario["active_channels"],
+            channel_powers=scenario["channel_powers"],
+            channel_exposures_ms=scenario["channel_exposures_ms"],
+            camera_shape=tuple(scenario["camera_shape"]),
+            scan_range_um=float(scenario["scan_range_um"]),
+            scan_axis_step_um=float(scenario["scan_axis_step_um"]),
+            updates={
+                "acq_config": {
+                    "o2o3_mode": scenario["o2o3_mode"],
+                    "fluidics": scenario["fluidics"],
+                    "AO": {
+                        "ao_mode": scenario["ao_mode"],
+                        **scenario.get("ao_options", {}),
+                    },
+                    "DAQ": {"laser_blanking": scenario["laser_blanking"]},
+                    "stage_scan": {
+                        "excess_start_frames": scenario.get("excess_start_frames", 0),
+                        "excess_end_frames": scenario.get("excess_end_frames", 0),
+                    },
+                }
+            },
+        )
+
+    return _build
+
+
+@pytest.fixture
+def sequence_for_scenario() -> Callable[[Mapping[str, Any]], MDASequence]:
+    """Build standard useq plans consumed by OPM scenario tests.
+
+    Returns
+    -------
+    Callable[[Mapping[str, Any]], MDASequence]
+        Function producing the scenario's MDA sequence envelope.
+    """
+
+    def _build(scenario: Mapping[str, Any]) -> MDASequence:
+        """Build one scenario sequence.
+
+        Parameters
+        ----------
+        scenario : Mapping[str, Any]
+            Acquisition scenario containing mode, axis, and optional time plans.
+
+        Returns
+        -------
+        MDASequence
+            Standard useq sequence consumed by the OPM event builder.
+        """
+        if scenario["mode"] == "stage":
+            kwargs: dict[str, Any] = {
+                "grid_plan": {
+                    "top": 0.0,
+                    "left": 0.0,
+                    "bottom": 0.0,
+                    "right": 10.0,
+                },
+                "axis_order": scenario["axis_order"],
+            }
+        else:
+            kwargs = {
+                "stage_positions": [(0.0, 0.0, 0.0)],
+                "axis_order": scenario["axis_order"],
+            }
+        if scenario.get("time_loops"):
+            kwargs["time_plan"] = {
+                "interval": scenario.get("time_interval", 0),
+                "loops": scenario["time_loops"],
+            }
+        return MDASequence(**kwargs)
+
+    return _build
 
 
 @pytest.fixture(autouse=True)

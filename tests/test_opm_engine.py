@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
 from pymmcore_plus.mda import MDAEngine
 from useq import MDAEvent
 
@@ -88,3 +89,25 @@ def test_simulated_non_imaging_action_returns_no_camera_frames() -> None:
 
     assert result == ()
     assert engine.simulated_custom_actions == [ACTION_FLUIDICS]
+
+
+def test_daq_exposure_validation_uses_only_enabled_channels() -> None:
+    """Validate DAQ exposure arrays before any camera or laser operation."""
+    payload = {
+        "DAQ": {"channel_states": [True, False, True]},
+        "Camera": {"exposure_channels": [5.0, 0.0, 7.0]},
+    }
+    assert OPMEngineV2._active_daq_exposures(payload) == [5.0, 7.0]
+
+    payload["DAQ"]["channel_states"] = [False, False, False]
+    with pytest.raises(ValueError, match="no active acquisition channels"):
+        OPMEngineV2._active_daq_exposures(payload)
+
+    payload["DAQ"]["channel_states"] = [True, False, False]
+    payload["Camera"]["exposure_channels"] = [0.0, 4.0, 4.0]
+    with pytest.raises(ValueError, match="greater than 0 ms"):
+        OPMEngineV2._active_daq_exposures(payload)
+
+    payload["Camera"]["exposure_channels"] = [4.0]
+    with pytest.raises(ValueError, match="equal lengths"):
+        OPMEngineV2._active_daq_exposures(payload)
