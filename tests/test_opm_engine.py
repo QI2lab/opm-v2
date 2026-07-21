@@ -7,10 +7,11 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 from pymmcore_plus.mda import MDAEngine
-from useq import MDAEvent
+from useq import MDAEvent, MDASequence
 
 from opm_v2.engine.opm_custom_events import (
     ACTION_FLUIDICS,
+    STAGE_MOVE_SPEED_METADATA_KEY,
     create_asi_scan_setup_event,
     create_fluidics_event,
 )
@@ -30,6 +31,7 @@ def _isolated_engine() -> OPMEngineV2:
     engine.simulated_asi_state = {}
     engine.simulated_asi_transitions = []
     engine.simulated_custom_actions = []
+    engine.simulated_stage_move_speeds = []
     engine.start_asi_scan_after_camera_sequence = False
     return engine
 
@@ -121,6 +123,92 @@ def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
         "XYStage", "ScanFastAxisStopPosition(mm)", pytest.approx(3.168460)
     ) in mmcore.setProperty.call_args_list
     engine.configure_stage_camera_trigger.assert_called_once_with()
+
+
+def test_preview_stage_move_speed_override_is_restored() -> None:
+    """Apply Explorer sequence speeds and restore captured normal values."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    engine._config = {
+        "OPM": {"stage_move_speed": 0.05, "circular_buffer_mb": 64}
+    }
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.hasProperty.return_value = True
+    mmcore.getProperty.side_effect = lambda _device, prop: {
+        "MotorSpeedX-S(mm/s)": "0.05",
+        "MotorSpeedY-S(mm/s)": "0.08",
+    }[prop]
+    sequence = MDASequence(
+        metadata={
+            STAGE_MOVE_SPEED_METADATA_KEY: {
+                "move_speed_x_mm_s": 0.2,
+                "move_speed_y_mm_s": 0.32,
+            }
+        }
+    )
+
+    with patch.object(MDAEngine, "setup_sequence") as upstream_setup:
+        engine.setup_sequence(sequence)
+
+    upstream_setup.assert_called_once_with(sequence)
+    assert call("XYStage", "MotorSpeedX-S(mm/s)", 0.2) in (
+        mmcore.setProperty.call_args_list
+    )
+    assert call("XYStage", "MotorSpeedY-S(mm/s)", 0.32) in (
+        mmcore.setProperty.call_args_list
+    )
+    assert engine.simulated_stage_move_speeds == [{"x": 0.2, "y": 0.32}]
+    assert engine._stage_speeds_before_sequence == {
+        "MotorSpeedX-S(mm/s)": "0.05",
+        "MotorSpeedY-S(mm/s)": "0.08",
+    }
+
+    engine._restore_stage_after_scan()
+
+    assert call("XYStage", "MotorSpeedX-S(mm/s)", "0.05") in (
+        mmcore.setProperty.call_args_list
+    )
+    assert call("XYStage", "MotorSpeedY-S(mm/s)", "0.08") in (
+        mmcore.setProperty.call_args_list
+    )
+    assert engine._stage_speeds_before_sequence == {}
+
+
+def test_explorer_teardown_returns_xy_before_restoring_normal_speed() -> None:
+    """Allow the upstream XY return at 4x speed before restoring speed/timeout."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    engine._config = {
+        "NIDAQ": {"image_mirror_neutral_v": 0.0},
+        "Camera": {"camera_id": "Camera"},
+    }
+    engine.opmDAQ = MagicMock()
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.output_path = None
+    engine._post_teardown = None
+    mmcore.hasProperty.return_value = False
+    mmcore.getTimeoutMs.return_value = 5000
+    sequence = MDASequence(metadata={STAGE_MOVE_SPEED_METADATA_KEY: {}})
+    teardown_order: list[str] = []
+
+    with (
+        patch.object(
+            MDAEngine,
+            "teardown_sequence",
+            side_effect=lambda _sequence: teardown_order.append("return_xy"),
+        ),
+        patch.object(
+            engine,
+            "_restore_stage_after_scan",
+            side_effect=lambda: teardown_order.append("restore_speed"),
+        ),
+    ):
+        engine.teardown_sequence(sequence)
+
+    assert teardown_order == ["return_xy", "restore_speed"]
+    assert mmcore.setTimeoutMs.call_args_list == [call(30_000), call(5000)]
 
 
 def test_simulated_non_imaging_action_returns_no_camera_frames() -> None:

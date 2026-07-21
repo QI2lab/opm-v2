@@ -11,7 +11,7 @@ Change Log:
 
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from copy import deepcopy
 from pathlib import Path
 from time import monotonic, sleep
@@ -39,6 +39,7 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_MIRROR_MOVE,
     ACTION_O2O3_AUTOFOCUS,
     ACTION_STAGE_MOVE,
+    STAGE_MOVE_SPEED_METADATA_KEY,
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -50,6 +51,7 @@ logging.getLogger("pymmcore-plus")
 
 DEBUGGING = True
 POWER_STR = " - PowerSetpoint (%)"
+STAGE_EXPLORER_TEARDOWN_TIMEOUT_MS = 30_000
 
 
 def debug(header: str, *lines: object) -> None:
@@ -136,6 +138,7 @@ class OPMEngineV2(MDAEngine):
         self.simulated_asi_state: dict[str, float | str] = {}
         self.simulated_asi_transitions: list[str] = []
         self.simulated_custom_actions: list[str] = []
+        self.simulated_stage_move_speeds: list[dict[str, float]] = []
         self._stage_speeds_before_sequence: dict[str, str] = {}
 
     def update_config(self):
@@ -341,6 +344,10 @@ class OPMEngineV2(MDAEngine):
             Summary metadata returned by the base engine.
         """
         self._capture_stage_speeds()
+        metadata = getattr(sequence, "metadata", {})
+        speed_override = metadata.get(STAGE_MOVE_SPEED_METADATA_KEY, {})
+        if isinstance(speed_override, Mapping):
+            self._apply_stage_move_speeds(speed_override)
         buffer_mb = (
             64
             if self.simulate_hardware
@@ -360,6 +367,24 @@ class OPMEngineV2(MDAEngine):
                 self._stage_speeds_before_sequence[prop] = self.mmcore.getProperty(
                     xy_stage, prop
                 )
+
+    def _apply_stage_move_speeds(self, speeds: Mapping[str, float]) -> None:
+        """Apply optional per-axis speeds after normal speeds have been captured."""
+        speed_properties = {
+            "move_speed_x_mm_s": ("x", "MotorSpeedX-S(mm/s)"),
+            "move_speed_y_mm_s": ("y", "MotorSpeedY-S(mm/s)"),
+        }
+        xy_stage = self.mmcore.getXYStageDevice()
+        applied: dict[str, float] = {}
+        for speed_key, (axis, property_name) in speed_properties.items():
+            if speed_key not in speeds:
+                continue
+            speed = float(speeds[speed_key])
+            applied[axis] = speed
+            if xy_stage and self.mmcore.hasProperty(xy_stage, property_name):
+                self.mmcore.setProperty(xy_stage, property_name, speed)
+        if self.simulate_hardware and applied:
+            self.simulated_stage_move_speeds.append(applied)
 
     def _stop_active_stage_scan(self, timeout_s: float = 30.0) -> None:
         """Stop an ASI scan and wait for its controller cleanup to finish.
@@ -412,20 +437,19 @@ class OPMEngineV2(MDAEngine):
             if self.simulated_asi_state:
                 self.simulated_asi_state["scan_state"] = "Idle"
                 self.simulated_asi_transitions.append("Idle")
-            self._stage_speeds_before_sequence = {}
-            return
 
         xy_stage = self.mmcore.getXYStageDevice()
         if not xy_stage:
             self._stage_speeds_before_sequence = {}
             return
 
-        try:
-            self._stop_active_stage_scan()
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Could not return the ASI stage scan to Idle"
-            )
+        if not self.simulate_hardware:
+            try:
+                self._stop_active_stage_scan()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not return the ASI stage scan to Idle"
+                )
 
         fallback_speed = self._config["OPM"]["stage_move_speed"]
         for prop in ("MotorSpeedX-S(mm/s)", "MotorSpeedY-S(mm/s)"):
@@ -478,17 +502,22 @@ class OPMEngineV2(MDAEngine):
                 # changing speeds or commanding the next XY position.
                 self._stop_active_stage_scan()
 
-                # Move stage to position, with normal speed
-                stage_move_speed = self._config["OPM"]["stage_move_speed"]
-                xy_stage = self.mmcore.getXYStageDevice()
-                if self.mmcore.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
-                    self.mmcore.setProperty(
-                        xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed
-                    )
-                if self.mmcore.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
-                    self.mmcore.setProperty(
-                        xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed
-                    )
+                # Move the stage at the normal configured speed unless this event
+                # explicitly requests an accelerated Stage Explorer preview move.
+                stage_data = data_dict["Stage"]
+                stage_move_speed = float(self._config["OPM"]["stage_move_speed"])
+                stage_move_speed_x = float(
+                    stage_data.get("move_speed_x_mm_s", stage_move_speed)
+                )
+                stage_move_speed_y = float(
+                    stage_data.get("move_speed_y_mm_s", stage_move_speed)
+                )
+                self._apply_stage_move_speeds(
+                    {
+                        "move_speed_x_mm_s": stage_move_speed_x,
+                        "move_speed_y_mm_s": stage_move_speed_y,
+                    }
+                )
                 self.mmcore.setPosition(np.round(float(data_dict["Stage"]["z_pos"]), 2))
                 self.mmcore.waitForDevice(self.mmcore.getFocusDevice())
                 target_x = np.round(float(data_dict["Stage"]["x_pos"]), 2)
@@ -944,52 +973,82 @@ class OPMEngineV2(MDAEngine):
             Sequence that has completed or been canceled.
         """
         debug("TEARDOWN", "Acquisition finished, tearing down.")
+        sequence_metadata = getattr(sequence, "metadata", {})
+        is_stage_explorer_preview = (
+            STAGE_MOVE_SPEED_METADATA_KEY in sequence_metadata
+        )
+        preview_stage_restored = False
 
-        # Shut down the trigger source before stopping the hardware scan.  Stage
-        # restoration remains guaranteed if any DAQ cleanup operation fails.
         try:
-            self.opmDAQ.clear_tasks()
-            self.opmDAQ.reset()
-            self.opmDAQ.set_mirror_neutral_position(
-                image_mirror_v=float(self._config["NIDAQ"]["image_mirror_neutral_v"])
-            )
-        finally:
-            self._restore_stage_after_scan()
-
-        # Put cameras that expose the Hamamatsu trigger properties back in internal mode.
-        camera = str(self._config["Camera"]["camera_id"])
-        if self.mmcore.hasProperty(camera, "TriggerPolarity"):
-            self.mmcore.setProperty(camera, "TriggerPolarity", "POSITIVE")
-            self.mmcore.waitForDevice(camera)
-        if self.mmcore.hasProperty(camera, "TRIGGER SOURCE"):
-            self.mmcore.setProperty(camera, "TRIGGER SOURCE", "INTERNAL")
-            self.mmcore.waitForDevice(camera)
-
-        # Set all lasers to zero emission
-        for laser in self._config["Lasers"]["laser_names"]:
-            if self.simulate_hardware:
-                self.simulated_laser_powers[laser] = 0.0
-            else:
-                self.mmcore.setProperty(
-                    self._config["Lasers"]["name"], laser + " - PowerSetpoint (%)", 0.0
-                )
-
-        # save mirror positions array
-        if self.AOMirror.output_path:
-            self.AOMirror.save_positions_array()
-        self.mmcore.clearCircularBuffer()
-        # TODO
-        # self.mmcore.setCircularBufferMemoryFootprint(16000)
-
-        super().teardown_sequence(sequence)
-        if self._post_teardown is not None:
+            # Shut down the trigger source before stopping the hardware scan.
+            # Saved OPM acquisitions restore move speeds immediately.  Explorer
+            # previews keep their temporary 4x speed through the upstream return
+            # to the pre-scan XY position.
             try:
-                self._post_teardown()
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Could not prepare live preview after OPM teardown"
+                self.opmDAQ.clear_tasks()
+                self.opmDAQ.reset()
+                self.opmDAQ.set_mirror_neutral_position(
+                    image_mirror_v=float(
+                        self._config["NIDAQ"]["image_mirror_neutral_v"]
+                    )
                 )
-                warning(
-                    "LIVE PREVIEW PREPARATION FAILED",
-                    "Live preview will rebuild the DAQ waveform when started.",
+            finally:
+                if not is_stage_explorer_preview:
+                    self._restore_stage_after_scan()
+
+            # Put cameras that expose the Hamamatsu trigger properties back in
+            # internal mode.
+            camera = str(self._config["Camera"]["camera_id"])
+            if self.mmcore.hasProperty(camera, "TriggerPolarity"):
+                self.mmcore.setProperty(camera, "TriggerPolarity", "POSITIVE")
+                self.mmcore.waitForDevice(camera)
+            if self.mmcore.hasProperty(camera, "TRIGGER SOURCE"):
+                self.mmcore.setProperty(camera, "TRIGGER SOURCE", "INTERNAL")
+                self.mmcore.waitForDevice(camera)
+
+            # Explorer previews use the live Config Groups controls, so preserve
+            # their laser-power properties.  Saved OPM acquisitions retain their
+            # existing zero-emission cleanup behavior.
+            if not is_stage_explorer_preview:
+                for laser in self._config["Lasers"]["laser_names"]:
+                    if self.simulate_hardware:
+                        self.simulated_laser_powers[laser] = 0.0
+                    else:
+                        self.mmcore.setProperty(
+                            self._config["Lasers"]["name"],
+                            laser + " - PowerSetpoint (%)",
+                            0.0,
+                        )
+
+            if self.AOMirror.output_path:
+                self.AOMirror.save_positions_array()
+            self.mmcore.clearCircularBuffer()
+
+            if is_stage_explorer_preview:
+                original_timeout_ms = int(self.mmcore.getTimeoutMs())
+                self.mmcore.setTimeoutMs(
+                    max(original_timeout_ms, STAGE_EXPLORER_TEARDOWN_TIMEOUT_MS)
                 )
+                try:
+                    super().teardown_sequence(sequence)
+                finally:
+                    self.mmcore.setTimeoutMs(original_timeout_ms)
+                    self._restore_stage_after_scan()
+                    preview_stage_restored = True
+            else:
+                super().teardown_sequence(sequence)
+
+            if self._post_teardown is not None:
+                try:
+                    self._post_teardown()
+                except Exception:
+                    logging.getLogger(__name__).exception(
+                        "Could not prepare live preview after OPM teardown"
+                    )
+                    warning(
+                        "LIVE PREVIEW PREPARATION FAILED",
+                        "Live preview will rebuild the DAQ waveform when started.",
+                    )
+        finally:
+            if is_stage_explorer_preview and not preview_stage_restored:
+                self._restore_stage_after_scan()

@@ -18,6 +18,11 @@ ACTION_DAQ = "DAQ"
 ACTION_STAGE_MOVE = "Stage-Move"
 ACTION_ASI_SETUP_SCAN = "ASI-setupscan"
 
+# MDASequence metadata used only by Stage Explorer preview scans.  The OPM
+# engine consumes this before ordinary useq image events are delegated to the
+# upstream engine, then restores the captured speeds during teardown.
+STAGE_MOVE_SPEED_METADATA_KEY = "opm_stage_move_speeds_mm_s"
+
 VALID_DAQ_MODES = {"2d", "projection", "mirror", "stage"}
 
 

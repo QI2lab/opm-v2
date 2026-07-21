@@ -21,6 +21,7 @@ from pymmcore_plus import CMMCorePlus
 
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.debug_printing import debug, info, warning
+from opm_v2.engine.opm_custom_events import STAGE_MOVE_SPEED_METADATA_KEY
 from opm_v2.engine.opm_engine import OPMEngineV2
 from opm_v2.engine.setup_events import (
     OPMEventBuilder,
@@ -91,6 +92,197 @@ def _install_safe_core_action_initializers() -> None:
     ActionInfo.for_key(CoreAction.TOGGLE_LIVE).on_created = (
         _initialize_live_action_safely
     )
+
+
+def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
+    """Return camera FOV extents in physical stage-world X and Y.
+
+    Returns
+    -------
+    tuple[float, float]
+        Axis-aligned physical stage X and Y extents in micrometers.
+    """
+    image_width = float(stage_explorer._mmc.getImageWidth())
+    image_height = float(stage_explorer._mmc.getImageHeight())
+    linear = np.asarray(stage_explorer._affine_state.system_affine)[:2, :2]
+    world_width = abs(linear[0, 0]) * image_width + abs(linear[0, 1]) * image_height
+    world_height = abs(linear[1, 0]) * image_width + abs(linear[1, 1]) * image_height
+    return float(world_width), float(world_height)
+
+
+def _update_stage_explorer_transformed_fov(stage_explorer) -> None:
+    """Update ROI tiling after the upstream camera/ROI bookkeeping runs."""
+    stage_explorer._opm_original_on_roi_changed()
+    stage_explorer.roi_manager.update_fovs(stage_explorer._fov_w_h())
+
+
+def _refresh_stage_explorer_pixel_size(stage_explorer, value: float) -> None:
+    """Refresh the Explorer affine and its physical FOV after a scale change."""
+    stage_explorer._opm_original_on_pixel_size_changed(value)
+    stage_explorer._on_roi_changed()
+
+
+def _refresh_stage_explorer_pixel_affine(stage_explorer) -> None:
+    """Refresh the Explorer affine and its physical FOV after an axis change."""
+    stage_explorer._opm_original_on_pixel_size_affine_changed()
+    stage_explorer._on_roi_changed()
+
+
+def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
+    """Return one selected ROI as a physical Stage Explorer region.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position containing the selected rectangular ROI grid.
+
+    Raises
+    ------
+    ValueError
+        If a single-FOV ROI is not rectangular.
+    """
+    overlap, mode = stage_explorer._toolbar.scan_menu.value()
+    fov_width, fov_height = stage_explorer._fov_w_h()
+    z_position = stage_explorer._mmc.getZPosition()
+    position = roi.create_useq_position(
+        fov_width,
+        fov_height,
+        z_pos=z_position,
+        overlap=overlap,
+        mode=mode,
+    )
+    if position.sequence and position.sequence.grid_plan:
+        return position
+
+    left, top, right, bottom = roi.bbox()
+    if type(roi).__name__ != "RectangleROI":
+        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
+    grid_plan = useq.GridFromEdges(
+        top=top,
+        bottom=bottom,
+        left=left,
+        right=right,
+        fov_width=fov_width,
+        fov_height=fov_height,
+        overlap=(overlap, overlap),
+        mode=mode,
+    )
+    return position.replace(sequence=useq.MDASequence(grid_plan=grid_plan))
+
+
+def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
+    """Return four times the current XY speeds for an Explorer preview.
+
+    Returns
+    -------
+    dict[str, float]
+        Per-axis speed keys and accelerated speeds in millimeters per second.
+    """
+    xy_stage = mmc.getXYStageDevice()
+    speed_keys = {
+        "MotorSpeedX-S(mm/s)": "move_speed_x_mm_s",
+        "MotorSpeedY-S(mm/s)": "move_speed_y_mm_s",
+    }
+    accelerated: dict[str, float] = {}
+    for property_name, event_key in speed_keys.items():
+        if xy_stage and mmc.hasProperty(xy_stage, property_name):
+            accelerated[event_key] = 4.0 * float(
+                mmc.getProperty(xy_stage, property_name)
+            )
+
+    return accelerated
+
+
+def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
+    """Return the active preview preset without changing MM config state.
+
+    The OPM hardware configuration defines a normal config group named
+    ``Channel`` but does not necessarily designate it as MMCore's special
+    channel group.  Prefer the designation when present, then fall back to the
+    explicitly defined ``Channel`` group used by the Config Groups widget.
+
+    Returns
+    -------
+    tuple[str, str]
+        Config group name and the preset matching its current device state.
+
+    Raises
+    ------
+    ValueError
+        If no channel group exists or its current device state matches no preset.
+    """
+    available_groups = set(mmc.getAvailableConfigGroups())
+    designated_group = mmc.getChannelGroup()
+    if designated_group and designated_group in available_groups:
+        channel_group = designated_group
+    elif "Channel" in available_groups:
+        channel_group = "Channel"
+    else:
+        raise ValueError(
+            "No Micro-Manager channel config group is available for the preview"
+        )
+
+    channel_preset = mmc.getCurrentConfig(channel_group)
+    if not channel_preset:
+        raise ValueError(
+            f"Select a preset in the Micro-Manager {channel_group!r} config group "
+            "before scanning an ROI"
+        )
+    return channel_group, channel_preset
+
+
+def _scan_stage_explorer_roi(stage_explorer) -> None:
+    """Scan the selected ROI with the active Micro-Manager channel preset."""
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is None:
+        stage_explorer._opm_original_on_scan_action()
+        return
+    if stage_explorer._mmc.mda.is_running():
+        return
+    selected_rois = stage_explorer.roi_manager.selected_rois()
+    if not selected_rois:
+        return
+
+    try:
+        position = _stage_explorer_region_position(
+            stage_explorer, selected_rois[0]
+        )
+    except ValueError as exc:
+        controller.warning("STAGE EXPLORER PREVIEW", str(exc))
+        return
+
+    try:
+        channel_group, channel_preset = _stage_explorer_channel_preset(
+            controller.mmc
+        )
+
+        accelerated = _stage_explorer_accelerated_speeds(controller.mmc)
+        metadata = {STAGE_MOVE_SPEED_METADATA_KEY: accelerated}
+        sequence = useq.MDASequence(
+            metadata=metadata,
+            stage_positions=(position,),
+        )
+        controller.info(
+            "STAGE EXPLORER PREVIEW",
+            f"Channel preset: {channel_group}/{channel_preset}",
+            f"Accelerated stage speeds: {accelerated}",
+            "Output: preview only (not saved)",
+        )
+        controller.data_handler = None
+        controller.suspend_live_preview_for_mda()
+        controller.prepare_stage_explorer_preview()
+        stage_explorer._our_mda_running = True
+        controller._opm_mda_thread = controller.mmc.run_mda(
+            sequence, output="memory"
+        )
+    except ValueError as exc:
+        controller.warning("STAGE EXPLORER PREVIEW", str(exc))
+    except Exception:
+        controller.opm_nidaq.clear_tasks()
+        controller.restore_live_preview_after_mda(force=True)
+        raise
 
 
 def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
@@ -171,6 +363,7 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     """Connect ROI export to MDA and select one unambiguous spatial plan."""
     if stage_explorer is None or mda_widget is None:
         return
+    stage_explorer._opm_controller = getattr(stage_explorer.window(), "opm_controller", None)
 
     def _on_send_to_mda(positions: list, clear: bool) -> None:
         if clear:
@@ -189,15 +382,29 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
 
 
 def _install_stage_explorer_export_compatibility() -> None:
-    """Complete the pinned WIP Stage Explorer export behavior for OPM use."""
+    """Complete Stage Explorer affine/FOV and export behavior for OPM use."""
     if getattr(pymmcore_widget_actions, "_opm_export_compatibility", False):
         return
+    explorer_class = pymmcore_widget_actions._StageExplorer
+    explorer_class._opm_original_on_roi_changed = explorer_class._on_roi_changed
+    explorer_class._opm_original_on_pixel_size_changed = (
+        explorer_class._on_pixel_size_changed
+    )
+    explorer_class._opm_original_on_pixel_size_affine_changed = (
+        explorer_class._on_pixel_size_affine_changed
+    )
+    explorer_class._opm_original_on_scan_action = explorer_class._on_scan_action
+    explorer_class._fov_w_h = _stage_explorer_world_fov_w_h
+    explorer_class._on_roi_changed = _update_stage_explorer_transformed_fov
+    explorer_class._on_pixel_size_changed = _refresh_stage_explorer_pixel_size
+    explorer_class._on_pixel_size_affine_changed = (
+        _refresh_stage_explorer_pixel_affine
+    )
+    explorer_class._on_scan_action = _scan_stage_explorer_roi
     pymmcore_widget_actions._setup_stage_mda_connections = (
         _connect_stage_explorer_to_mda
     )
-    pymmcore_widget_actions._StageExplorer._on_send_to_mda = (
-        _send_stage_explorer_rois_to_mda
-    )
+    explorer_class._on_send_to_mda = _send_stage_explorer_rois_to_mda
     pymmcore_widget_actions._opm_export_compatibility = True
 
 
@@ -1002,6 +1209,45 @@ class OPMAppController:
             else:
                 self.debug("PREVIEW DAQ ALREADY PREPARED")
             self.opm_nidaq.start_waveform_playback()
+
+    def prepare_stage_explorer_preview(self) -> None:
+        """Arm the current config-group preview waveform for an Explorer MDA.
+
+        Raises
+        ------
+        RuntimeError
+            If the active Micro-Manager channel preset produces no DAQ channel
+            or if the waveform cannot be programmed or started.
+        """
+        if self.opm_nidaq.running():
+            self.opm_nidaq.stop_waveform_playback()
+
+        # This reads the live Micro-Manager device properties: Channel, camera
+        # exposure, image-galvo range, and OPM-live-mode.  It deliberately does
+        # not use the OPM acquisition widget's channel/power/exposure arrays.
+        self.update_live_state()
+        if not any(self.opm_nidaq.channel_states):
+            raise RuntimeError(
+                "The active Micro-Manager Channel preset enables no OPM laser"
+            )
+
+        self.opm_nidaq.clear_tasks()
+        self.opm_nidaq.generate_waveforms()
+        self.opm_nidaq.program_daq_waveforms()
+        if not self.opm_nidaq.programmed():
+            raise RuntimeError("Could not program the Stage Explorer preview DAQ")
+
+        self.opm_nidaq.start_waveform_playback()
+        if not self.opm_nidaq.running():
+            raise RuntimeError("Could not start the Stage Explorer preview DAQ")
+
+        self.debug(
+            "STAGE EXPLORER PREVIEW DAQ ARMED",
+            f"Scan type: {self.opm_nidaq.scan_type}",
+            f"Channel states: {self.opm_nidaq.channel_states}",
+            f"Exposure: {self.opm_nidaq.exposure_ms} ms",
+            f"Image mirror range: {self.opm_nidaq.image_mirror_range_um} um",
+        )
 
     def prepare_live_preview_after_mda(self) -> None:
         """Prepare stopped live-preview DAQ tasks on the MDA worker thread."""
