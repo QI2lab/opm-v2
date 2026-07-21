@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from unittest.mock import patch
+import weakref
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 from pymmcore_plus.mda import MDAEngine
@@ -78,6 +79,48 @@ def test_asi_setup_waits_for_post_camera_sequence_hook() -> None:
     assert engine.simulated_asi_state["scan_state"] == "Running"
     assert engine.simulated_asi_transitions == ["Idle", "Running"]
     assert engine.start_asi_scan_after_camera_sequence is False
+
+
+def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
+    """Send sub-0.01 mm stage coordinates to the ASI adapter unchanged."""
+    engine = object.__new__(OPMEngineV2)
+    engine.simulate_hardware = False
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.getProperty.side_effect = lambda _device, prop: {
+        "MotorSpeedX-S(mm/s)": "0.0067",
+        "ScanFastAxisStartPosition(mm)": "3.167460",
+        "ScanFastAxisStopPosition(mm)": "3.168460",
+        "ScanSettlingTime(ms)": "3000",
+    }[prop]
+    engine._config = {
+        "PLC": {
+            "name": "PLogic",
+            "position": "PointerPosition",
+            "cellconfig": "EditCellConfig",
+            "pin": 33,
+            "signalid": 46,
+        },
+        "OPM": {"stage_move_speed": 0.05},
+    }
+    engine.configure_stage_camera_trigger = MagicMock()
+    engine.start_asi_scan_after_camera_sequence = False
+    event = create_asi_scan_setup_event(
+        start_mm=3.167460,
+        end_mm=3.168460,
+        speed_mm_s=0.0067,
+    )
+
+    engine.setup_event(event)
+
+    assert call(
+        "XYStage", "ScanFastAxisStartPosition(mm)", pytest.approx(3.167460)
+    ) in mmcore.setProperty.call_args_list
+    assert call(
+        "XYStage", "ScanFastAxisStopPosition(mm)", pytest.approx(3.168460)
+    ) in mmcore.setProperty.call_args_list
+    engine.configure_stage_camera_trigger.assert_called_once_with()
 
 
 def test_simulated_non_imaging_action_returns_no_camera_frames() -> None:

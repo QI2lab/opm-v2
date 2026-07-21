@@ -74,6 +74,17 @@ def test_registered_extension_composes_gui_engine_and_hardware_instances(
         assert controller.opm_nidaq.simulate
         assert controller.opm_picard_shutter.simulate
 
+        grid = controller.mda_widget.grid_plan
+        controller.mda_widget.tab_wdg.setChecked(grid, True)
+        grid.setMode("bounds")
+        bounds = grid._core_xy_bounds
+        demo_core.setXYPosition(10.0, 20.0)
+        demo_core.waitForDevice(demo_core.getXYStageDevice())
+        bounds.btn_top.click()
+        bounds.btn_left.click()
+        assert bounds.top.value() == pytest.approx(10.0, abs=0.02)
+        assert bounds.left.value() == pytest.approx(20.0, abs=0.02)
+
         shutter_button = controller.opm_settings_widget.picard_shutter_button
         assert controller.opm_picard_shutter.state == "Closed"
         assert not shutter_button.isChecked()

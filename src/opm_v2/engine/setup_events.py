@@ -2344,7 +2344,7 @@ def setup_stagescan(
 
     TODO: add logic to allow for non-interleaved acquisitions
 
-    t / p / c / z
+    t / p / z / c
 
     Parameters
     ----------
@@ -2366,6 +2366,8 @@ def setup_stagescan(
     ------
     Exception
         If neither grid nor position plans are configured.
+    ValueError
+        If the transposed grid does not define a nonzero physical X scan span.
     """
     AOmirror_setup = AOMirror.instance()
 
@@ -2517,11 +2519,19 @@ def setup_stagescan(
         warning("GRID PLAN", "No grid plan selected.")
         return None, None
 
-    # grab grid plan extents
-    min_y_pos = mda_grid_plan["bottom"]
-    max_y_pos = mda_grid_plan["top"]
-    min_x_pos = mda_grid_plan["left"]
-    max_x_pos = mda_grid_plan["right"]
+    # The application maps the camera-oriented grid controls onto this
+    # microscope's transposed stage axes: top/bottom stores physical X and
+    # left/right stores physical Y.  ASI still scans its physical first axis.
+    grid_bottom = float(mda_grid_plan["bottom"])
+    grid_top = float(mda_grid_plan["top"])
+    grid_left = float(mda_grid_plan["left"])
+    grid_right = float(mda_grid_plan["right"])
+    range_x_um = np.round(np.abs(grid_top - grid_bottom), 2)
+    range_y_um = np.round(np.abs(grid_right - grid_left), 2)
+    min_x_pos = min(grid_bottom, grid_top)
+    max_x_pos = max(grid_bottom, grid_top)
+    min_y_pos = min(grid_left, grid_right)
+    max_y_pos = max(grid_left, grid_right)
 
     if mda_z_plan is not None:
         max_z_pos = float(mda_z_plan["top"])
@@ -2530,9 +2540,13 @@ def setup_stagescan(
         min_z_pos = mmc.getZPosition()
         max_z_pos = mmc.getZPosition()
 
-    # Set grid axes ranges
-    range_x_um = np.round(np.abs(max_x_pos - min_x_pos), 2)
-    range_y_um = np.round(np.abs(max_y_pos - min_y_pos), 2)
+    if range_x_um <= 0:
+        raise ValueError(
+            "Stage scan range is zero. On this microscope, mark distinct "
+            "top and bottom grid bounds to define the physical X scan span."
+        )
+
+    # Set the remaining grid-axis range
     range_z_um = np.round(np.abs(max_z_pos - min_z_pos), 2)
 
     # Define coverslip bounds, to offset Z positions
@@ -2556,11 +2570,10 @@ def setup_stagescan(
     # Correct directions for stage moves
     if min_z_pos > max_z_pos:
         z_axis_step_max *= -1
-    if min_x_pos > max_x_pos:
-        min_x_pos, max_x_pos = max_x_pos, min_x_pos
-
     debug(
         "XYZ STAGE SCAN POSITIONS",
+        f"native grid bounds (T/B/L/R): "
+        f"{grid_top}/{grid_bottom}/{grid_left}/{grid_right}",
         f"scan start: {min_x_pos}",
         f"scan end: {max_x_pos}",
         f"tile start: {min_y_pos}",
@@ -2591,7 +2604,10 @@ def setup_stagescan(
     scan_axis_step_mm = scan_axis_step_um / 1000.0
     scan_axis_start_mm = min_x_pos / 1000.0
     scan_axis_end_mm = max_x_pos / 1000.0
-    scan_tile_length_mm = np.round(scan_tile_length_um / 1000.0, 2)
+    # ASI positions are expressed in millimetres, but the grid and scan step are
+    # specified in micrometres.  Retain six decimal places here so converting to
+    # millimetres does not quantize coordinates to the previous 10 um increments.
+    scan_tile_length_mm = np.round(scan_tile_length_um / 1000.0, 6)
 
     # Initialize scan position start/end arrays with the scan start / end values
     scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
@@ -2602,17 +2618,17 @@ def setup_stagescan(
         )
         scan_axis_end_pos_mm[ii] = scan_axis_start_pos_mm[ii] + scan_tile_length_mm
 
-    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_mm, 2)
-    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_mm, 2)
+    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_mm, 6)
+    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_mm, 6)
     scan_tile_length_w_overlap_mm = np.round(
-        np.abs(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0]), 2
+        np.abs(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0]), 6
     )
     scan_axis_positions = np.rint(
         scan_tile_length_w_overlap_mm / scan_axis_step_mm
     ).astype(int)
     scan_axis_speed = np.round(scan_axis_step_mm / exposure_s / n_active_channels, 5)
     scan_tile_sizes = [
-        np.round(np.abs(scan_axis_end_pos_mm[ii] - scan_axis_start_pos_mm[ii]), 2)
+        np.round(np.abs(scan_axis_end_pos_mm[ii] - scan_axis_start_pos_mm[ii]), 6)
         for ii in range(len(scan_axis_end_pos_mm))
     ]
     n_scan_axis_indices = (
@@ -2621,9 +2637,18 @@ def setup_stagescan(
     # Check for scan speed actual settings
     xy_stage = mmc.getXYStageDevice()
     if mmc.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
-        mmc.setProperty(xy_stage, "MotorSpeedX-S(mm/s)", scan_axis_speed)
-        mmc.waitForDevice(xy_stage)
-        actual_speed_x = float(mmc.getProperty(xy_stage, "MotorSpeedX-S(mm/s)"))
+        speed_property = "MotorSpeedX-S(mm/s)"
+        original_speed_x = mmc.getProperty(xy_stage, speed_property)
+        try:
+            mmc.setProperty(xy_stage, speed_property, scan_axis_speed)
+            mmc.waitForDevice(xy_stage)
+            actual_speed_x = float(mmc.getProperty(xy_stage, speed_property))
+        finally:
+            # Event generation must not leave the physical stage at scan speed.
+            # In particular, no MDA teardown occurs if planning later returns no
+            # events or raises an exception.
+            mmc.setProperty(xy_stage, speed_property, original_speed_x)
+            mmc.waitForDevice(xy_stage)
     else:
         actual_speed_x = float(scan_axis_speed)
     actual_exposure = np.round(
@@ -2843,55 +2868,49 @@ def setup_stagescan(
                     )
                     opm_events.append(current_asi_setup_event)
 
-                    # The camera produces frames in the c/z order selected in the
-                    # MDA widget.  The ASI action configures only stage/PLC hardware.
-                    widget_axis_order = get_indexed_acquisition_order(
-                        sequence, {"c": n_active_channels, "z": n_scan_axis_indices}
-                    )
-
-                    # Create image events
-                    for planned_event in iter_planned_image_events(
-                        {"c": n_active_channels, "z": n_scan_axis_indices},
-                        widget_axis_order,
-                    ):
-                        scan_axis_idx = planned_event.index["z"]
-                        chan_idx = planned_event.index["c"]
-                        source_chan_idx = active_channel_indices[chan_idx]
-                        end_excess_idx = scan_axis_positions + excess_start_images
-                        if scan_axis_idx < excess_start_images:
-                            is_excess_image = True
-                        elif scan_axis_idx > end_excess_idx:
-                            is_excess_image = True
-                        else:
-                            is_excess_image = False
-                        image_event = create_stage_scan_image_event(
-                            index={
-                                "t": time_idx,
-                                "p": pos_idx,
-                                "c": chan_idx,
-                                "z": scan_axis_idx,
-                            },
-                            config=config,
-                            stage_position=stage_positions[pos_idx],
-                            scan_axis_idx=scan_axis_idx,
-                            scan_axis_step_um=scan_axis_step_um,
-                            channel_states=channel_states,
-                            channel_exposures_ms=channel_exposures_ms,
-                            laser_powers=channel_powers,
-                            laser_blanking=laser_blanking,
-                            current_channel=active_channel_names[chan_idx],
-                            exposure_ms=channel_exposures_ms[source_chan_idx],
-                            camera_center_x=camera_center_x,
-                            camera_center_y=camera_center_y,
-                            camera_crop_x=camera_crop_x,
-                            camera_crop_y=camera_crop_y,
-                            offset=offset,
-                            e_to_ADU=e_to_ADU,
-                            excess_start_images=excess_start_images,
-                            excess_end_images=excess_end_images,
-                            is_excess_image=is_excess_image,
-                        )
-                        opm_events.append(image_event)
+                    # The DAQ fixes physical camera-frame arrival order: every
+                    # scan plane contains all enabled OPM channels.  Native MDA
+                    # c/z ordering must not alter this hardware sequence.
+                    for scan_axis_idx in range(n_scan_axis_indices):
+                        for chan_idx in range(n_active_channels):
+                            source_chan_idx = active_channel_indices[chan_idx]
+                            end_excess_idx = (
+                                scan_axis_positions + excess_start_images
+                            )
+                            if scan_axis_idx < excess_start_images:
+                                is_excess_image = True
+                            elif scan_axis_idx >= end_excess_idx:
+                                is_excess_image = True
+                            else:
+                                is_excess_image = False
+                            image_event = create_stage_scan_image_event(
+                                index={
+                                    "t": time_idx,
+                                    "p": pos_idx,
+                                    "c": chan_idx,
+                                    "z": scan_axis_idx,
+                                },
+                                config=config,
+                                stage_position=stage_positions[pos_idx],
+                                scan_axis_idx=scan_axis_idx,
+                                scan_axis_step_um=scan_axis_step_um,
+                                channel_states=channel_states,
+                                channel_exposures_ms=channel_exposures_ms,
+                                laser_powers=channel_powers,
+                                laser_blanking=laser_blanking,
+                                current_channel=active_channel_names[chan_idx],
+                                exposure_ms=channel_exposures_ms[source_chan_idx],
+                                camera_center_x=camera_center_x,
+                                camera_center_y=camera_center_y,
+                                camera_crop_x=camera_crop_x,
+                                camera_crop_y=camera_crop_y,
+                                offset=offset,
+                                e_to_ADU=e_to_ADU,
+                                excess_start_images=excess_start_images,
+                                excess_end_images=excess_end_images,
+                                is_excess_image=is_excess_image,
+                            )
+                            opm_events.append(image_event)
                     pos_idx = pos_idx + 1
 
         apply_timepoint_timing(
@@ -2911,7 +2930,7 @@ def setup_stagescan(
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,
-        acquisition_order=get_indexed_acquisition_order(sequence, indice_sizes),
+        acquisition_order=("t", "p", "z", "c"),
         events=opm_events,
         config=config,
     )

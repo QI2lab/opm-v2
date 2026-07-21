@@ -273,6 +273,7 @@ class OPMAppController:
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
         self.disable_native_mda_channels()
+        self.configure_transposed_mda_grid_bounds()
 
         if DEBUGGING:
             self.mmc.enableDebugLog(True)
@@ -302,6 +303,97 @@ class OPMAppController:
             channel_checkbox.setChecked(False)
             channel_checkbox.setEnabled(False)
             channel_checkbox.setToolTip(explanation)
+
+    def configure_transposed_mda_grid_bounds(self) -> None:
+        """Map camera-oriented grid controls onto the physical XY stage axes."""
+        grid_widget = self.mda_widget.grid_plan
+        bounds_control = getattr(grid_widget, "_core_xy_bounds", None)
+        if bounds_control is None:
+            self.warning(
+                "MDA GRID AXIS MAPPING",
+                "Could not find the native XY bounds control.",
+            )
+            return
+
+        button_mapping = {
+            "btn_top": (True, None),
+            "btn_bottom": (False, None),
+            "btn_left": (None, True),
+            "btn_right": (None, False),
+            "btn_top_left": (True, True),
+            "btn_top_right": (True, False),
+            "btn_bottom_left": (False, True),
+            "btn_bottom_right": (False, False),
+        }
+        for button_name, (top, left) in button_mapping.items():
+            button = getattr(bounds_control, button_name)
+            try:
+                button.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            button.clicked.connect(
+                partial(
+                    self._mark_or_visit_transposed_grid_bound,
+                    bounds_control,
+                    top=top,
+                    left=left,
+                )
+            )
+
+        self.debug(
+            "MDA GRID AXIS MAPPING",
+            "Top/bottom records physical X (ASI fast axis).",
+            "Left/right records physical Y (tile axis).",
+        )
+
+    def _mark_or_visit_transposed_grid_bound(
+        self,
+        bounds_control,
+        _checked: bool = False,
+        *,
+        top: bool | None = None,
+        left: bool | None = None,
+    ) -> None:
+        """Mark or visit one camera-oriented bound using swapped stage axes."""
+        xy_stage = self.mmc.getXYStageDevice()
+        current_x = float(self.mmc.getXPosition(xy_stage))
+        current_y = float(self.mmc.getYPosition(xy_stage))
+
+        if bounds_control.go_middle.isChecked():
+            target_x = (
+                current_x
+                if top is None
+                else float(
+                    bounds_control.top.value()
+                    if top
+                    else bounds_control.bottom.value()
+                )
+            )
+            target_y = (
+                current_y
+                if left is None
+                else float(
+                    bounds_control.left.value()
+                    if left
+                    else bounds_control.right.value()
+                )
+            )
+            self.mmc.setXYPosition(xy_stage, target_x, target_y)
+            self.mmc.waitForDevice(xy_stage)
+            return
+
+        if top is not None:
+            (bounds_control.top if top else bounds_control.bottom).setValue(current_x)
+        if left is not None:
+            (bounds_control.left if left else bounds_control.right).setValue(current_y)
+
+        self.debug(
+            "MDA GRID BOUND UPDATED",
+            f"top / bottom (physical X): "
+            f"{bounds_control.top.value()} / {bounds_control.bottom.value()}",
+            f"left / right (physical Y): "
+            f"{bounds_control.left.value()} / {bounds_control.right.value()}",
+        )
 
     def initialize_hardware(self) -> None:
         """Instantiate OPM hardware controllers and put them in startup states."""
@@ -915,13 +1007,13 @@ class OPMAppController:
             return None, None
 
         sequence = self.mda_widget.value()
-        try:
-            opm_events, handler = OPMEventBuilder(
-                self.mmc, self.config, sequence
-            ).build(output=output, mode=opm_mode)
-        except ValueError:
+        supported_modes = ("timelapse", "stage", "mirror", "projection")
+        if not any(mode in opm_mode for mode in supported_modes):
             self.warning("UNKNOWN OPM ACQUISITION MODE", f"OPM mode: {opm_mode}")
             return None, None
+        opm_events, handler = OPMEventBuilder(
+            self.mmc, self.config, sequence
+        ).build(output=output, mode=opm_mode)
 
         self.opm_ao_mirror.output_path = output.parents[0]
         return opm_events, handler

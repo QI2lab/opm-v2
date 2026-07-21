@@ -549,10 +549,10 @@ def sequence_for_scenario() -> Callable[[Mapping[str, Any]], MDASequence]:
         if scenario["mode"] == "stage":
             kwargs: dict[str, Any] = {
                 "grid_plan": {
-                    "top": 0.0,
+                    "top": 10.0,
                     "left": 0.0,
                     "bottom": 0.0,
-                    "right": 10.0,
+                    "right": 0.0,
                 },
                 "axis_order": scenario["axis_order"],
             }

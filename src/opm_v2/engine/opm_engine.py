@@ -14,7 +14,7 @@ import logging
 from collections.abc import Callable, Iterable
 from copy import deepcopy
 from pathlib import Path
-from time import sleep
+from time import monotonic, sleep
 
 import numpy as np
 from numpy.typing import NDArray
@@ -136,6 +136,7 @@ class OPMEngineV2(MDAEngine):
         self.simulated_asi_state: dict[str, float | str] = {}
         self.simulated_asi_transitions: list[str] = []
         self.simulated_custom_actions: list[str] = []
+        self._stage_speeds_before_sequence: dict[str, str] = {}
 
     def update_config(self):
         """Load configuration from disk for standalone engine construction."""
@@ -339,6 +340,7 @@ class OPMEngineV2(MDAEngine):
         SummaryMetaV1 or None
             Summary metadata returned by the base engine.
         """
+        self._capture_stage_speeds()
         buffer_mb = (
             64
             if self.simulate_hardware
@@ -346,6 +348,103 @@ class OPMEngineV2(MDAEngine):
         )
         self.mmcore.setCircularBufferMemoryFootprint(buffer_mb)
         return super().setup_sequence(sequence)
+
+    def _capture_stage_speeds(self) -> None:
+        """Remember the physical XY move speeds in effect before an MDA run."""
+        self._stage_speeds_before_sequence = {}
+        xy_stage = self.mmcore.getXYStageDevice()
+        if not xy_stage:
+            return
+        for prop in ("MotorSpeedX-S(mm/s)", "MotorSpeedY-S(mm/s)"):
+            if self.mmcore.hasProperty(xy_stage, prop):
+                self._stage_speeds_before_sequence[prop] = self.mmcore.getProperty(
+                    xy_stage, prop
+                )
+
+    def _stop_active_stage_scan(self, timeout_s: float = 30.0) -> None:
+        """Stop an ASI scan and wait for its controller cleanup to finish.
+
+        Parameters
+        ----------
+        timeout_s : float
+            Maximum time to wait for the scan state and XY device to become idle.
+
+        Raises
+        ------
+        RuntimeError
+            If the ASI controller does not become idle before the timeout.
+        """
+        self.start_asi_scan_after_camera_sequence = False
+        if self.simulate_hardware:
+            if self.simulated_asi_state.get("scan_state") == "Running":
+                self.simulated_asi_state["scan_state"] = "Idle"
+            return
+
+        xy_stage = self.mmcore.getXYStageDevice()
+        if not xy_stage or not self.mmcore.hasProperty(xy_stage, "ScanState"):
+            return
+
+        scan_state = self.mmcore.getProperty(xy_stage, "ScanState")
+        if scan_state != "Idle":
+            debug(
+                "ASI SCAN CLEANUP",
+                f"Stopping previous scan before the next stage move; state: {scan_state}",
+            )
+            self.mmcore.setProperty(xy_stage, "ScanState", "Idle")
+
+        deadline = monotonic() + float(timeout_s)
+        while True:
+            scan_state = self.mmcore.getProperty(xy_stage, "ScanState")
+            stage_busy = bool(self.mmcore.deviceBusy(xy_stage))
+            if scan_state == "Idle" and not stage_busy:
+                return
+            if monotonic() >= deadline:
+                raise RuntimeError(
+                    f'ASI stage did not become idle within {timeout_s:g}s '
+                    f'(ScanState={scan_state!r}, deviceBusy={stage_busy})'
+                )
+            sleep(0.05)
+
+    def _restore_stage_after_scan(self) -> None:
+        """Stop an ASI scan and restore the pre-acquisition XY move speeds."""
+        self.start_asi_scan_after_camera_sequence = False
+        if self.simulate_hardware:
+            if self.simulated_asi_state:
+                self.simulated_asi_state["scan_state"] = "Idle"
+                self.simulated_asi_transitions.append("Idle")
+            self._stage_speeds_before_sequence = {}
+            return
+
+        xy_stage = self.mmcore.getXYStageDevice()
+        if not xy_stage:
+            self._stage_speeds_before_sequence = {}
+            return
+
+        try:
+            self._stop_active_stage_scan()
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not return the ASI stage scan to Idle"
+            )
+
+        fallback_speed = self._config["OPM"]["stage_move_speed"]
+        for prop in ("MotorSpeedX-S(mm/s)", "MotorSpeedY-S(mm/s)"):
+            if not self.mmcore.hasProperty(xy_stage, prop):
+                continue
+            speed = self._stage_speeds_before_sequence.get(prop, fallback_speed)
+            try:
+                self.mmcore.setProperty(xy_stage, prop, speed)
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not restore %s to %s", prop, speed
+                )
+        try:
+            self.mmcore.waitForDevice(xy_stage)
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Stage did not become ready after restoring move speeds"
+            )
+        self._stage_speeds_before_sequence = {}
 
     def setup_event(self, event: MDAEvent) -> None:
         """Prepare state of system (hardware, etc.) for `event`.
@@ -374,6 +473,11 @@ class OPMEngineV2(MDAEngine):
 
             elif action_name == ACTION_STAGE_MOVE:
                 # --------------------------------------------------------#
+                # A camera sequence can finish while the ASI controller is
+                # still completing its scan cleanup.  Stop it explicitly before
+                # changing speeds or commanding the next XY position.
+                self._stop_active_stage_scan()
+
                 # Move stage to position, with normal speed
                 stage_move_speed = self._config["OPM"]["stage_move_speed"]
                 xy_stage = self.mmcore.getXYStageDevice()
@@ -477,12 +581,12 @@ class OPMEngineV2(MDAEngine):
                 self.mmcore.setProperty(
                     self.mmcore.getXYStageDevice(),
                     "ScanFastAxisStartPosition(mm)",
-                    np.round(data_dict["ASI"]["scan_axis_start_mm"], 2),
+                    np.round(data_dict["ASI"]["scan_axis_start_mm"], 6),
                 )
                 self.mmcore.setProperty(
                     self.mmcore.getXYStageDevice(),
                     "ScanFastAxisStopPosition(mm)",
-                    np.round(data_dict["ASI"]["scan_axis_end_mm"], 2),
+                    np.round(data_dict["ASI"]["scan_axis_end_mm"], 6),
                 )
 
                 # --------------------------------------------------------#
@@ -520,8 +624,9 @@ class OPMEngineV2(MDAEngine):
                         f"stage speeds match: {validate_speed}",
                     )
 
-                # The ASI action owns only PLC/stage hardware.  Camera trigger
-                # configuration belongs to the stage-mode DAQ/camera setup.
+                # Match the working main-branch order: program DAQ, ROI, and
+                # exposure first, then arm the camera for the ASI start pulse.
+                self.configure_stage_camera_trigger()
                 self.start_asi_scan_after_camera_sequence = True
 
             elif action_name == ACTION_AO_OPTIMIZE:
@@ -588,8 +693,6 @@ class OPMEngineV2(MDAEngine):
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
                     )
-                    if not self.simulate_hardware:
-                        self.configure_stage_camera_trigger()
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
                         scan_type="projection",
@@ -842,15 +945,16 @@ class OPMEngineV2(MDAEngine):
         """
         debug("TEARDOWN", "Acquisition finished, tearing down.")
 
-        # Shut down DAQ
-        self.opmDAQ.clear_tasks()
-        self.opmDAQ.reset()
-        self.opmDAQ.set_mirror_neutral_position(
-            image_mirror_v=float(self._config["NIDAQ"]["image_mirror_neutral_v"])
-        )
-        if self.simulate_hardware and self.simulated_asi_state:
-            self.simulated_asi_state["scan_state"] = "Idle"
-            self.simulated_asi_transitions.append("Idle")
+        # Shut down the trigger source before stopping the hardware scan.  Stage
+        # restoration remains guaranteed if any DAQ cleanup operation fails.
+        try:
+            self.opmDAQ.clear_tasks()
+            self.opmDAQ.reset()
+            self.opmDAQ.set_mirror_neutral_position(
+                image_mirror_v=float(self._config["NIDAQ"]["image_mirror_neutral_v"])
+            )
+        finally:
+            self._restore_stage_after_scan()
 
         # Put cameras that expose the Hamamatsu trigger properties back in internal mode.
         camera = str(self._config["Camera"]["camera_id"])
@@ -860,13 +964,6 @@ class OPMEngineV2(MDAEngine):
         if self.mmcore.hasProperty(camera, "TRIGGER SOURCE"):
             self.mmcore.setProperty(camera, "TRIGGER SOURCE", "INTERNAL")
             self.mmcore.waitForDevice(camera)
-
-        stage_move_speed = self._config["OPM"]["stage_move_speed"]
-        xy_stage = self.mmcore.getXYStageDevice()
-        if self.mmcore.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
-            self.mmcore.setProperty(xy_stage, "MotorSpeedX-S(mm/s)", stage_move_speed)
-        if self.mmcore.hasProperty(xy_stage, "MotorSpeedY-S(mm/s)"):
-            self.mmcore.setProperty(xy_stage, "MotorSpeedY-S(mm/s)", stage_move_speed)
 
         # Set all lasers to zero emission
         for laser in self._config["Lasers"]["laser_names"]:

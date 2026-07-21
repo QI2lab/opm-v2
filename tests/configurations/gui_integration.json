@@ -89,7 +89,7 @@
         "excess_start_frames": 1,
         "excess_end_frames": 1,
         "expected_shape": [8, 2, 7, 32, 64],
-        "expected_acquisition_order": ["t", "p", "c", "z"],
+        "expected_acquisition_order": ["t", "p", "z", "c"],
         "expected_daq_mode": "stage"
     },
     "projection_grid": {
