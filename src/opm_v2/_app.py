@@ -13,7 +13,7 @@ import numpy as np
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
-from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox
+from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox, QTabBar
 from pymmcore_gui.actions import WidgetActionInfo
 
 from opm_v2._update_config_widget import OPMSettingsV2
@@ -214,6 +214,7 @@ class OPMAppController:
         self.opm_engine = None
         self.data_handler = None
         self._picard_state_timer = None
+        self._mda_preview_timer = None
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -267,6 +268,7 @@ class OPMAppController:
         self.win.opm_controller = self
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
+        self.disable_native_mda_channels()
 
         if DEBUGGING:
             self.mmc.enableDebugLog(True)
@@ -275,6 +277,27 @@ class OPMAppController:
             "GUI CREATED",
             f"MM config: {mm_config}",
         )
+
+    def disable_native_mda_channels(self) -> None:
+        """Disable native MDA channels because OPM settings own channel setup."""
+        tabs = self.mda_widget.tab_wdg
+        channels = tabs.channels
+        channel_index = tabs.indexOf(channels)
+        explanation = "Configure acquisition channels in OPM Settings."
+
+        tabs.setChecked(channels, False)
+        channels.setEnabled(False)
+        tabs.setTabText(channel_index, "Channels (use OPM Settings)")
+        tabs.setTabToolTip(channel_index, explanation)
+        tabs.setTabEnabled(channel_index, False)
+
+        channel_checkbox = tabs.tabBar().tabButton(
+            channel_index, QTabBar.ButtonPosition.LeftSide
+        )
+        if channel_checkbox is not None:
+            channel_checkbox.setChecked(False)
+            channel_checkbox.setEnabled(False)
+            channel_checkbox.setToolTip(explanation)
 
     def initialize_hardware(self) -> None:
         """Instantiate OPM hardware controllers and put them in startup states."""
@@ -381,6 +404,14 @@ class OPMAppController:
         self._picard_state_timer.timeout.connect(self.sync_picard_shutter_button)
         self._picard_state_timer.start()
 
+        # The OPM writer owns its live data stream rather than registering as
+        # pymmcore-plus's native sink.  Attach that stream to the MDA viewer as
+        # soon as its first frame establishes the array shape.
+        self._mda_preview_timer = QTimer(self.win)
+        self._mda_preview_timer.setInterval(50)
+        self._mda_preview_timer.timeout.connect(self.sync_opm_mda_preview)
+        self._mda_preview_timer.start()
+
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
         self.update_live_state()
@@ -403,6 +434,27 @@ class OPMAppController:
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
+        )
+
+    def sync_opm_mda_preview(self) -> None:
+        """Attach the active OPM writer stream to the native MDA viewer."""
+        handler = self.data_handler
+        if handler is None:
+            return
+
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        viewer = getattr(viewers_manager, "_active_mda_viewer", None)
+        if viewer is None or viewer.data_wrapper is not None:
+            return
+
+        view = handler.get_view()
+        if view is None:
+            return
+
+        viewer.data = view
+        self.info(
+            "OPM MDA PREVIEW READY",
+            "Displaying frames from the active OPM acquisition",
         )
 
     def set_picard_shutter_open(self, is_open: bool) -> None:

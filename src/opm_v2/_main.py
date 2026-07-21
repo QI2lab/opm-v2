@@ -21,6 +21,17 @@ def configure_logging() -> None:
     # Keep warnings/errors visible; avoid burying hardware or MMCore failures.
     logging.getLogger("pymmcore-plus").setLevel(logging.INFO)
 
+    # OPM status messages need an explicit handler.  Without one, INFO messages
+    # such as acquisition start/completion are silently discarded by Python's
+    # default logging configuration.
+    opm_logger = logging.getLogger("opm_v2")
+    opm_logger.setLevel(logging.INFO)
+    if not opm_logger.handlers:
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(logging.Formatter("%(message)s"))
+        opm_logger.addHandler(console_handler)
+    opm_logger.propagate = False
+
 
 def build_arg_parser() -> argparse.ArgumentParser:
     """Build the command-line argument parser.

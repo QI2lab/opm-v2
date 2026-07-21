@@ -142,7 +142,7 @@
     },
     "acq_config": {
         "opm_mode": "projection",
-        "o2o3_mode": "optimize now",
+        "o2o3_mode": "once at start",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
@@ -200,7 +200,7 @@
                 0
             ],
             "scan_axis_step_um": 0.4,
-            "scan_range_um": 6.8,
+            "scan_range_um": 100.0,
             "laser_blanking": true
         },
         "Positions": {

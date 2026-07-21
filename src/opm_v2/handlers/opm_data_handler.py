@@ -19,6 +19,8 @@ from ome_writers import (
     dims_from_standard_axes,
 )
 
+from opm_v2.engine.debug_printing import info
+
 if TYPE_CHECKING:
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
     from useq import MDAEvent, MDASequence
@@ -91,6 +93,7 @@ class OpmDataHandler:
         self._acquisition_metadata = dict(acquisition_metadata or {})
         self.delete_existing = bool(delete_existing)
         self._stream: OMEStream | None = None
+        self._view: Any | None = None
         self._summary_meta: dict[str, Any] = {}
         self._next_frame = 0
         self._frame_count = int(np.prod(tuple(self.index_sizes.values())))
@@ -147,6 +150,12 @@ class OpmDataHandler:
         self._was_canceled = False
         self._summary_meta = dict(meta or {})
         self._next_frame = 0
+        self._view = None
+        info(
+            "OPM IMAGE ACQUISITION STARTED",
+            f"Expected frames: {self._frame_count}",
+            f"Output: {self.path}",
+        )
 
     def frameReady(self, frame: np.ndarray, event: MDAEvent, meta: FrameMetaV1) -> None:
         """Append a camera frame at its indexed output position.
@@ -172,6 +181,7 @@ class OpmDataHandler:
             raise ValueError(f"OPM frames must be 2D; received shape {image.shape}")
         if self._stream is None:
             self._stream = self._create_stream(image)
+            self._view = self._stream.view(dynamic_shape=True, strict=False)
 
         target_frame = self._flat_event_index(event)
         if target_frame >= self._frame_count:
@@ -208,6 +218,11 @@ class OpmDataHandler:
                 f"{self._next_frame} of {self._frame_count} expected frames"
             )
         self._is_finalized = True
+        info(
+            "OPM IMAGE ACQUISITION COMPLETE",
+            f"Frames saved: {self._next_frame}",
+            f"Output: {self.path}",
+        )
 
     def sequenceCanceled(self, _sequence: MDASequence) -> None:
         """Close the writer after sequence cancellation.
@@ -226,6 +241,16 @@ class OpmDataHandler:
         if self._stream is not None:
             self._stream.close()
             self._stream = None
+
+    def get_view(self) -> Any | None:
+        """Return a live array view for the native MDA preview widget.
+
+        Returns
+        -------
+        Any or None
+            Dynamic OME stream view after the first frame, otherwise ``None``.
+        """
+        return self._view
 
     def _create_stream(self, frame: np.ndarray) -> OMEStream:
         """Create and describe the ome-writers TensorStore stream.
