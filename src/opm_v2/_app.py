@@ -14,7 +14,7 @@ from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
 from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox, QTabBar
-from pymmcore_gui.actions import WidgetActionInfo
+from pymmcore_gui.actions import CoreAction, WidgetActionInfo
 
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.debug_printing import debug, info, warning
@@ -215,6 +215,8 @@ class OPMAppController:
         self.data_handler = None
         self._picard_state_timer = None
         self._mda_preview_timer = None
+        self._opm_mda_thread = None
+        self._suspended_live_preview = None
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -410,6 +412,8 @@ class OPMAppController:
         self._mda_preview_timer = QTimer(self.win)
         self._mda_preview_timer.setInterval(50)
         self._mda_preview_timer.timeout.connect(self.sync_opm_mda_preview)
+        self._mda_preview_timer.timeout.connect(self.sync_live_button_state)
+        self._mda_preview_timer.timeout.connect(self.restore_live_preview_after_mda)
         self._mda_preview_timer.start()
 
         # Changes to the mm config
@@ -452,10 +456,57 @@ class OPMAppController:
             return
 
         viewer.data = view
+        wrapper = viewer.data_wrapper
+        if hasattr(view, "coords_changed") and hasattr(wrapper, "dims_changed"):
+            view.coords_changed.connect(wrapper.dims_changed)
         self.info(
             "OPM MDA PREVIEW READY",
-            "Displaying frames from the active OPM acquisition",
+            "Displaying the complete dimensional OPM acquisition",
         )
+
+    def sync_live_button_state(self) -> None:
+        """Clear a stale live-button highlight after an MDA camera sequence."""
+        if self.mmc.mda.is_running() or self.mmc.isSequenceRunning():
+            return
+
+        live_action = self.win.get_action(CoreAction.TOGGLE_LIVE)
+        if live_action.isChecked():
+            live_action.setChecked(False)
+
+    def suspend_live_preview_for_mda(self) -> None:
+        """Prevent the live preview timer from consuming MDA camera frames."""
+        if self.mmc.isSequenceRunning():
+            self.mmc.stopSequenceAcquisition()
+
+        self.win.get_action(CoreAction.TOGGLE_LIVE).setChecked(False)
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        preview_dock = getattr(viewers_manager, "_current_image_preview", None)
+        preview = preview_dock.widget() if preview_dock is not None else None
+        if preview is None:
+            return
+
+        preview._on_streaming_stop()
+        try:
+            self.mmc.events.sequenceAcquisitionStarted.disconnect(
+                preview._on_streaming_start
+            )
+        except (RuntimeError, TypeError):
+            return
+        self._suspended_live_preview = preview
+
+    def restore_live_preview_after_mda(self, force: bool = False) -> None:
+        """Reconnect a suspended live preview after the OPM MDA thread exits."""
+        preview = self._suspended_live_preview
+        if preview is None:
+            return
+        if not force and (
+            self._opm_mda_thread is None or self._opm_mda_thread.is_alive()
+        ):
+            return
+
+        self.mmc.events.sequenceAcquisitionStarted.connect(preview._on_streaming_start)
+        self._suspended_live_preview = None
+        self._opm_mda_thread = None
 
     def set_picard_shutter_open(self, is_open: bool) -> None:
         """Apply a Picard shutter state requested by the settings widget.
@@ -760,7 +811,12 @@ class OPMAppController:
             "Engine: OPMEngineV2",
         )
         self.opm_engine.set_config(self.config)
-        self.mmc.run_mda(opm_events, output=handler)
+        self.suspend_live_preview_for_mda()
+        try:
+            self._opm_mda_thread = self.mmc.run_mda(opm_events, output=handler)
+        except Exception:
+            self.restore_live_preview_after_mda(force=True)
+            raise
 
     def timestamped_output_path(self, output: Path) -> Path:
         """Create a timestamped OPM acquisition output path.
@@ -776,7 +832,12 @@ class OPMAppController:
             Output path inside a newly created timestamped directory.
         """
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        new_dir = output.parent / Path(f"{timestamp}_{output.stem}")
+        output_name = output.name
+        if output_name.endswith(".ome.zarr"):
+            parent_stem = output_name.removesuffix(".ome.zarr")
+        else:
+            parent_stem = output.stem
+        new_dir = output.parent / Path(f"{timestamp}_{parent_stem}")
         new_dir.mkdir(exist_ok=True)
         return new_dir / Path(output.name)
 
