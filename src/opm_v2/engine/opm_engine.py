@@ -11,7 +11,7 @@ Change Log:
 
 import json
 import logging
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from pathlib import Path
 from time import sleep
@@ -78,6 +78,8 @@ class OPMEngineV2(MDAEngine):
         Whether pymmcore-plus may sequence compatible camera events.
     simulate_hardware : bool or None
         Override for external OPM hardware simulation.
+    post_teardown : callable or None
+        Optional callback used to prepare idle hardware after base teardown.
     """
 
     def __init__(
@@ -87,6 +89,7 @@ class OPMEngineV2(MDAEngine):
         use_hardware_sequencing: bool = True,
         simulate_hardware: bool | None = None,
         config: dict | None = None,
+        post_teardown: Callable[[], None] | None = None,
     ) -> None:
         """Initialize the OPM acquisition engine.
 
@@ -103,6 +106,9 @@ class OPMEngineV2(MDAEngine):
         config : dict or None
             In-memory OPM configuration snapshot. The JSON file is read only
             when no snapshot is supplied.
+        post_teardown : callable or None
+            Optional callback invoked on the MDA worker after the camera and
+            Micro-Manager state have been restored.
         """
         super().__init__(
             mmc,
@@ -113,6 +119,7 @@ class OPMEngineV2(MDAEngine):
         self.start_asi_scan_after_camera_sequence = False
         self._config_path = config_path
         self._config = {}
+        self._post_teardown = post_teardown
         if config is None:
             self.update_config()
         else:
@@ -878,3 +885,14 @@ class OPMEngineV2(MDAEngine):
         # self.mmcore.setCircularBufferMemoryFootprint(16000)
 
         super().teardown_sequence(sequence)
+        if self._post_teardown is not None:
+            try:
+                self._post_teardown()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not prepare live preview after OPM teardown"
+                )
+                warning(
+                    "LIVE PREVIEW PREPARATION FAILED",
+                    "Live preview will rebuild the DAQ waveform when started.",
+                )

@@ -141,7 +141,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "mirror",
+        "opm_mode": "stage",
         "o2o3_mode": "once at start",
         "fluidics": "none",
         "camera_roi": {

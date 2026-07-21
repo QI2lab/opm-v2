@@ -210,6 +210,7 @@ class OPMNIDAQ:
         # daq running
         self._running = False
         self._programmed = False
+        self._programmed_signature = None
 
     @property
     def scan_type(self) -> str:
@@ -529,6 +530,40 @@ class OPMNIDAQ:
             ``True`` while waveform playback is active.
         """
         return self._running
+
+    def programmed(self) -> bool:
+        """Report whether the current acquisition parameters have DAQ tasks ready.
+
+        Returns
+        -------
+        bool
+            Whether stopped or running tasks match the current DAQ parameters.
+        """
+        return bool(
+            self._programmed
+            and self._programmed_signature == self._acquisition_signature()
+        )
+
+    def _acquisition_signature(self) -> tuple:
+        """Return the waveform-affecting state used to validate prepared tasks.
+
+        Returns
+        -------
+        tuple
+            Immutable snapshot of all parameters that affect generated tasks.
+        """
+        image_mirror_range_um = self.image_mirror_range_um
+        return (
+            self.scan_type,
+            tuple(bool(state) for state in self.channel_states),
+            float(self.exposure_ms),
+            bool(self.laser_blanking),
+            float(self.image_mirror_step_um),
+            (None if image_mirror_range_um is None else float(image_mirror_range_um)),
+            float(self.image_mirror_calibration),
+            float(self.projection_mirror_calibration),
+            self.mirror_neutral_positions,
+        )
 
     # -----------------------------------------------------#
     # Helper function for setting daq values
@@ -874,6 +909,7 @@ class OPMNIDAQ:
         """Create DAQ tasks for synchronizing camera output triggers to lasers and galvo mirrors."""
         if self.simulate:
             self._programmed = True
+            self._programmed_signature = self._acquisition_signature()
             return
 
         try:
@@ -1058,7 +1094,11 @@ class OPMNIDAQ:
                     None,
                 )
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
-            pass
+            self._programmed = False
+            self._programmed_signature = None
+        else:
+            self._programmed = True
+            self._programmed_signature = self._acquisition_signature()
 
     def start_waveform_playback(self):
         """Start each configured DAQ task."""
@@ -1102,6 +1142,7 @@ class OPMNIDAQ:
             self._task_ao = None
             self._running = False
             self._programmed = False
+            self._programmed_signature = None
             return
         try:
             for task_name in ["_task_di", "_task_do", "_task_ao"]:
@@ -1112,8 +1153,11 @@ class OPMNIDAQ:
                         task.ClearTask()
                     setattr(self, task_name, None)
             self._running = False
+            self._programmed = False
+            self._programmed_signature = None
         except (daqmx.DAQmxFunctions.InvalidTaskError, AttributeError):
-            pass
+            self._programmed = False
+            self._programmed_signature = None
 
     def __del__(self):
         """Set DO to 0s, AO to neutral positions, clear tasks."""

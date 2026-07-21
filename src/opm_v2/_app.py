@@ -217,6 +217,7 @@ class OPMAppController:
         self._mda_preview_timer = None
         self._opm_mda_thread = None
         self._suspended_live_preview = None
+        self._live_action_was_enabled = None
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -246,6 +247,7 @@ class OPMAppController:
             self.config_path,
             simulate_hardware=self.simulate_hardware,
             config=self.config,
+            post_teardown=self.prepare_live_preview_after_mda,
         )
         self.mmc.register_mda_engine(self.opm_engine)
         self.connect_signals()
@@ -478,7 +480,10 @@ class OPMAppController:
         if self.mmc.isSequenceRunning():
             self.mmc.stopSequenceAcquisition()
 
-        self.win.get_action(CoreAction.TOGGLE_LIVE).setChecked(False)
+        live_action = self.win.get_action(CoreAction.TOGGLE_LIVE)
+        self._live_action_was_enabled = live_action.isEnabled()
+        live_action.setChecked(False)
+        live_action.setEnabled(False)
         viewers_manager = getattr(self.win, "_viewers_manager", None)
         preview_dock = getattr(viewers_manager, "_current_image_preview", None)
         preview = preview_dock.widget() if preview_dock is not None else None
@@ -496,16 +501,22 @@ class OPMAppController:
 
     def restore_live_preview_after_mda(self, force: bool = False) -> None:
         """Reconnect a suspended live preview after the OPM MDA thread exits."""
-        preview = self._suspended_live_preview
-        if preview is None:
-            return
         if not force and (
             self._opm_mda_thread is None or self._opm_mda_thread.is_alive()
         ):
             return
 
-        self.mmc.events.sequenceAcquisitionStarted.connect(preview._on_streaming_start)
+        preview = self._suspended_live_preview
+        if preview is not None:
+            self.mmc.events.sequenceAcquisitionStarted.connect(
+                preview._on_streaming_start
+            )
+        if self._live_action_was_enabled is not None:
+            self.win.get_action(CoreAction.TOGGLE_LIVE).setEnabled(
+                self._live_action_was_enabled
+            )
         self._suspended_live_preview = None
+        self._live_action_was_enabled = None
         self._opm_mda_thread = None
 
     def set_picard_shutter_open(self, is_open: bool) -> None:
@@ -720,14 +731,31 @@ class OPMAppController:
 
         self.update_live_state()
         if any(self.opm_nidaq.channel_states):
-            self.opm_nidaq.clear_tasks()
-            self.opm_nidaq.generate_waveforms()
-            self.opm_nidaq.program_daq_waveforms()
+            if not self.opm_nidaq.programmed():
+                self.opm_nidaq.clear_tasks()
+                self.opm_nidaq.generate_waveforms()
+                self.opm_nidaq.program_daq_waveforms()
+                self.debug(
+                    "PREVIEW DAQ REPROGRAMMED",
+                    f"Channel states: {self.opm_nidaq.channel_states}",
+                )
+            else:
+                self.debug("PREVIEW DAQ ALREADY PREPARED")
             self.opm_nidaq.start_waveform_playback()
 
+    def prepare_live_preview_after_mda(self) -> None:
+        """Prepare stopped live-preview DAQ tasks on the MDA worker thread."""
+        self.update_live_state()
+        if not any(self.opm_nidaq.channel_states):
+            return
+
+        self.opm_nidaq.clear_tasks()
+        self.opm_nidaq.generate_waveforms()
+        self.opm_nidaq.program_daq_waveforms()
+        if self.opm_nidaq.programmed():
             self.debug(
-                "PREVIEW DAQ REPROGRAMMED",
-                f"Channel states: {self.opm_nidaq.channel_states}",
+                "LIVE PREVIEW DAQ PREPARED",
+                "Waveform is stopped and ready for the next Live request.",
             )
 
     def run_opm_acquisition(self) -> None:
