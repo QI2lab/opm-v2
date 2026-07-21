@@ -266,5 +266,6 @@ def test_opm_data_handler_validates_order_and_sequence_lifecycle(
         {"runner_time_ms": 0.0, "exposure_ms": 1.0},
     )
     canceled.sequenceCanceled(sequence)
+    canceled.sequenceFinished(sequence)
     assert canceled.was_canceled
     assert not canceled.is_finalized

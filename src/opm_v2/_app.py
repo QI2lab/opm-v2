@@ -593,6 +593,7 @@ class OPMAppController:
         self._opm_mda_thread = None
         self._suspended_live_preview = None
         self._live_action_was_enabled = None
+        self._opm_acquisition_active = False
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -866,8 +867,15 @@ class OPMAppController:
         """Connect Micro-Manager and OPM widget signals to controller methods."""
         self.opm_settings_widget.settings_changed.connect(self.update_config_snapshot)
         self.opm_settings_widget.run_requested.connect(self.run_opm_acquisition)
+        self.opm_settings_widget.stop_requested.connect(self.request_opm_stop)
         self.opm_settings_widget.picard_shutter_requested.connect(
             self.set_picard_shutter_open
+        )
+        self.mmc.mda.events.sequenceFinished.connect(
+            self._on_mda_sequence_finished
+        )
+        self.mmc.mda.events.sequenceFinished.connect(
+            self.opm_settings_widget.set_acquisition_idle
         )
         self.sync_picard_shutter_button()
         self._picard_state_timer = QTimer(self.win)
@@ -903,6 +911,7 @@ class OPMAppController:
             "SIGNALS CONNECTED",
             "OPM settings -> in-memory acquisition snapshot",
             "OPM run button -> OPM acquisition",
+            "OPM STOP button -> cooperative software-boundary stop",
             "Picard shutter button -> O2-O3 shutter state",
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
@@ -1271,6 +1280,29 @@ class OPMAppController:
             return
         self.custom_execute_mda(output)
 
+    def request_opm_stop(self) -> None:
+        """Request an OPM stop at the next software-controlled command."""
+        if not self._opm_acquisition_active or self.opm_engine is None:
+            self.opm_settings_widget.set_acquisition_idle()
+            return
+        if not self.opm_engine.request_safe_stop():
+            return
+
+        self.opm_settings_widget.set_stop_pending()
+        self.info(
+            "OPM STOP REQUESTED",
+            "The active hardware-triggered event will finish.",
+            "Stopping before the next software-controlled command.",
+        )
+
+    def _on_mda_sequence_finished(self, *_args) -> None:
+        """Clear cooperative-stop state after any OPM MDA completion."""
+        if not self._opm_acquisition_active:
+            return
+        self._opm_acquisition_active = False
+        if self.opm_engine is not None:
+            self.opm_engine.clear_safe_stop()
+
     def custom_execute_mda(self, output: Path | str | None) -> None:
         """Build and run OPM events from the current in-memory GUI snapshot.
 
@@ -1346,9 +1378,15 @@ class OPMAppController:
         )
         self.opm_engine.set_config(self.config)
         self.suspend_live_preview_for_mda()
+        self.opm_engine.clear_safe_stop()
+        self._opm_acquisition_active = True
+        self.opm_settings_widget.set_acquisition_running(True)
         try:
             self._opm_mda_thread = self.mmc.run_mda(opm_events, output=handler)
         except Exception:
+            self._opm_acquisition_active = False
+            self.opm_engine.clear_safe_stop()
+            self.opm_settings_widget.set_acquisition_idle()
             self.restore_live_preview_after_mda(force=True)
             raise
 

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import weakref
+from threading import Event as ThreadEvent
 from unittest.mock import MagicMock, call, patch
 
 import pytest
-from pymmcore_plus.mda import MDAEngine
+from pymmcore_plus.mda import MDAEngine, SkipEvent
 from useq import MDAEvent, MDASequence
 
 from opm_v2.engine.opm_custom_events import (
@@ -14,6 +15,7 @@ from opm_v2.engine.opm_custom_events import (
     STAGE_MOVE_SPEED_METADATA_KEY,
     create_asi_scan_setup_event,
     create_fluidics_event,
+    create_stage_event,
 )
 from opm_v2.engine.opm_engine import OPMEngineV2
 
@@ -33,6 +35,8 @@ def _isolated_engine() -> OPMEngineV2:
     engine.simulated_custom_actions = []
     engine.simulated_stage_move_speeds = []
     engine.start_asi_scan_after_camera_sequence = False
+    engine._stage_move_count = 0
+    engine._safe_stop_requested = ThreadEvent()
     return engine
 
 
@@ -58,6 +62,32 @@ def test_standard_exec_event_delegates_to_upstream_engine() -> None:
 
     execute.assert_called_once_with(event)
     assert result is upstream_result
+
+
+def test_safe_stop_waits_for_and_skips_next_software_command() -> None:
+    """Leave camera events alone, then cancel before the next custom command."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    image_event = MDAEvent(index={"p": 0})
+
+    assert engine.request_safe_stop()
+    assert not engine.request_safe_stop()
+    with patch.object(MDAEngine, "setup_event") as upstream_setup:
+        engine.setup_event(image_event)
+
+    upstream_setup.assert_called_once_with(image_event)
+    mmcore.mda.cancel.assert_not_called()
+    assert engine._safe_stop_requested.is_set()
+
+    stage_event = create_stage_event({"x": 10.0, "y": 20.0, "z": 30.0})
+    with pytest.raises(SkipEvent, match="OPM STOP before software command") as exc:
+        engine.setup_event(stage_event)
+
+    assert exc.value.num_frames == 0
+    mmcore.mda.cancel.assert_called_once_with()
+    mmcore.setXYPosition.assert_not_called()
+    assert not engine._safe_stop_requested.is_set()
 
 
 def test_asi_setup_waits_for_post_camera_sequence_hook() -> None:
@@ -87,6 +117,7 @@ def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
     """Send sub-0.01 mm stage coordinates to the ASI adapter unchanged."""
     engine = object.__new__(OPMEngineV2)
     engine.simulate_hardware = False
+    engine._safe_stop_requested = ThreadEvent()
     mmcore = MagicMock()
     engine._mmcore_ref = weakref.ref(mmcore)
     mmcore.getXYStageDevice.return_value = "XYStage"
@@ -208,7 +239,97 @@ def test_explorer_teardown_returns_xy_before_restoring_normal_speed() -> None:
         engine.teardown_sequence(sequence)
 
     assert teardown_order == ["return_xy", "restore_speed"]
-    assert mmcore.setTimeoutMs.call_args_list == [call(30_000), call(5000)]
+    assert mmcore.setTimeoutMs.call_args_list == [call(120_000), call(5000)]
+
+
+def test_initial_stage_move_temporarily_uses_extended_timeout() -> None:
+    """Give the initial acquisition move time to reach a distant start point."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    engine._config = {"OPM": {"stage_move_speed": 0.05}}
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getTimeoutMs.return_value = 5000
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.getFocusDevice.return_value = "ZStage"
+    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (1000.0, 0.0)]
+    mmcore.hasProperty.return_value = False
+    event = create_stage_event({"x": 1000.0, "y": 0.0, "z": 25.0})
+
+    engine.setup_event(event)
+
+    assert mmcore.setTimeoutMs.call_args_list == [call(120_000), call(5000)]
+    assert call("XYStage") in mmcore.waitForDevice.call_args_list
+    assert engine._stage_move_count == 1
+
+
+def test_adjacent_stage_move_retains_normal_timeout() -> None:
+    """Do not extend the timeout for a move that fits the normal tile budget."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    engine._stage_move_count = 1
+    engine._config = {"OPM": {"stage_move_speed": 0.05}}
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getTimeoutMs.return_value = 5000
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.getFocusDevice.return_value = "ZStage"
+    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (100.0, 0.0)]
+    mmcore.hasProperty.return_value = False
+    event = create_stage_event({"x": 100.0, "y": 0.0, "z": 25.0})
+
+    engine.setup_event(event)
+
+    mmcore.setTimeoutMs.assert_not_called()
+    assert engine._stage_move_count == 2
+
+
+def test_non_adjacent_stage_move_temporarily_uses_extended_timeout() -> None:
+    """Extend a later move whose travel time exceeds the normal tile budget."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    engine._stage_move_count = 3
+    engine._config = {"OPM": {"stage_move_speed": 0.05}}
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getTimeoutMs.return_value = 5000
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.getFocusDevice.return_value = "ZStage"
+    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (1000.0, 0.0)]
+    mmcore.hasProperty.return_value = False
+    event = create_stage_event({"x": 1000.0, "y": 0.0, "z": 25.0})
+
+    engine.setup_event(event)
+
+    assert mmcore.setTimeoutMs.call_args_list == [call(120_000), call(5000)]
+    assert engine._stage_move_count == 4
+
+
+def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
+    """Extend the timeout for the upstream return after a saved acquisition."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    engine._config = {
+        "NIDAQ": {"image_mirror_neutral_v": 0.0},
+        "Camera": {"camera_id": "Camera"},
+        "Lasers": {"laser_names": []},
+    }
+    engine.opmDAQ = MagicMock()
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.output_path = None
+    engine._post_teardown = None
+    mmcore.hasProperty.return_value = False
+    mmcore.getTimeoutMs.return_value = 5000
+
+    with (
+        patch.object(MDAEngine, "teardown_sequence") as upstream_teardown,
+        patch.object(engine, "_restore_stage_after_scan"),
+    ):
+        engine.teardown_sequence(MDASequence())
+
+    upstream_teardown.assert_called_once()
+    assert mmcore.setTimeoutMs.call_args_list == [call(120_000), call(5000)]
 
 
 def test_simulated_non_imaging_action_returns_no_camera_frames() -> None:

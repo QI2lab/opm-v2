@@ -141,8 +141,8 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
-        "o2o3_mode": "per xyz position",
+        "opm_mode": "mirror",
+        "o2o3_mode": "once at start",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
@@ -193,14 +193,14 @@
                 0
             ],
             "channel_exposures_ms": [
-                10.0,
-                10.0,
-                10.0,
+                20.0,
+                20.0,
+                20.0,
                 0.0,
                 0
             ],
             "scan_axis_step_um": 0.4,
-            "scan_range_um": 100.0,
+            "scan_range_um": 200.0,
             "laser_blanking": true
         },
         "Positions": {

@@ -190,6 +190,38 @@ def test_picard_shutter_button_shows_and_emits_state(
     assert requested_states == [True]
 
 
+def test_opm_stop_button_reports_cooperative_stop_state(
+    workspace_tmp_path, qtbot, opm_config_factory
+) -> None:
+    """Expose STOP only during acquisition and report its pending state."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="projection"),
+        workspace_tmp_path / "stop_button.json",
+    )
+    settings = OPMSettingsV2(config_path)
+    qtbot.addWidget(settings)
+    stop_requests: list[bool] = []
+    settings.stop_requested.connect(lambda: stop_requests.append(True))
+
+    assert settings.run_button.isEnabled()
+    assert not settings.stop_button.isEnabled()
+    assert "#b71c1c" in settings.stop_button.styleSheet()
+
+    settings.set_acquisition_running(True)
+    assert not settings.run_button.isEnabled()
+    assert settings.stop_button.isEnabled()
+    qtbot.mouseClick(settings.stop_button, Qt.MouseButton.LeftButton)
+    assert stop_requests == [True]
+
+    settings.set_stop_pending()
+    assert not settings.stop_button.isEnabled()
+    assert "waiting for safe point" in settings.stop_button.text()
+
+    settings.set_acquisition_idle()
+    assert settings.run_button.isEnabled()
+    assert not settings.stop_button.isEnabled()
+
+
 def test_custom_widget_loads_reusable_configuration_without_resetting_it(
     workspace_tmp_path, qtbot, opm_config_factory
 ) -> None:

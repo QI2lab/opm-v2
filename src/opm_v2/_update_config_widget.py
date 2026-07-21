@@ -36,6 +36,7 @@ class OPMSettingsV2(QWidget):
 
     settings_changed = Signal(dict)
     run_requested = Signal()
+    stop_requested = Signal()
     picard_shutter_requested = Signal(bool)
 
     def __init__(self, config_path: Path, parent: QWidget | None = None):
@@ -941,11 +942,56 @@ class OPMSettingsV2(QWidget):
         self.main_layout.addWidget(self.group_scan_settings)
         self.main_layout.addWidget(self.group_channels)
         self.main_layout.addWidget(self.group_camera_roi)
+        self.acquisition_buttons = QHBoxLayout()
         self.run_button = QPushButton("Run OPM Acquisition")
         self.run_button.clicked.connect(self.run_requested.emit)
-        self.main_layout.addWidget(self.run_button)
+        self.stop_button = QPushButton("STOP OPM Acquisition")
+        self.stop_button.setEnabled(False)
+        self.stop_button.setToolTip(
+            "Safely stop at the next software-controlled OPM command."
+        )
+        self.stop_button.setStyleSheet(
+            """
+            QPushButton {
+                background-color: #b71c1c;
+                color: white;
+                font-weight: bold;
+                padding: 4px;
+            }
+            QPushButton:hover { background-color: #d32f2f; }
+            QPushButton:disabled {
+                background-color: #4b4b4b;
+                color: #9e9e9e;
+            }
+            """
+        )
+        self.stop_button.clicked.connect(self.stop_requested.emit)
+        self.acquisition_buttons.addWidget(self.run_button)
+        self.acquisition_buttons.addWidget(self.stop_button)
+        self.main_layout.addLayout(self.acquisition_buttons)
         self.setLayout(self.main_layout)
         self.layout()
+
+    def set_acquisition_running(self, running: bool) -> None:
+        """Enable only the acquisition action that is currently valid.
+
+        Parameters
+        ----------
+        running : bool
+            Whether an OPM acquisition is active.
+        """
+        self.run_button.setEnabled(not running)
+        self.stop_button.setEnabled(running)
+        self.stop_button.setText("STOP OPM Acquisition")
+
+    def set_acquisition_idle(self, *_args) -> None:
+        """Reset acquisition buttons after an MDA sequence finishes."""
+        self.set_acquisition_running(False)
+
+    def set_stop_pending(self) -> None:
+        """Show that STOP is waiting for a software-command boundary."""
+        self.stop_button.setEnabled(False)
+        self.stop_button.setText("STOP REQUESTED — waiting for safe point")
 
     def set_picard_shutter_open(self, is_open: bool) -> None:
         """Synchronize the Picard shutter button with the hardware state.

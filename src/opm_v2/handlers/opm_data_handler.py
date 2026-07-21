@@ -212,6 +212,12 @@ class OpmDataHandler:
             If fewer camera frames arrived than the configured acquisition shape.
         """
         self.close()
+        # pymmcore-plus emits sequenceCanceled followed by sequenceFinished.
+        # A cooperative STOP intentionally leaves the planned array incomplete,
+        # so cancellation owns finalization and must not trigger the missing-frame
+        # error used for unexpectedly truncated acquisitions.
+        if self._was_canceled:
+            return
         if self._next_frame != self._frame_count:
             raise RuntimeError(
                 "OPM acquisition finished with "
@@ -235,6 +241,11 @@ class OpmDataHandler:
         self.close()
         self._is_finalized = False
         self._was_canceled = True
+        info(
+            "OPM IMAGE ACQUISITION CANCELED",
+            f"Frames saved: {self._next_frame} of {self._frame_count}",
+            f"Output: {self.path}",
+        )
 
     def close(self) -> None:
         """Flush and close the active ome-writers stream."""
