@@ -142,7 +142,7 @@
     },
     "acq_config": {
         "opm_mode": "stage",
-        "o2o3_mode": "once at start",
+        "o2o3_mode": "per xyz position",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
@@ -193,9 +193,9 @@
                 0
             ],
             "channel_exposures_ms": [
-                20.0,
-                20.0,
-                20.0,
+                10.0,
+                10.0,
+                10.0,
                 0.0,
                 0
             ],

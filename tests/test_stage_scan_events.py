@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from useq import MDASequence
+from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
 from opm_v2.engine.setup_events import setup_stagescan
@@ -114,3 +114,67 @@ def test_stage_scan_preserves_micrometre_grid_range_in_asi_millimetres(
     )
     assert asi_event.action.data["ASI"]["scan_axis_end_mm"] == pytest.approx(3.168460)
     assert handler.index_sizes == {"t": 1, "p": 2, "c": 3, "z": 52}
+
+
+def test_stage_scan_uses_stage_explorer_left_right_as_physical_fast_x(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Adapt an exported ROI without changing the established stage planner."""
+    config = opm_config_factory(
+        mode="stage",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(10.0,),
+        scan_axis_step_um=2.0,
+    )
+    region = AbsolutePosition(
+        z=7.0,
+        name="stage_roi",
+        sequence=MDASequence(
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=110.0,
+                top=200.0,
+                bottom=200.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            )
+        ),
+    )
+
+    events, handler = setup_stagescan(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pzc"),
+        workspace_tmp_path / "stage-explorer.ome.zarr",
+    )
+    asi_event = next(
+        event
+        for event in events
+        if getattr(event.action, "name", None) == ACTION_ASI_SETUP_SCAN
+    )
+
+    assert asi_event.action.data["ASI"]["scan_axis_start_mm"] == pytest.approx(0.1)
+    assert asi_event.action.data["ASI"]["scan_axis_end_mm"] == pytest.approx(0.11)
+    assert handler.index_sizes == {"t": 1, "p": 1, "c": 1, "z": 5}
+
+
+def test_stage_scan_rejects_literal_exported_positions(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Require a region because a point cannot define a hardware scan span."""
+    config = opm_config_factory(mode="stage")
+
+    with pytest.raises(ValueError, match="requires ROI regions"):
+        setup_stagescan(
+            demo_core,
+            config,
+            MDASequence(stage_positions=[(100.0, 200.0, 7.0)]),
+            workspace_tmp_path / "stage-point.ome.zarr",
+        )

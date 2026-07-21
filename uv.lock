@@ -1656,7 +1656,7 @@ requires-dist = [
     { name = "pycparser", specifier = "==2.21" },
     { name = "pydaqmx", marker = "sys_platform == 'win32'" },
     { name = "pyfirmata2" },
-    { name = "pymmcore-gui", git = "https://github.com/pymmcore-plus/pymmcore-gui?rev=0cf73c58e287559d9d1e0b85f99824f8afd95d19" },
+    { name = "pymmcore-gui", git = "https://github.com/pymmcore-plus/pymmcore-gui?rev=5bc2b3774b511ef804b376850dc6e66d89e75988" },
     { name = "pymmcore-plus", extras = ["cli", "simulate"], git = "https://github.com/pymmcore-plus/pymmcore-plus?rev=70d330d57c97d5936e4aa8efefcab6bb161c0030" },
     { name = "pymmcore-widgets", git = "https://github.com/pymmcore-plus/pymmcore-widgets?rev=d61a158cb9bfc5da316f2d6cb74ea8c24206d3e4" },
     { name = "pyserial" },
@@ -2188,8 +2188,8 @@ wheels = [
 
 [[package]]
 name = "pymmcore-gui"
-version = "0.0.1rc2.dev1+g0cf73c58e"
-source = { git = "https://github.com/pymmcore-plus/pymmcore-gui?rev=0cf73c58e287559d9d1e0b85f99824f8afd95d19#0cf73c58e287559d9d1e0b85f99824f8afd95d19" }
+version = "0.0.1rc2.dev5+g5bc2b3774"
+source = { git = "https://github.com/pymmcore-plus/pymmcore-gui?rev=5bc2b3774b511ef804b376850dc6e66d89e75988#5bc2b3774b511ef804b376850dc6e66d89e75988" }
 dependencies = [
     { name = "ndv", extra = ["vispy"] },
     { name = "ome-writers", extra = ["tensorstore", "tifffile"] },

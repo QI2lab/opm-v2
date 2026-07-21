@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from useq import MDASequence
+from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
 from opm_v2.engine.setup_events import (
@@ -107,3 +107,50 @@ def test_projection_events_support_channels_without_asi(
     assert custom_actions.count(ACTION_DAQ) == len(positions)
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
     assert handler.index_sizes == {"t": 1, "p": len(positions), "c": channel_count}
+
+
+def test_projection_retiles_stage_explorer_region_in_physical_stage_axes(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+) -> None:
+    """Use ROI bounds rather than the Stage Explorer camera-grid coordinates."""
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(5.0,),
+        scan_range_um=4.0,
+    )
+    region = AbsolutePosition(
+        z=7.0,
+        name="projection_roi",
+        sequence=MDASequence(
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=108.0,
+                top=200.0,
+                bottom=204.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            )
+        ),
+    )
+
+    events, handler = setup_projection(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pc"),
+        workspace_tmp_path / "projection-explorer.ome.zarr",
+    )
+    image_events, custom_actions = split_events(events)
+
+    assert [event.x_pos for event in image_events] == pytest.approx(
+        [100.0, 102.67, 105.34]
+    )
+    assert {event.y_pos for event in image_events} == {200.0}
+    assert {event.z_pos for event in image_events} == {7.0}
+    assert custom_actions.count(ACTION_DAQ) == 3
+    assert handler.index_sizes == {"t": 1, "p": 3, "c": 1}

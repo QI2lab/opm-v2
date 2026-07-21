@@ -10,11 +10,13 @@ from pathlib import Path
 from typing import Literal
 
 import numpy as np
+import useq
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
 from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox, QTabBar
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
+from pymmcore_gui.actions import widget_actions as pymmcore_widget_actions
 from pymmcore_plus import CMMCorePlus
 
 from opm_v2._update_config_widget import OPMSettingsV2
@@ -91,6 +93,114 @@ def _install_safe_core_action_initializers() -> None:
     )
 
 
+def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
+    """Export Stage Explorer ROIs while preserving regions and literal centers."""
+    checked = stage_explorer._send_mode_group.checkedAction()
+    flatten = checked is not None and checked.text() == "List of Single Positions"
+    overlap, mode = stage_explorer._toolbar.scan_menu.value()
+    fov_w, fov_h = stage_explorer._fov_w_h()
+    z_pos = stage_explorer._mmc.getZPosition()
+    positions: list[useq.AbsolutePosition] = []
+
+    roi_model = stage_explorer.roi_manager.roi_model
+    for row in range(roi_model.rowCount()):
+        roi = roi_model.index(row).internalPointer()
+        position = roi.create_useq_position(
+            fov_w,
+            fov_h,
+            z_pos=z_pos,
+            overlap=overlap,
+            mode=mode,
+        )
+        if position.sequence and position.sequence.grid_plan:
+            if flatten:
+                positions.extend(stage_explorer._flatten_to_single_positions([position]))
+            else:
+                positions.append(position)
+            continue
+
+        center_x, center_y = roi.center()
+        if flatten:
+            positions.append(position.replace(x=center_x, y=center_y))
+            continue
+
+        # ``ROI.create_grid_plan`` intentionally returns None when an ROI fits in
+        # one camera FOV.  OPM stage mode still needs the ROI's physical bounds, so
+        # retain a one-cell nested region instead of degrading it to a point.
+        left, top, right, bottom = roi.bbox()
+        if type(roi).__name__ == "RectangleROI":
+            grid_plan = useq.GridFromEdges(
+                top=top,
+                bottom=bottom,
+                left=left,
+                right=right,
+                fov_width=fov_w,
+                fov_height=fov_h,
+                overlap=(overlap, overlap),
+                mode=mode,
+            )
+        else:
+            grid_plan = useq.GridFromPolygon(
+                vertices=list(roi.vertices),
+                fov_width=fov_w,
+                fov_height=fov_h,
+                overlap=(overlap, overlap),
+                mode=mode,
+            )
+        positions.append(
+            position.replace(sequence=useq.MDASequence(grid_plan=grid_plan))
+        )
+
+    if not positions:
+        return
+
+    message = QMessageBox(stage_explorer)
+    message.setWindowTitle("Send to MDA")
+    message.setText("Replace existing stage positions or add to them?")
+    replace_button = message.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
+    message.addButton("Add", QMessageBox.ButtonRole.AcceptRole)
+    cancel_button = message.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
+    message.exec()
+    clicked = message.clickedButton()
+    if clicked is cancel_button or clicked is None:
+        return
+    stage_explorer.sendToMDARequested.emit(positions, clicked is replace_button)
+
+
+def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None:
+    """Connect ROI export to MDA and select one unambiguous spatial plan."""
+    if stage_explorer is None or mda_widget is None:
+        return
+
+    def _on_send_to_mda(positions: list, clear: bool) -> None:
+        if clear:
+            mda_widget.stage_positions.setValue(positions)
+        else:
+            current = list(mda_widget.stage_positions.value() or [])
+            mda_widget.stage_positions.setValue(current + positions)
+
+        # Exported positions own the spatial plan.  Leaving the global Grid tab
+        # active would make useq clear X/Y and would cause the OPM builders to ignore
+        # the exported regions.
+        mda_widget.tab_wdg.setChecked(mda_widget.grid_plan, False)
+        mda_widget.tab_wdg.setChecked(mda_widget.stage_positions, True)
+
+    stage_explorer.sendToMDARequested.connect(_on_send_to_mda)
+
+
+def _install_stage_explorer_export_compatibility() -> None:
+    """Complete the pinned WIP Stage Explorer export behavior for OPM use."""
+    if getattr(pymmcore_widget_actions, "_opm_export_compatibility", False):
+        return
+    pymmcore_widget_actions._setup_stage_mda_connections = (
+        _connect_stage_explorer_to_mda
+    )
+    pymmcore_widget_actions._StageExplorer._on_send_to_mda = (
+        _send_stage_explorer_rois_to_mda
+    )
+    pymmcore_widget_actions._opm_export_compatibility = True
+
+
 def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
     """Create the registered OPM widget for a Micro-Manager window.
 
@@ -111,6 +221,7 @@ def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
 def _ensure_opm_widget_registered() -> None:
     """Register the OPM settings widget with pymmcore-gui exactly once."""
     _install_safe_core_action_initializers()
+    _install_stage_explorer_export_compatibility()
     try:
         WidgetActionInfo.for_key(OPM_WIDGET_KEY)
     except KeyError:

@@ -12,6 +12,7 @@ Create OPM acquisition event structures.
 
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType as mappingproxy
@@ -56,6 +57,28 @@ DEBUGGING = True
 MAX_IMAGE_MIRROR_RANGE_UM = 250
 
 
+@dataclass(frozen=True)
+class LiteralStagePosition:
+    """One explicit physical stage position exported by the MDA widget."""
+
+    x: float
+    y: float
+    z: float
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class StageExplorerRegion:
+    """One rectangular Stage Explorer ROI expressed in physical stage axes."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    z: float
+    name: str | None = None
+
+
 def debug(header: str, *lines: object) -> None:
     """Log a debug message when module-level debugging is enabled.
 
@@ -87,6 +110,7 @@ def stage_positions_from_grid(
     coverslip_max_dz: float | None = None,
     coverslip_slope_x: float | None = 0,
     coverslip_slope_y: float | None = 0,
+    mmc: CMMCorePlus | None = None,
 ) -> list[dict]:
     """Generate stage positions from the active grid and Z plans.
 
@@ -118,6 +142,9 @@ def stage_positions_from_grid(
         Coverslip slope along X.
     coverslip_slope_y : Optional[float], optional
         Coverslip slope along Y.
+    mmc : CMMCorePlus or None, optional
+        Core that owns the active pixel-size configuration. Falls back to the
+        process singleton for backward-compatible direct calls.
 
     Returns
     -------
@@ -125,7 +152,7 @@ def stage_positions_from_grid(
         Stage positions stored as X, Y, and Z dictionaries.
     """
     stage_positions = []
-    _mmc = CMMCorePlus.instance()
+    _mmc = mmc or CMMCorePlus.instance()
 
     if mda_z_plan is not None:
         max_z_pos = float(mda_z_plan["top"])
@@ -244,6 +271,185 @@ def stage_positions_from_grid(
         f"y tile length um: {y_step_um}",
     )
 
+    return stage_positions
+
+
+def parse_mda_position_plan(
+    mda_positions_plan: list[dict] | tuple[dict, ...],
+) -> list[LiteralStagePosition | StageExplorerRegion]:
+    """Convert native MDA positions into explicit points or Stage Explorer regions.
+
+    A Stage Explorer ROI is represented by an ``AbsolutePosition`` whose nested
+    sequence contains an absolute grid.  Those grid bounds are already in physical
+    stage-world coordinates, so left/right map to physical X and top/bottom map to
+    physical Y.  This differs intentionally from this application's transposed
+    top-level MDA bounds controls.
+
+    Parameters
+    ----------
+    mda_positions_plan : list or tuple of dict
+        JSON-compatible stage positions from the native MDA widget.
+
+    Returns
+    -------
+    list[LiteralStagePosition | StageExplorerRegion]
+        Spatial items in their original MDA-table order.
+
+    Raises
+    ------
+    ValueError
+        If a position is incomplete or an exported ROI is not rectangular.
+    """
+    items: list[LiteralStagePosition | StageExplorerRegion] = []
+    for index, stage_pos in enumerate(mda_positions_plan):
+        nested_sequence = stage_pos.get("sequence")
+        nested_grid = (
+            nested_sequence.get("grid_plan")
+            if isinstance(nested_sequence, dict)
+            else None
+        )
+        name = stage_pos.get("name")
+        z_value = stage_pos.get("z")
+
+        if nested_grid is not None:
+            if "vertices" in nested_grid:
+                raise ValueError(
+                    "Stage Explorer polygon ROIs are not supported by OPM spatial "
+                    "planning. Export a rectangular ROI."
+                )
+            missing_bounds = {
+                key for key in ("left", "right", "top", "bottom") if key not in nested_grid
+            }
+            if missing_bounds:
+                raise ValueError(
+                    "Stage Explorer ROI is missing grid bounds: "
+                    f"{sorted(missing_bounds)}"
+                )
+            if z_value is None:
+                raise ValueError(
+                    f"Stage Explorer ROI at MDA position {index} has no Z coordinate."
+                )
+            left = float(nested_grid["left"])
+            right = float(nested_grid["right"])
+            top = float(nested_grid["top"])
+            bottom = float(nested_grid["bottom"])
+            items.append(
+                StageExplorerRegion(
+                    x_min=min(left, right),
+                    x_max=max(left, right),
+                    y_min=min(top, bottom),
+                    y_max=max(top, bottom),
+                    z=float(z_value),
+                    name=str(name) if name is not None else None,
+                )
+            )
+            continue
+
+        coordinates = {axis: stage_pos.get(axis) for axis in ("x", "y", "z")}
+        missing_coordinates = [axis for axis, value in coordinates.items() if value is None]
+        if missing_coordinates:
+            raise ValueError(
+                f"MDA position {index} is missing coordinates "
+                f"{missing_coordinates}. Re-export the ROI from Stage Explorer."
+            )
+        items.append(
+            LiteralStagePosition(
+                x=float(coordinates["x"]),
+                y=float(coordinates["y"]),
+                z=float(coordinates["z"]),
+                name=str(name) if name is not None else None,
+            )
+        )
+    return items
+
+
+def position_plan_has_regions(
+    mda_positions_plan: list[dict] | tuple[dict, ...] | None,
+) -> bool:
+    """Return whether a native MDA position contains a nested ROI grid.
+
+    Returns
+    -------
+    bool
+        Whether at least one position contains a nested grid plan.
+    """
+    return bool(
+        mda_positions_plan
+        and any(
+            isinstance(stage_pos.get("sequence"), dict)
+            and stage_pos["sequence"].get("grid_plan") is not None
+            for stage_pos in mda_positions_plan
+        )
+    )
+
+
+def stage_positions_from_position_plan(
+    mda_positions_plan: list[dict] | tuple[dict, ...],
+    *,
+    mda_z_plan: dict | None,
+    opm_mode: str,
+    camera_crop_x: int,
+    camera_crop_y: int,
+    scan_range_um: float,
+    scan_axis_overlap: float,
+    tile_axis_overlap: float,
+    z_axis_overlap: float = 0.2,
+    coverslip_slope_x: float = 0,
+    coverslip_slope_y: float = 0,
+    mmc: CMMCorePlus | None = None,
+) -> list[dict[str, float]]:
+    """Generate projection or mirror positions from exported points and ROI regions.
+
+    Returns
+    -------
+    list[dict[str, float]]
+        Physical XYZ stage positions for the OPM event builders.
+
+    Raises
+    ------
+    ValueError
+        If Stage Explorer regions are combined with a top-level Z plan.
+    """
+    items = parse_mda_position_plan(mda_positions_plan)
+    if mda_z_plan is not None and any(
+        isinstance(item, StageExplorerRegion) for item in items
+    ):
+        raise ValueError(
+            "A top-level MDA Z plan cannot be combined with Stage Explorer ROI "
+            "regions. Export regions at the required Z position or disable the Z tab."
+        )
+
+    stage_positions: list[dict[str, float]] = []
+    for item in items:
+        if isinstance(item, LiteralStagePosition):
+            stage_positions.append({"x": item.x, "y": item.y, "z": item.z})
+            continue
+
+        # Stage Explorer bounds use normal physical stage-world axes.  Normalize
+        # their direction before passing them to the existing projection/mirror
+        # tiler, which expects left/right as X and bottom/top as Y.
+        region_grid = {
+            "left": item.x_min,
+            "right": item.x_max,
+            "bottom": item.y_min,
+            "top": item.y_max,
+        }
+        stage_positions.extend(
+            stage_positions_from_grid(
+                mda_grid_plan=region_grid,
+                mda_z_plan={"bottom": item.z, "top": item.z},
+                opm_mode=opm_mode,
+                camera_crop_x=camera_crop_x,
+                camera_crop_y=camera_crop_y,
+                scan_range_um=scan_range_um,
+                scan_axis_overlap=scan_axis_overlap,
+                tile_axis_overlap=tile_axis_overlap,
+                z_axis_overlap=z_axis_overlap,
+                coverslip_slope_x=coverslip_slope_x,
+                coverslip_slope_y=coverslip_slope_y,
+                mmc=mmc,
+            )
+        )
     return stage_positions
 
 
@@ -1538,6 +1744,8 @@ def setup_projection(
     ------
     Exception
         If neither grid nor position plans are configured.
+    ValueError
+        If exported Stage Explorer regions conflict with another spatial plan.
     """
     AOmirror_setup = AOMirror.instance()
     # TODO: add as an option to the OPM setup config
@@ -1599,6 +1807,12 @@ def setup_projection(
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or Positions plan")
 
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
+
     if mda_grid_plan is not None:
         stage_positions = stage_positions_from_grid(
             opm_mode=opm_mode,
@@ -1611,15 +1825,22 @@ def setup_projection(
             scan_axis_overlap=tile_axis_overlap,
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
         )
     elif mda_positions_plan is not None:
-        stage_positions = []
-        for stage_pos in mda_positions_plan:
-            stage_positions.append({
-                "x": float(stage_pos["x"]),
-                "y": float(stage_pos["y"]),
-                "z": float(stage_pos["z"]),
-            })
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            mda_z_plan=mda_z_plan,
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            tile_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=tile_axis_overlap,
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
+        )
     n_stage_positions = len(stage_positions)
 
     # ----------------------------------------------------------------#
@@ -1929,6 +2150,8 @@ def setup_mirrorscan(
     ------
     Exception
         If neither grid nor position plans are configured.
+    ValueError
+        If exported Stage Explorer regions conflict with another spatial plan.
     """
     AOmirror_setup = AOMirror.instance()
     OPMdaq_setup = OPMNIDAQ.instance()
@@ -1999,6 +2222,12 @@ def setup_mirrorscan(
 
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or positions plan for mirror scanning")
+
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
     # ----------------------------------------------------------------#
     # Create custom action data
@@ -2096,15 +2325,23 @@ def setup_mirrorscan(
             z_axis_overlap=z_axis_overlap,
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
         )
     elif mda_positions_plan is not None:
-        stage_positions = []
-        for stage_pos in mda_positions_plan:
-            stage_positions.append({
-                "x": float(stage_pos["x"]),
-                "y": float(stage_pos["y"]),
-                "z": float(stage_pos["z"]),
-            })
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            mda_z_plan=mda_z_plan,
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            tile_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=tile_axis_overlap,
+            z_axis_overlap=z_axis_overlap,
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
+        )
     n_stage_positions = len(stage_positions)
 
     # update AO grid event with stage positions
@@ -2367,7 +2604,8 @@ def setup_stagescan(
     Exception
         If neither grid nor position plans are configured.
     ValueError
-        If the transposed grid does not define a nonzero physical X scan span.
+        If spatial plans conflict, exported positions cannot define a scan, or the
+        transposed grid does not define a nonzero physical X scan span.
     """
     AOmirror_setup = AOMirror.instance()
 
@@ -2449,6 +2687,12 @@ def setup_stagescan(
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or positions plan for stage scanning")
 
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
+
     # ----------------------------------------------------------------#
     # Create custom action data
     # ----------------------------------------------------------------#
@@ -2516,8 +2760,42 @@ def setup_stagescan(
     stage_positions = []
 
     if mda_grid_plan is None:
-        warning("GRID PLAN", "No grid plan selected.")
-        return None, None
+        spatial_items = parse_mda_position_plan(mda_positions_plan)
+        regions = [
+            item for item in spatial_items if isinstance(item, StageExplorerRegion)
+        ]
+        literal_positions = [
+            item for item in spatial_items if isinstance(item, LiteralStagePosition)
+        ]
+        if literal_positions:
+            raise ValueError(
+                "Stage mode requires ROI regions because literal positions do not "
+                "define a physical X scan start and end. In Stage Explorer, export "
+                "using 'ROIs with Grid Sub-Sequence'."
+            )
+        if len(regions) != 1:
+            raise ValueError(
+                "Stage mode currently supports exactly one rectangular Stage Explorer "
+                f"ROI per acquisition; received {len(regions)}."
+            )
+
+        region = regions[0]
+        # Feed the Stage Explorer region into the established transposed-grid stage
+        # planner.  Only this adapter is new: all scan tiling, physical-X ASI setup,
+        # exposure calculation, and speed restoration below remain unchanged.
+        mda_grid_plan = {
+            "bottom": region.x_min,
+            "top": region.x_max,
+            "left": region.y_min,
+            "right": region.y_max,
+        }
+        if mda_z_plan is not None:
+            raise ValueError(
+                "A top-level MDA Z plan cannot be combined with a Stage Explorer ROI "
+                "in stage mode. Export the ROI at the required Z position or disable "
+                "the Z tab."
+            )
+        mda_z_plan = {"bottom": region.z, "top": region.z}
 
     # The application maps the camera-oriented grid controls onto this
     # microscope's transposed stage axes: top/bottom stores physical X and

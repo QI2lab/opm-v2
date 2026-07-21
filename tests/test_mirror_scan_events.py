@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import pytest
-from useq import MDASequence
+from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN
 from opm_v2.engine.setup_events import setup_mirrorscan, setup_timelapse
@@ -77,6 +77,53 @@ def test_mirror_camera_order_follows_interleaving(
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
     assert_standard_image_fields(image_events)
     assert handler.acquisition_order == acquisition_order
+
+
+def test_mirror_retiles_stage_explorer_region_in_physical_stage_axes(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+) -> None:
+    """Apply a mirror stack at OPM-derived positions inside an exported ROI."""
+    config = opm_config_factory(
+        mode="mirror",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(10.0,),
+        scan_range_um=4.0,
+        scan_axis_step_um=2.0,
+    )
+    region = AbsolutePosition(
+        z=9.0,
+        name="mirror_roi",
+        sequence=MDASequence(
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=108.0,
+                top=200.0,
+                bottom=204.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            )
+        ),
+    )
+
+    events, handler = setup_mirrorscan(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pzc"),
+        workspace_tmp_path / "mirror-explorer.ome.zarr",
+    )
+    image_events, _ = split_events(events)
+
+    assert sorted({event.x_pos for event in image_events}) == pytest.approx(
+        [100.0, 102.67, 105.34]
+    )
+    assert {event.y_pos for event in image_events} == {200.0}
+    assert {event.z_pos for event in image_events} == {9.0}
+    assert handler.index_sizes == {"t": 1, "p": 3, "c": 1, "z": 2}
 
 
 def test_timelapse_writer_uses_camera_event_order(
