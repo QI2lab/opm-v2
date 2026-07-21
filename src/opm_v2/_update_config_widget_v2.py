@@ -28,6 +28,10 @@ MAX_AO_ITERATIONS = 10
 MAX_STAGE_RANGE = 1000
 MIN_READOUT_US = 4.867647
 MAX_READOUT_US = 963.8
+Z_PROJECT_METRIC = "z-proj"
+DEFAULT_Z_PROJECT_METRIC = "DCT"
+DEFAULT_Z_PROJECT_RANGE_UM = 4.0
+DEFAULT_Z_PROJECT_STEP_UM = 0.115
  
 class OPMSettingsV2(QWidget):
     
@@ -41,6 +45,8 @@ class OPMSettingsV2(QWidget):
         self.config_path = config_path
         with open(self.config_path, 'r') as config_file:
             config = json.load(config_file)
+
+        self._ensure_v2_defaults(config)
         
         # Force channel states to False
         n_channels = len(config['OPM']['channel_ids'])
@@ -58,6 +64,18 @@ class OPMSettingsV2(QWidget):
         self.widgets = {}       
         self.create_ui()
         self.update_config(reload_from_disk=False)
+
+    def _ensure_v2_defaults(self, config: dict) -> None:
+        """Fill v2-only defaults for older config files."""
+        ao_metrics = config['OPM'].setdefault('ao_metrics', [])
+        if Z_PROJECT_METRIC not in ao_metrics:
+            ao_metrics.append(Z_PROJECT_METRIC)
+
+        ao_config = config['acq_config']['AO']
+        ao_config.setdefault('metric', DEFAULT_Z_PROJECT_METRIC)
+        ao_config.setdefault('z_project_metric', DEFAULT_Z_PROJECT_METRIC)
+        ao_config.setdefault('z_project_range_um', DEFAULT_Z_PROJECT_RANGE_UM)
+        ao_config.setdefault('z_project_step_um', DEFAULT_Z_PROJECT_STEP_UM)
 
     def create_spinbox(
         self,
@@ -84,11 +102,14 @@ class OPMSettingsV2(QWidget):
         self,
         items: list,
         width: int = 80,
+        current_text: str | None = None,
         connect_to_fn = None
     ):
         cmbx =  QComboBox()
         cmbx.addItems(items)
         cmbx.setFixedWidth(width)
+        if current_text in items:
+            cmbx.setCurrentText(current_text)
         if isinstance(connect_to_fn, list):
             for fn in connect_to_fn:
                 cmbx.currentIndexChanged.connect(fn)
@@ -199,6 +220,7 @@ class OPMSettingsV2(QWidget):
         self.cmbx_ao_metric = self.create_combobox(
             items=self.config['OPM']['ao_metrics'],
             width=125,
+            current_text=self.config['acq_config']['AO'].get('metric', DEFAULT_Z_PROJECT_METRIC),
             connect_to_fn=self.update_config
         )
         

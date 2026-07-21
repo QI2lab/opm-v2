@@ -352,13 +352,87 @@ def get_sequence_plans(sequence: MDASequence) -> dict:
     }
 
 
+def get_acq_mode(config: dict, key: str, default: str = "none") -> str:
+    """Return an acquisition mode from the v2 acq_config block."""
+    return str(config["acq_config"].get(key, default))
+
+
+def get_o2o3_mode(config: dict) -> str:
+    """Return the O2O3 mode from the v2 config, with old-schema fallback."""
+    acq_config = config["acq_config"]
+    if "o2o3_mode" in acq_config:
+        mode = str(acq_config["o2o3_mode"])
+    else:
+        mode = str(acq_config.get("O2O3-autofocus", {}).get("o2o3_mode", "none"))
+
+    aliases = {
+        "per timepoint": "at timepoints",
+        "per xyz position": "at xyz positions",
+    }
+    return aliases.get(mode, mode)
+
+
+def get_o2o3_crop_y(config: dict) -> int:
+    """Return the O2O3 autofocus camera crop height."""
+    autofocus_config = config["O2O3-autofocus"]
+    return int(autofocus_config.get("crop_y", autofocus_config.get("roi_crop_y")))
+
+
+def get_camera_defaults(config: dict) -> tuple[int, int, int, int]:
+    """Return top-level camera center/crop values from either schema naming."""
+    camera_config = config["Camera"]
+    center_x = camera_config.get("center_x", camera_config.get("roi_center_x"))
+    center_y = camera_config.get("center_y", camera_config.get("roi_center_y"))
+    crop_x = camera_config.get("crop_x", camera_config.get("roi_crop_x"))
+    crop_y = camera_config.get("crop_y", camera_config.get("roi_crop_y"))
+    return int(center_x), int(center_y), int(crop_x), int(crop_y)
+
+
+def get_daq_scan_settings(config: dict) -> dict:
+    """Return shared DAQ scan settings from the v2 acquisition config."""
+    daq_config = config["acq_config"]["DAQ"]
+    return {
+        "scan_range_um": float(daq_config["scan_range_um"]),
+        "scan_axis_step_um": float(daq_config["scan_axis_step_um"]),
+        "laser_blanking": bool(daq_config["laser_blanking"]),
+    }
+
+
+def get_position_settings(config: dict) -> dict:
+    """Return shared geometric settings from the v2 Positions block."""
+    position_config = config["acq_config"]["Positions"]
+    return {
+        "coverslip_slope_x": float(position_config["coverslip_slope_x"]),
+        "coverslip_slope_y": float(position_config["coverslip_slope_y"]),
+        "coverslip_max_dz": float(position_config["coverslip_max_dz"]),
+        "scan_axis_overlap_um": float(position_config["scan_axis_overlap_um"]),
+        "scan_axis_overlap": float(position_config["scan_axis_overlap"]),
+        "tile_axis_overlap": float(position_config["tile_axis_overlap"]),
+        "z_axis_overlap": float(position_config["z_axis_overlap"]),
+    }
+
+
+def get_stage_scan_settings(config: dict) -> dict:
+    """Return stage-scan settings from the v2 schema."""
+    stage_config = config["acq_config"]["stage_scan"]
+    return {
+        "max_stage_scan_range_um": float(stage_config["max_stage_scan_range_um"]),
+        "excess_start_frames": int(stage_config["excess_start_frames"]),
+        "excess_end_frames": int(stage_config["excess_end_frames"]),
+    }
+
+
 def get_channel_plan(
     config: dict,
     mode_key: str,
     round_active_exposures: bool = False,
 ) -> dict:
     """Return channel settings for a mode without mutating the config lists."""
-    mode_config = config["acq_config"][mode_key]
+    acq_config = config["acq_config"]
+    if "DAQ" in acq_config:
+        mode_config = acq_config["DAQ"]
+    else:
+        mode_config = acq_config[mode_key]
     channel_states = list(mode_config["channel_states"])
     channel_powers = list(mode_config["channel_powers"])
     channel_exposures_ms = list(mode_config["channel_exposures_ms"])
@@ -672,16 +746,14 @@ def setup_optimizenow(
         OPM events
     """
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = get_o2o3_mode(config)
 
     # Sequentially run auto focus then AO optmization
     opm_events: list[MDAEvent] = []
 
     if "now" in o2o3_mode:
-        roi_center_x = config["Camera"]["roi_center_x"]
-        roi_center_y = config["Camera"]["roi_center_y"]
-        camera_crop_x = config["Camera"]["roi_crop_x"]
-        camera_crop_y = config["O2O3-autofocus"]["roi_crop_y"]
+        roi_center_x, roi_center_y, camera_crop_x, _ = get_camera_defaults(config)
+        camera_crop_y = get_o2o3_crop_y(config)
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[roi_center_x, roi_center_y],
@@ -750,7 +822,7 @@ def setup_timelapse(
 
     # Get the acquisition modes
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = get_o2o3_mode(config)
 
     # Get the camera crop values
     camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
@@ -772,9 +844,10 @@ def setup_timelapse(
 
     #----------------------------------------------------------------#
     # get the scan mirror positions
-    scan_range_um = config["acq_config"]["mirror_scan"]["scan_range_um"]
-    scan_step_um = config["acq_config"]["mirror_scan"]["scan_step_size_um"]
-    laser_blanking = config["acq_config"]["mirror_scan"]["laser_blanking"]
+    daq_settings = get_daq_scan_settings(config)
+    scan_range_um = daq_settings["scan_range_um"]
+    scan_step_um = daq_settings["scan_axis_step_um"]
+    laser_blanking = daq_settings["laser_blanking"]
 
     # get the number of scan steps as expected by the daq
     if scan_range_um == 0.0:
@@ -830,7 +903,7 @@ def setup_timelapse(
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = get_o2o3_crop_y(config)
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
@@ -1054,19 +1127,19 @@ def setup_projection(
     # Get the acquisition modes
     opm_mode = config["acq_config"]["opm_mode"]
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = get_o2o3_mode(config)
     fluidics_mode = config["acq_config"]["fluidics"]
 
     # Get pixel size
     pixel_size_um = np.round(float(mmc.getPixelSizeUm()), 3)  # unit: um
 
     # Get the scan range, coverslip slope and overlaps
-    coverslip_slope_x = config["acq_config"]["projection_scan"]["coverslip_slope_x"]
-    coverslip_slope_y = config["acq_config"]["projection_scan"]["coverslip_slope_y"]
-    scan_range_um = float(config["acq_config"]["projection_scan"]["scan_range_um"])
-    tile_axis_overlap = float(
-        config["acq_config"]["projection_scan"]["tile_axis_overlap"]
-    )
+    daq_settings = get_daq_scan_settings(config)
+    position_settings = get_position_settings(config)
+    coverslip_slope_x = position_settings["coverslip_slope_x"]
+    coverslip_slope_y = position_settings["coverslip_slope_y"]
+    scan_range_um = daq_settings["scan_range_um"]
+    tile_axis_overlap = position_settings["tile_axis_overlap"]
 
     # Get the camera crop values
     camera_crop_y = int(scan_range_um / pixel_size_um)
@@ -1075,7 +1148,7 @@ def setup_projection(
     camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
 
     # Get channel and camera metadata settings
-    laser_blanking = config["acq_config"]["projection_scan"]["laser_blanking"]
+    laser_blanking = daq_settings["laser_blanking"]
     channel_plan = get_channel_plan(
         config, "projection_scan", round_active_exposures=True
     )
@@ -1191,7 +1264,7 @@ def setup_projection(
     # Create the o2o3 AF event data
     #----------------------------------------------------------------#
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = get_o2o3_crop_y(config)
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
@@ -1443,16 +1516,18 @@ def setup_mirrorscan(
     # Get the acquisition modes
     opm_mode = config["acq_config"]["opm_mode"]
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = get_o2o3_mode(config)
     fluidics_mode = config["acq_config"]["fluidics"]
 
     # Get the scan range, coverslip slope and overlaps
-    coverslip_slope_x = config["acq_config"]["mirror_scan"]["coverslip_slope_x"]
-    coverslip_slope_y = config["acq_config"]["mirror_scan"]["coverslip_slope_y"]
-    scan_range_um = float(config["acq_config"]["mirror_scan"]["scan_range_um"])
-    scan_step_um = float(config["acq_config"]["mirror_scan"]["scan_step_size_um"])
-    tile_axis_overlap = float(config["acq_config"]["mirror_scan"]["tile_axis_overlap"])
-    z_axis_overlap = float(config["acq_config"]["mirror_scan"]["z_axis_overlap"])
+    daq_settings = get_daq_scan_settings(config)
+    position_settings = get_position_settings(config)
+    coverslip_slope_x = position_settings["coverslip_slope_x"]
+    coverslip_slope_y = position_settings["coverslip_slope_y"]
+    scan_range_um = daq_settings["scan_range_um"]
+    scan_step_um = daq_settings["scan_axis_step_um"]
+    tile_axis_overlap = position_settings["tile_axis_overlap"]
+    z_axis_overlap = position_settings["z_axis_overlap"]
 
     # Flag for setting up a static mirror acquisition
     if scan_range_um == 0.0:
@@ -1476,7 +1551,7 @@ def setup_mirrorscan(
     camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
 
     # Get channel and camera metadata settings
-    laser_blanking = config["acq_config"]["mirror_scan"]["laser_blanking"]
+    laser_blanking = daq_settings["laser_blanking"]
     channel_plan = get_channel_plan(
         config, "mirror_scan", round_active_exposures=True
     )
@@ -1537,7 +1612,7 @@ def setup_mirrorscan(
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = get_o2o3_crop_y(config)
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
@@ -1890,7 +1965,7 @@ def setup_stagescan(
     # Get the acquisition modes
     opm_mode = config["acq_config"]["opm_mode"]
     ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    o2o3_mode = get_o2o3_mode(config)
     fluidics_mode = config["acq_config"]["fluidics"]
 
     # Get the camera crop values
@@ -1904,27 +1979,28 @@ def setup_stagescan(
     opm_angle_scale = np.sin((np.pi / 180.0) * float(config["OPM"]["angle_deg"]))
 
     # Get the stage scan range, coverslip slope, and maximum CS dz change
-    coverslip_slope = float(config["acq_config"]["stage_scan"]["coverslip_slope_x"])
-    scan_axis_max_range = float(
-        config["acq_config"]["stage_scan"]["stage_scan_range_um"]
-    )
-    coverslip_max_dz = float(config["acq_config"]["stage_scan"]["coverslip_max_dz"])
+    daq_settings = get_daq_scan_settings(config)
+    position_settings = get_position_settings(config)
+    stage_scan_settings = get_stage_scan_settings(config)
+    coverslip_slope = position_settings["coverslip_slope_x"]
+    scan_axis_max_range = stage_scan_settings["max_stage_scan_range_um"]
+    coverslip_max_dz = position_settings["coverslip_max_dz"]
 
     # Get the tile overlap settings
-    tile_axis_overlap = float(config["acq_config"]["stage_scan"]["tile_axis_overlap"])
-    scan_axis_step_um = float(config["acq_config"]["stage_scan"]["scan_step_size_um"])
+    tile_axis_overlap = position_settings["tile_axis_overlap"]
+    scan_axis_step_um = daq_settings["scan_axis_step_um"]
     scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(
-        config["acq_config"]["stage_scan"]["scan_axis_overlap_um"]
+        position_settings["scan_axis_overlap_um"]
     )
     scan_tile_overlap_mm = scan_tile_overlap_um / 1000.0
 
     # Get the excess start / end
-    excess_start_images = int(config["acq_config"]["stage_scan"]["excess_start_frames"])
-    excess_end_images = int(config["acq_config"]["stage_scan"]["excess_end_frames"])
+    excess_start_images = stage_scan_settings["excess_start_frames"]
+    excess_end_images = stage_scan_settings["excess_end_frames"]
 
     #----------------------------------------------------------------#
     # Get channel and camera metadata settings
-    laser_blanking = config["acq_config"][opm_mode + "_scan"]["laser_blanking"]
+    laser_blanking = daq_settings["laser_blanking"]
     channel_plan = get_channel_plan(
         config, opm_mode + "_scan", round_active_exposures=True
     )
@@ -1996,7 +2072,7 @@ def setup_stagescan(
     #----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = get_o2o3_crop_y(config)
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],

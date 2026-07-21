@@ -39,7 +39,8 @@
             "localize_gauss_2d",
             "gauss_2d",
             "brightness",
-            "fourier_ratio"
+            "fourier_ratio",
+            "z-proj"
         ],
         "ao_modes": [
             "none",
@@ -149,7 +150,10 @@
         },
         "AO": {
             "mirror_state": "system flat",
-            "metric": "DCT",
+            "metric": "z-proj",
+            "z_project_metric": "DCT",
+            "z_project_range_um": 4.0,
+            "z_project_step_um": 0.115,
             "mode_delta": 0.13,
             "mode_alpha": 0.6,
             "num_iterations": 4,
@@ -184,20 +188,20 @@
             ],
             "channel_powers": [
                 0,
-                0.0,
+                0,
                 0,
                 0,
                 0
             ],
             "channel_exposures_ms": [
                 0,
-                0.0,
+                0,
                 0,
                 0,
                 0
             ],
             "scan_axis_step_um": 0.4,
-            "scan_range_um": 6.800000000000004,
+            "scan_range_um": 6.8,
             "laser_blanking": true
         },
         "Positions": {

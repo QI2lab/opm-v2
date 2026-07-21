@@ -95,6 +95,9 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
     """Build the AO payload shared by optimize and grid events."""
     ao_config = config["acq_config"]["AO"]
     channel_states, channel_powers = _ao_channel_settings(config)
+    readout_us = (
+        ao_config["readout_us"] if "readout_us" in ao_config else ao_config["readout_ms"]
+    )
     return {
         "channel_states": channel_states,
         "channel_powers": channel_powers,
@@ -105,6 +108,9 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
         "modal_delta": float(ao_config["mode_delta"]),
         "metric_precision": int(ao_config["metric_precision"]),
         "num_averaged_frames": int(ao_config["num_averaged_frames"]),
+        "z_project_metric": str(ao_config.get("z_project_metric", "DCT")),
+        "z_project_range_um": float(ao_config.get("z_project_range_um", 4.0)),
+        "z_project_step_um": float(ao_config.get("z_project_step_um", 0.115)),
         "modal_alpha": float(ao_config["mode_alpha"]),
         "iterations": int(ao_config["num_iterations"]),
         "num_mode_samples": int(ao_config["num_mode_samples"]),
@@ -112,7 +118,7 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
         "modes_to_optimize": str(ao_config["modes_to_optimize"]),
         "image_mirror_range_um": ao_config["image_mirror_range_um"],
         "lightsheet_mode": str(ao_config["lightsheet_mode"]),
-        "readout_ms": float(ao_config["readout_ms"]),
+        "readout_ms": float(readout_us),
         "apply_existing": False,
         "pos_idx": 0,
         "scan_idx": 0,
