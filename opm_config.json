@@ -217,7 +217,7 @@
         },
         "stage_scan": {
             "max_stage_scan_range_um": 1000.0,
-            "excess_start_frames": 50,
+            "excess_start_frames": 0,
             "excess_end_frames": 0
         },
         "projection_scan": {

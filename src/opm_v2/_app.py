@@ -14,7 +14,8 @@ from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
 from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox, QTabBar
-from pymmcore_gui.actions import CoreAction, WidgetActionInfo
+from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
+from pymmcore_plus import CMMCorePlus
 
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.debug_printing import debug, info, warning
@@ -33,6 +34,61 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
 MIN_PROJECTION_EXPOSURE = 50  # ms
 DEFUALT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
+
+
+def _disconnect_system_configuration_callback(
+    mmc: CMMCorePlus, callback
+) -> None:
+    """Disconnect an action callback even if Qt has deleted the core signaler."""
+    try:
+        mmc.events.systemConfigurationLoaded.disconnect(callback)
+    except (RuntimeError, TypeError):
+        # During QApplication teardown the C++ QCoreSignaler may be destroyed
+        # before its QAction children.  There is then no live signal to disconnect.
+        pass
+
+
+def _initialize_snap_action_safely(action: QCoreAction) -> None:
+    """Initialize the upstream Snap action with deletion-safe cleanup."""
+    mmc = action.mmc
+
+    def _on_load() -> None:
+        action.setEnabled(bool(mmc.getCameraDevice()))
+
+    mmc.events.systemConfigurationLoaded.connect(_on_load)
+    action.destroyed.connect(
+        lambda: _disconnect_system_configuration_callback(mmc, _on_load)
+    )
+    _on_load()
+
+
+def _initialize_live_action_safely(action: QCoreAction) -> None:
+    """Initialize the upstream Live action with deletion-safe cleanup."""
+    mmc = action.mmc
+
+    def _on_load() -> None:
+        action.setEnabled(bool(mmc.getCameraDevice()))
+
+    mmc.events.systemConfigurationLoaded.connect(_on_load)
+    action.destroyed.connect(
+        lambda: _disconnect_system_configuration_callback(mmc, _on_load)
+    )
+
+    def _on_change() -> None:
+        action.setChecked(mmc.isSequenceRunning())
+
+    mmc.events.sequenceAcquisitionStarted.connect(_on_change)
+    mmc.events.continuousSequenceAcquisitionStarted.connect(_on_change)
+    mmc.events.sequenceAcquisitionStopped.connect(_on_change)
+    _on_load()
+
+
+def _install_safe_core_action_initializers() -> None:
+    """Replace two unsafe pymmcore-gui teardown hooks before actions are created."""
+    ActionInfo.for_key(CoreAction.SNAP).on_created = _initialize_snap_action_safely
+    ActionInfo.for_key(CoreAction.TOGGLE_LIVE).on_created = (
+        _initialize_live_action_safely
+    )
 
 
 def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
@@ -54,6 +110,7 @@ def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
 
 def _ensure_opm_widget_registered() -> None:
     """Register the OPM settings widget with pymmcore-gui exactly once."""
+    _install_safe_core_action_initializers()
     try:
         WidgetActionInfo.for_key(OPM_WIDGET_KEY)
     except KeyError:
