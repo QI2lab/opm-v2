@@ -37,6 +37,7 @@ DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
 MIN_PROJECTION_EXPOSURE = 50  # ms
 DEFUALT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
+OPM_PREVIEW_INTERVAL_MS = 250
 
 
 def _disconnect_system_configuration_callback(
@@ -110,10 +111,114 @@ def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
     return float(world_width), float(world_height)
 
 
+def _stage_explorer_display_footprint_w_h(
+    stage_explorer,
+) -> tuple[float, float]:
+    """Return the footprint shown inside Stage Explorer ROI overlays.
+
+    Preview, projection, and stage operation retain the affine-transformed camera
+    footprint.  During an active mirror acquisition, physical stage X is replaced
+    with the configured symmetric mirror sweep; physical stage Y still comes from
+    the acquisition camera ROI.
+
+    Returns
+    -------
+    tuple[float, float]
+        Physical stage-world X and Y footprint in micrometers.
+    """
+    camera_footprint = stage_explorer._fov_w_h()
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is None:
+        return camera_footprint
+
+    acq_config = controller.config["acq_config"]
+    if (
+        not controller._opm_scan_footprint_active
+        or "mirror" not in str(acq_config["opm_mode"]).casefold()
+    ):
+        return camera_footprint
+
+    scan_range_um = float(acq_config["DAQ"]["scan_range_um"])
+    if scan_range_um <= 0:
+        return camera_footprint
+
+    camera_roi = acq_config["camera_roi"]
+    crop_x = float(camera_roi["crop_x"])
+    crop_y = float(camera_roi["crop_y"])
+    linear = np.asarray(stage_explorer._affine_state.system_affine)[:2, :2]
+    world_y = abs(linear[1, 0]) * crop_x + abs(linear[1, 1]) * crop_y
+    if world_y <= 0:
+        return camera_footprint
+    return scan_range_um, float(world_y)
+
+
+def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
+    """Refresh ROI cells using the active OPM acquisition footprint."""
+    display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
+    stage_explorer.roi_manager.update_fovs(display_footprint)
+    _refresh_stage_explorer_position_marker_footprint(
+        stage_explorer, display_footprint
+    )
+
+    overlap, mode = stage_explorer._toolbar.scan_menu.value()
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is not None:
+        acq_config = controller.config["acq_config"]
+        if (
+            controller._opm_scan_footprint_active
+            and "mirror" in str(acq_config["opm_mode"]).casefold()
+        ):
+            positions = acq_config["Positions"]
+            tile_overlap = float(positions["tile_axis_overlap"])
+            scan_overlap = float(positions.get("scan_axis_overlap", tile_overlap))
+            # OPM configuration stores overlaps as fractions, while useq and
+            # Stage Explorer express GridFromEdges overlap in percent.
+            overlap = (100.0 * scan_overlap, 100.0 * tile_overlap)
+    stage_explorer.roi_manager.set_scan_options(overlap, mode)
+
+
+def _refresh_stage_explorer_position_marker_footprint(
+    stage_explorer, display_footprint: tuple[float, float]
+) -> None:
+    """Match the current-stage marker to the displayed physical footprint.
+
+    The upstream marker rectangle is defined in camera-pixel coordinates and
+    transformed into stage-world coordinates by the camera affine.  Convert the
+    desired world X/Y extents back through that affine so swapped or reversed
+    camera axes produce the same size and shape as the active ROI cells.
+    """
+    marker = stage_explorer._stage_pos_marker
+    if marker is None:
+        return
+
+    linear = np.abs(
+        np.asarray(stage_explorer._affine_state.system_affine, dtype=float)[:2, :2]
+    )
+    try:
+        local_size = np.linalg.solve(linear, np.asarray(display_footprint, dtype=float))
+    except np.linalg.LinAlgError:
+        # Some rotated affines have a singular absolute-value matrix. Preserve
+        # upstream camera-marker behavior rather than drawing invalid geometry.
+        local_size = np.asarray(
+            (
+                stage_explorer._mmc.getImageWidth(),
+                stage_explorer._mmc.getImageHeight(),
+            ),
+            dtype=float,
+        )
+    if not np.all(np.isfinite(local_size)) or np.any(local_size <= 0):
+        return
+    marker.set_rect_size(float(local_size[0]), float(local_size[1]))
+
+
 def _update_stage_explorer_transformed_fov(stage_explorer) -> None:
     """Update ROI tiling after the upstream camera/ROI bookkeeping runs."""
     stage_explorer._opm_original_on_roi_changed()
-    stage_explorer.roi_manager.update_fovs(stage_explorer._fov_w_h())
+    _refresh_stage_explorer_display_footprint(stage_explorer)
 
 
 def _refresh_stage_explorer_pixel_size(stage_explorer, value: float) -> None:
@@ -126,6 +231,33 @@ def _refresh_stage_explorer_pixel_affine(stage_explorer) -> None:
     """Refresh the Explorer affine and its physical FOV after an axis change."""
     stage_explorer._opm_original_on_pixel_size_affine_changed()
     stage_explorer._on_roi_changed()
+
+
+def _refresh_stage_explorer_scan_options(stage_explorer, value) -> None:
+    """Keep active mirror ROI visuals on OPM overlaps after toolbar interaction."""
+    stage_explorer._opm_original_on_scan_options_changed(value)
+    _refresh_stage_explorer_display_footprint(stage_explorer)
+
+
+def _stage_explorer_on_frame_ready(stage_explorer, image, event) -> None:
+    """Add frames only when they belong to an Explorer-owned acquisition.
+
+    The upstream Stage Explorer listens to every MDA ``frameReady`` signal and
+    creates one VisPy image visual per frame.  That is useful for its own tiled
+    projection scan, but a hardware-triggered OPM mirror or stage event can emit
+    thousands of planes at one position.  Those planes belong in the NDV MDA
+    viewer, not in the Explorer mosaic.
+    """
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if (
+        controller is not None
+        and controller._opm_acquisition_active
+        and not stage_explorer._our_mda_running
+    ):
+        return
+    stage_explorer._opm_original_on_frame_ready(image, event)
 
 
 def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
@@ -394,6 +526,10 @@ def _install_stage_explorer_export_compatibility() -> None:
         explorer_class._on_pixel_size_affine_changed
     )
     explorer_class._opm_original_on_scan_action = explorer_class._on_scan_action
+    explorer_class._opm_original_on_frame_ready = explorer_class._on_frame_ready
+    explorer_class._opm_original_on_scan_options_changed = (
+        explorer_class._on_scan_options_changed
+    )
     explorer_class._fov_w_h = _stage_explorer_world_fov_w_h
     explorer_class._on_roi_changed = _update_stage_explorer_transformed_fov
     explorer_class._on_pixel_size_changed = _refresh_stage_explorer_pixel_size
@@ -401,6 +537,8 @@ def _install_stage_explorer_export_compatibility() -> None:
         _refresh_stage_explorer_pixel_affine
     )
     explorer_class._on_scan_action = _scan_stage_explorer_roi
+    explorer_class._on_frame_ready = _stage_explorer_on_frame_ready
+    explorer_class._on_scan_options_changed = _refresh_stage_explorer_scan_options
     pymmcore_widget_actions._setup_stage_mda_connections = (
         _connect_stage_explorer_to_mda
     )
@@ -590,10 +728,14 @@ class OPMAppController:
         self.data_handler = None
         self._picard_state_timer = None
         self._mda_preview_timer = None
+        self._mda_state_timer = None
+        self._opm_preview_last_frame = -1
+        self._suspended_stage_explorer = None
         self._opm_mda_thread = None
         self._suspended_live_preview = None
         self._live_action_was_enabled = None
         self._opm_acquisition_active = False
+        self._opm_scan_footprint_active = False
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -874,6 +1016,7 @@ class OPMAppController:
         self.mmc.mda.events.sequenceFinished.connect(
             self._on_mda_sequence_finished
         )
+        self.mmc.mda.events.sequenceStarted.connect(self._on_mda_sequence_started)
         self.mmc.mda.events.sequenceFinished.connect(
             self.opm_settings_widget.set_acquisition_idle
         )
@@ -887,11 +1030,20 @@ class OPMAppController:
         # pymmcore-plus's native sink.  Attach that stream to the MDA viewer as
         # soon as its first frame establishes the array shape.
         self._mda_preview_timer = QTimer(self.win)
-        self._mda_preview_timer.setInterval(50)
+        self._mda_preview_timer.setInterval(OPM_PREVIEW_INTERVAL_MS)
         self._mda_preview_timer.timeout.connect(self.sync_opm_mda_preview)
-        self._mda_preview_timer.timeout.connect(self.sync_live_button_state)
-        self._mda_preview_timer.timeout.connect(self.restore_live_preview_after_mda)
         self._mda_preview_timer.start()
+
+        # Keep post-MDA live-state recovery responsive independently of the much
+        # slower, intentionally throttled NDV data refresh.
+        self._mda_state_timer = QTimer(self.win)
+        self._mda_state_timer.setInterval(50)
+        self._mda_state_timer.timeout.connect(self.sync_live_button_state)
+        self._mda_state_timer.timeout.connect(self.restore_live_preview_after_mda)
+        self._mda_state_timer.timeout.connect(
+            self.sync_stage_explorer_acquisition_footprint
+        )
+        self._mda_state_timer.start()
 
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
@@ -918,29 +1070,97 @@ class OPMAppController:
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
         )
 
-    def sync_opm_mda_preview(self) -> None:
-        """Attach the active OPM writer stream to the native MDA viewer."""
+    def sync_opm_mda_preview(self, force: bool = False) -> None:
+        """Attach and periodically refresh the OPM stream in the MDA viewer.
+
+        Parameters
+        ----------
+        force : bool
+            Refresh even when no additional frame has arrived. Used to leave the
+            viewer synchronized with the completed acquisition.
+        """
+        if not self._opm_acquisition_active and not force:
+            return
         handler = self.data_handler
         if handler is None:
             return
 
         viewers_manager = getattr(self.win, "_viewers_manager", None)
         viewer = getattr(viewers_manager, "_active_mda_viewer", None)
-        if viewer is None or viewer.data_wrapper is not None:
+        if viewer is None:
             return
 
-        view = handler.get_view()
-        if view is None:
-            return
+        if viewer.data_wrapper is None:
+            view = handler.get_view()
+            if view is None:
+                return
 
-        viewer.data = view
+            viewer.data = view
+            self.info(
+                "OPM MDA PREVIEW READY",
+                "Displaying the complete dimensional OPM acquisition",
+                f"Refresh interval: {OPM_PREVIEW_INTERVAL_MS} ms",
+            )
+
         wrapper = viewer.data_wrapper
-        if hasattr(view, "coords_changed") and hasattr(wrapper, "dims_changed"):
-            view.coords_changed.connect(wrapper.dims_changed)
-        self.info(
-            "OPM MDA PREVIEW READY",
-            "Displaying the complete dimensional OPM acquisition",
-        )
+        if wrapper is None:
+            return
+
+        frame_count, latest_index = handler.get_preview_state()
+        if not force and frame_count <= self._opm_preview_last_frame:
+            return
+
+        try:
+            current_index = viewer.display_model.current_index
+            current_index.update(
+                (axis, index)
+                for axis, index in latest_index.items()
+                if axis in current_index
+            )
+            wrapper.data_changed.emit()
+        except Exception:
+            # The user may close the viewer between the timer lookup and refresh.
+            return
+        self._opm_preview_last_frame = frame_count
+
+    def _set_mda_follow_acquisition(self, enabled: bool) -> None:
+        """Enable or disable pymmcore-gui's per-frame NDV refresh callback."""
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        if viewers_manager is not None:
+            viewers_manager._follow_acquisition = enabled
+
+    def _set_stage_explorer_frame_updates(self, enabled: bool) -> None:
+        """Connect or disconnect Explorer from the global MDA frame stream.
+
+        Disconnecting before dispatch prevents the Qt event queue from filling
+        with one Explorer callback per hardware-triggered camera frame.  The
+        patched callback above is a second guard for an Explorer opened after
+        dispatch.
+        """
+        if enabled:
+            explorer = self._suspended_stage_explorer
+            self._suspended_stage_explorer = None
+            if explorer is None:
+                return
+            try:
+                self.mmc.mda.events.frameReady.connect(explorer._on_frame_ready)
+            except (RuntimeError, TypeError):
+                pass
+            return
+
+        if self._suspended_stage_explorer is not None:
+            return
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is None:
+            return
+        try:
+            self.mmc.mda.events.frameReady.disconnect(explorer._on_frame_ready)
+        except (RuntimeError, TypeError):
+            return
+        self._suspended_stage_explorer = explorer
 
     def sync_live_button_state(self) -> None:
         """Clear a stale live-button highlight after an MDA camera sequence."""
@@ -1040,6 +1260,16 @@ class OPMAppController:
         self.config_store.replace(config)
         if self.opm_engine is not None:
             self.opm_engine.set_config(self.config)
+        self.refresh_stage_explorer_footprint()
+
+    def refresh_stage_explorer_footprint(self) -> None:
+        """Refresh an existing Explorer without creating its dock implicitly."""
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is not None:
+            _refresh_stage_explorer_display_footprint(explorer)
 
     def update_live_state(self, device_name=None, property_name=None) -> None:
         """Apply live camera, DAQ, and channel state after MM config changes.
@@ -1295,11 +1525,49 @@ class OPMAppController:
             "Stopping before the next software-controlled command.",
         )
 
+    def _on_mda_sequence_started(self, *_args) -> None:
+        """Disable pymmcore-gui's per-frame NDV updates for an OPM sequence."""
+        if not self._opm_acquisition_active:
+            return
+        # NDVViewersManager enables follow mode while constructing each new MDA
+        # viewer.  This callback is connected after the manager, so turn it off
+        # again before the first camera frame can enqueue a GUI refresh.
+        self._set_mda_follow_acquisition(False)
+        self._set_stage_explorer_frame_updates(False)
+        self._opm_preview_last_frame = -1
+        self._opm_scan_footprint_active = False
+        self.refresh_stage_explorer_footprint()
+
+    def sync_stage_explorer_acquisition_footprint(self) -> None:
+        """Show the mirror scan footprint after setup has produced an image.
+
+        O2-O3 autofocus and AO setup run before the camera acquisition and do
+        not write frames to the OPM data handler.  Waiting for its first saved
+        frame therefore keeps the projection preview footprint visible through
+        both setup operations and switches the ROI only when imaging begins.
+        """
+        if (
+            self._opm_scan_footprint_active
+            or not self._opm_acquisition_active
+            or self.data_handler is None
+        ):
+            return
+        frame_count, _current_index = self.data_handler.get_preview_state()
+        if frame_count <= 0:
+            return
+        self._opm_scan_footprint_active = True
+        self.refresh_stage_explorer_footprint()
+
     def _on_mda_sequence_finished(self, *_args) -> None:
         """Clear cooperative-stop state after any OPM MDA completion."""
         if not self._opm_acquisition_active:
             return
+        self.sync_opm_mda_preview(force=True)
+        self._set_mda_follow_acquisition(True)
+        self._set_stage_explorer_frame_updates(True)
         self._opm_acquisition_active = False
+        self._opm_scan_footprint_active = False
+        self.refresh_stage_explorer_footprint()
         if self.opm_engine is not None:
             self.opm_engine.clear_safe_stop()
 
@@ -1379,12 +1647,23 @@ class OPMAppController:
         self.opm_engine.set_config(self.config)
         self.suspend_live_preview_for_mda()
         self.opm_engine.clear_safe_stop()
+        # Disable follow mode before dispatch as well as in sequenceStarted.  The
+        # latter is required because pymmcore-gui enables it while creating the
+        # new viewer.
+        self._set_mda_follow_acquisition(False)
+        self._set_stage_explorer_frame_updates(False)
+        self._opm_preview_last_frame = -1
+        self._opm_scan_footprint_active = False
         self._opm_acquisition_active = True
         self.opm_settings_widget.set_acquisition_running(True)
         try:
             self._opm_mda_thread = self.mmc.run_mda(opm_events, output=handler)
         except Exception:
             self._opm_acquisition_active = False
+            self._opm_scan_footprint_active = False
+            self._set_mda_follow_acquisition(True)
+            self._set_stage_explorer_frame_updates(True)
+            self.refresh_stage_explorer_footprint()
             self.opm_engine.clear_safe_stop()
             self.opm_settings_widget.set_acquisition_idle()
             self.restore_live_preview_after_mda(force=True)

@@ -141,7 +141,7 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "mirror",
+        "opm_mode": "stage",
         "o2o3_mode": "once at start",
         "fluidics": "none",
         "camera_roi": {
@@ -161,7 +161,7 @@
             "channel_id": "561nm",
             "channel_power": 20.0,
             "exposure_ms": 400.0,
-            "ao_mode": "none",
+            "ao_mode": "grid at start",
             "num_scan_positions": 1,
             "num_tile_positions": 1,
             "save_dir_path": "e:/optimize_now",

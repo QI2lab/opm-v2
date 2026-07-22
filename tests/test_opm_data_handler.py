@@ -156,6 +156,9 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
                 event,
                 frame_meta,
             )
+            if index == {"t": 0, "p": 0, "c": 0, "z": 0}:
+                assert handler.get_view().shape == (1, 2, 2, 2, 3, 4)
+                assert handler.get_preview_state() == (1, index)
             expected_frames_by_position[position].append({
                 "event_index": index,
                 "delta_t": value / 1000.0,

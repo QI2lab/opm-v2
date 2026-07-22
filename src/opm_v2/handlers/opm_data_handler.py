@@ -96,6 +96,7 @@ class OpmDataHandler:
         self._view: Any | None = None
         self._summary_meta: dict[str, Any] = {}
         self._next_frame = 0
+        self._latest_event_index: dict[str, int] = {}
         self._frame_count = int(np.prod(tuple(self.index_sizes.values())))
         self._is_finalized = False
         self._was_canceled = False
@@ -150,6 +151,7 @@ class OpmDataHandler:
         self._was_canceled = False
         self._summary_meta = dict(meta or {})
         self._next_frame = 0
+        self._latest_event_index = {}
         self._view = None
         info(
             "OPM IMAGE ACQUISITION STARTED",
@@ -181,7 +183,10 @@ class OpmDataHandler:
             raise ValueError(f"OPM frames must be 2D; received shape {image.shape}")
         if self._stream is None:
             self._stream = self._create_stream(image)
-            self._view = self._stream.view(dynamic_shape=True, strict=False)
+            # The acquisition dimensions are known before the first frame.  A
+            # fixed-shape view gives NDV its sliders immediately and avoids a
+            # coordinate-expansion callback for every newly reached plane.
+            self._view = self._stream.view(dynamic_shape=False, strict=False)
 
         target_frame = self._flat_event_index(event)
         if target_frame >= self._frame_count:
@@ -197,6 +202,10 @@ class OpmDataHandler:
 
         self._stream.append(image, frame_metadata=self._frame_metadata(event, meta))
         self._next_frame = target_frame + 1
+        self._latest_event_index = {
+            ("p" if str(axis) == "g" else str(axis)): int(index)
+            for axis, index in event.index.items()
+        }
 
     def sequenceFinished(self, _sequence: MDASequence) -> None:
         """Close the writer after successful sequence completion.
@@ -262,6 +271,16 @@ class OpmDataHandler:
             Dynamic OME stream view after the first frame, otherwise ``None``.
         """
         return self._view
+
+    def get_preview_state(self) -> tuple[int, dict[str, int]]:
+        """Return the latest saved-frame count and dimensional index for NDV.
+
+        Returns
+        -------
+        tuple[int, dict[str, int]]
+            Number of frames appended and a copy of the latest event index.
+        """
+        return self._next_frame, dict(self._latest_event_index)
 
     def _create_stream(self, frame: np.ndarray) -> OMEStream:
         """Create and describe the ome-writers TensorStore stream.

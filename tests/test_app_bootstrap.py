@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import numpy as np
 import pytest
 from pymmcore_gui import WidgetAction
 from pymmcore_gui._qt.QtCore import Qt
@@ -14,6 +16,7 @@ from opm_v2._app import (
     OPM_WIDGET_KEY,
     OPMAppController,
     _stage_explorer_accelerated_speeds,
+    _stage_explorer_on_frame_ready,
     launch_opm_app,
 )
 from opm_v2.engine.opm_custom_events import (
@@ -226,6 +229,106 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         window.close()
 
 
+def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
+    demo_core, workspace_tmp_path, qtbot, offline_icons, opm_config_factory
+) -> None:
+    """Keep preview cells camera-sized until a mirror acquisition starts."""
+    config = opm_config_factory(
+        mode="mirror",
+        camera_shape=(64, 32),
+        scan_range_um=4.0,
+    )
+    config_path = opm_config_factory.write(
+        config,
+        workspace_tmp_path / "opm_explorer_mirror_footprint.json",
+    )
+    with pytest.warns(RuntimeWarning, match="not MMQApplication"):
+        window = launch_opm_app(
+            config_path=config_path,
+            mm_config=False,
+            mmcore=demo_core,
+            exec_app=False,
+            simulate_hardware=True,
+        )
+    qtbot.addWidget(window)
+
+    try:
+        qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
+        controller = window.opm_controller
+        explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        pixel_size_um = demo_core.getPixelSizeUm()
+        demo_core.setPixelSizeAffine(
+            demo_core.getCurrentPixelSizeConfig(),
+            (0.0, -pixel_size_um, 0.0, pixel_size_um, 0.0, 0.0),
+        )
+        explorer._on_pixel_size_affine_changed()
+        roi = RectangleROI(
+            (0.0, 0.0),
+            (20.0, 20.0),
+            fov_size=explorer.roi_manager._fov_size,
+        )
+        explorer.roi_manager.add_roi(roi)
+
+        camera_footprint = explorer._fov_w_h()
+        preview_overlap, _mode = explorer._toolbar.scan_menu.value()
+        assert explorer.roi_manager._fov_size == pytest.approx(camera_footprint)
+        assert roi.fov_size == pytest.approx(camera_footprint)
+        assert explorer.roi_manager.scan_overlap == pytest.approx(preview_overlap)
+
+        controller._opm_acquisition_active = True
+        controller._opm_scan_footprint_active = False
+        controller.data_handler = MagicMock()
+        controller.data_handler.get_preview_state.return_value = (0, {})
+        controller.sync_stage_explorer_acquisition_footprint()
+        assert explorer.roi_manager._fov_size == pytest.approx(camera_footprint)
+        assert roi.fov_size == pytest.approx(camera_footprint)
+
+        controller.data_handler.get_preview_state.return_value = (1, {})
+        controller.sync_stage_explorer_acquisition_footprint()
+        mirror_footprint = (4.0, 64 * pixel_size_um)
+        assert explorer.roi_manager._fov_size == pytest.approx(mirror_footprint)
+        assert roi.fov_size == pytest.approx(mirror_footprint)
+        assert explorer.roi_manager.scan_overlap == pytest.approx((15.0, 20.0))
+        marker = explorer._stage_pos_marker
+        assert marker is not None
+        marker_local_size = np.asarray(
+            (marker._rect.width, marker._rect.height), dtype=float
+        )
+        marker_world_size = (
+            np.abs(explorer._affine_state.system_affine[:2, :2])
+            @ marker_local_size
+        )
+        assert marker_world_size == pytest.approx(mirror_footprint)
+
+        controller._opm_acquisition_active = False
+        controller._opm_scan_footprint_active = False
+        controller.refresh_stage_explorer_footprint()
+        assert explorer.roi_manager._fov_size == pytest.approx(camera_footprint)
+        assert roi.fov_size == pytest.approx(camera_footprint)
+        restored_marker_size = np.asarray(
+            (marker._rect.width, marker._rect.height), dtype=float
+        )
+        restored_marker_world_size = (
+            np.abs(explorer._affine_state.system_affine[:2, :2])
+            @ restored_marker_size
+        )
+        assert restored_marker_world_size == pytest.approx(camera_footprint)
+
+        for mode in ("projection", "stage"):
+            config["acq_config"]["opm_mode"] = mode
+            controller._opm_acquisition_active = True
+            controller._opm_scan_footprint_active = True
+            controller.update_config_snapshot(config)
+            assert explorer.roi_manager._fov_size == pytest.approx(
+                explorer._fov_w_h()
+            )
+            assert roi.fov_size == pytest.approx(explorer._fov_w_h())
+        controller._opm_acquisition_active = False
+        controller._opm_scan_footprint_active = False
+    finally:
+        window.close()
+
+
 def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
     demo_core,
     workspace_tmp_path,
@@ -313,6 +416,50 @@ def test_stage_explorer_preview_uses_four_times_current_xy_speed() -> None:
     )
 
 
+def test_stage_explorer_ignores_frames_from_regular_opm_acquisition() -> None:
+    """Do not add hardware-triggered OPM stack planes to the Explorer mosaic."""
+    original_callback = MagicMock()
+    controller = SimpleNamespace(_opm_acquisition_active=True)
+    explorer = SimpleNamespace(
+        _opm_controller=controller,
+        _our_mda_running=False,
+        _opm_original_on_frame_ready=original_callback,
+        window=MagicMock(),
+    )
+    image = MagicMock(name="image")
+    event = MagicMock(name="event")
+
+    _stage_explorer_on_frame_ready(explorer, image, event)
+
+    original_callback.assert_not_called()
+
+    explorer._our_mda_running = True
+    _stage_explorer_on_frame_ready(explorer, image, event)
+
+    original_callback.assert_called_once_with(image, event)
+
+
+def test_regular_opm_temporarily_disconnects_stage_explorer_frames() -> None:
+    """Prevent even no-op Explorer callbacks from filling the Qt event queue."""
+    controller = object.__new__(OPMAppController)
+    frame_ready = MagicMock()
+    explorer = SimpleNamespace(_on_frame_ready=MagicMock())
+    controller.mmc = SimpleNamespace(
+        mda=SimpleNamespace(events=SimpleNamespace(frameReady=frame_ready))
+    )
+    controller.win = SimpleNamespace(get_widget=MagicMock(return_value=explorer))
+    controller._suspended_stage_explorer = None
+
+    controller._set_stage_explorer_frame_updates(False)
+    controller._set_stage_explorer_frame_updates(False)
+    controller._set_stage_explorer_frame_updates(True)
+    controller._set_stage_explorer_frame_updates(True)
+
+    frame_ready.disconnect.assert_called_once_with(explorer._on_frame_ready)
+    frame_ready.connect.assert_called_once_with(explorer._on_frame_ready)
+    assert controller._suspended_stage_explorer is None
+
+
 def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
     """Program projection preview from live MM properties, not OPM channels."""
     controller = object.__new__(OPMAppController)
@@ -376,3 +523,48 @@ def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
     controller.opm_nidaq.generate_waveforms.assert_called_once_with()
     controller.opm_nidaq.program_daq_waveforms.assert_called_once_with()
     controller.opm_nidaq.start_waveform_playback.assert_called_once_with()
+
+
+def test_opm_preview_coalesces_frames_and_restores_native_follow_mode() -> None:
+    """Refresh NDV once per timer interval instead of once per camera frame."""
+    controller = object.__new__(OPMAppController)
+    current_index = {"t": 0, "p": 0, "c": 0, "z": 0}
+    data_changed = MagicMock()
+    wrapper = SimpleNamespace(data_changed=SimpleNamespace(emit=data_changed))
+    viewer = SimpleNamespace(
+        data_wrapper=wrapper,
+        display_model=SimpleNamespace(current_index=current_index),
+    )
+    manager = SimpleNamespace(_active_mda_viewer=viewer, _follow_acquisition=True)
+    controller.win = SimpleNamespace(_viewers_manager=manager)
+    controller.data_handler = MagicMock()
+    controller.data_handler.get_preview_state.return_value = (
+        12,
+        {"t": 0, "p": 2, "c": 1, "z": 37},
+    )
+    controller._opm_acquisition_active = True
+    controller._opm_scan_footprint_active = True
+    controller._opm_preview_last_frame = -1
+    controller.opm_engine = MagicMock()
+    controller._set_stage_explorer_frame_updates = MagicMock()
+    controller.refresh_stage_explorer_footprint = MagicMock()
+
+    controller._on_mda_sequence_started()
+    assert not controller._opm_scan_footprint_active
+    controller.sync_opm_mda_preview()
+    controller.sync_opm_mda_preview()
+
+    assert not manager._follow_acquisition
+    controller._set_stage_explorer_frame_updates.assert_called_once_with(False)
+    controller.refresh_stage_explorer_footprint.assert_called_once_with()
+    assert current_index == {"t": 0, "p": 2, "c": 1, "z": 37}
+    data_changed.assert_called_once_with()
+
+    controller._on_mda_sequence_finished()
+
+    assert manager._follow_acquisition
+    assert not controller._opm_acquisition_active
+    controller._set_stage_explorer_frame_updates.assert_called_with(True)
+    assert controller.refresh_stage_explorer_footprint.call_count == 2
+    assert data_changed.call_count == 2
+    controller.opm_engine.clear_safe_stop.assert_called_once_with()

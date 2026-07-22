@@ -51,7 +51,12 @@ from opm_v2.engine.opm_custom_events import (
 from opm_v2.handlers.opm_data_handler import OpmDataHandler
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
-from opm_v2.utils.position_tools import compose_stage_positions
+from opm_v2.utils.position_tools import (
+    compose_stage_positions,
+    covering_tile_origins,
+    oblique_camera_extents_um,
+    split_stage_scan_bounds,
+)
 
 DEBUGGING = True
 MAX_IMAGE_MIRROR_RANGE_UM = 250
@@ -107,6 +112,7 @@ def stage_positions_from_grid(
     scan_axis_overlap: float | None = 0.2,
     tile_axis_overlap: float | None = 0.2,
     z_axis_overlap: float | None = 0.2,
+    angle_deg: float = 30.0,
     coverslip_max_dz: float | None = None,
     coverslip_slope_x: float | None = 0,
     coverslip_slope_y: float | None = 0,
@@ -136,6 +142,8 @@ def stage_positions_from_grid(
         Fractional tile-axis overlap.
     z_axis_overlap : Optional[float], optional
         Fractional Z-axis overlap.
+    angle_deg : float, optional
+        OPM sheet angle in degrees.
     coverslip_max_dz : Optional[float], optional
         Maximum allowed coverslip Z change in micrometers.
     coverslip_slope_x : Optional[float], optional
@@ -171,12 +179,10 @@ def stage_positions_from_grid(
             z_step_um = 0
         else:
             range_z_um = np.round(np.abs(max_z_pos - min_z_pos), 2)
-            z_step_max = (
-                camera_crop_y
-                * _mmc.getPixelSizeUm()
-                * (1.0 - z_axis_overlap)
-                * np.sin((np.pi / 180.0) * float(30))
+            _, camera_z_extent_um = oblique_camera_extents_um(
+                camera_crop_y, _mmc.getPixelSizeUm(), angle_deg
             )
+            z_step_max = camera_z_extent_um * (1.0 - z_axis_overlap)
             n_z_positions = int(np.ceil(range_z_um / z_step_max))
             z_step_um = np.round(range_z_um / n_z_positions, 2)
 
@@ -208,10 +214,27 @@ def stage_positions_from_grid(
     if scan_range_um == 0:
         warning("SCAN RANGE", "Scan range == 0.")
         return []
+    elif "mirror" in opm_mode:
+        # Mirror tiling is determined by the range over which the mirror places
+        # scan planes.  The projected camera height enlarges the bounding box of
+        # the reconstructed, deskewed volume, but it does not enlarge that plane
+        # acquisition footprint.  Including it here can put adjacent mirror
+        # sweeps farther apart than the configured scan range and create gaps.
+        scan_footprint_um = scan_range_um
+        x_positions = covering_tile_origins(
+            min_x_pos,
+            max_x_pos,
+            scan_footprint_um,
+            scan_axis_overlap,
+        )
+        n_x_positions = len(x_positions)
+        x_step_max = scan_footprint_um * (1.0 - scan_axis_overlap)
+        x_step_um = float(x_positions[1] - x_positions[0]) if n_x_positions > 1 else 0.0
     else:
         x_step_max = scan_range_um * (1 - scan_axis_overlap)
-        n_x_positions = int(np.ceil(range_x_um / x_step_max))
+        n_x_positions = max(1, int(np.ceil(range_x_um / x_step_max)))
         x_step_um = np.round(range_x_um / n_x_positions, 2)
+        x_positions = min_x_pos + np.arange(n_x_positions) * x_step_um
 
     if "projection" in opm_mode or "mirror" in opm_mode:
         if x_step_max > MAX_IMAGE_MIRROR_RANGE_UM:
@@ -247,7 +270,7 @@ def stage_positions_from_grid(
 
             for ii in x_iterator:
                 stage_positions.append({
-                    "x": min_x_pos + ii * x_step_um,
+                    "x": float(x_positions[ii]),
                     "y": min_y_pos + jj * y_step_um,
                     "z": min_z_pos
                     + kk * z_step_um
@@ -318,7 +341,9 @@ def parse_mda_position_plan(
                     "planning. Export a rectangular ROI."
                 )
             missing_bounds = {
-                key for key in ("left", "right", "top", "bottom") if key not in nested_grid
+                key
+                for key in ("left", "right", "top", "bottom")
+                if key not in nested_grid
             }
             if missing_bounds:
                 raise ValueError(
@@ -346,7 +371,9 @@ def parse_mda_position_plan(
             continue
 
         coordinates = {axis: stage_pos.get(axis) for axis in ("x", "y", "z")}
-        missing_coordinates = [axis for axis, value in coordinates.items() if value is None]
+        missing_coordinates = [
+            axis for axis, value in coordinates.items() if value is None
+        ]
         if missing_coordinates:
             raise ValueError(
                 f"MDA position {index} is missing coordinates "
@@ -394,6 +421,7 @@ def stage_positions_from_position_plan(
     scan_axis_overlap: float,
     tile_axis_overlap: float,
     z_axis_overlap: float = 0.2,
+    angle_deg: float = 30.0,
     coverslip_slope_x: float = 0,
     coverslip_slope_y: float = 0,
     mmc: CMMCorePlus | None = None,
@@ -445,6 +473,7 @@ def stage_positions_from_position_plan(
                 scan_axis_overlap=scan_axis_overlap,
                 tile_axis_overlap=tile_axis_overlap,
                 z_axis_overlap=z_axis_overlap,
+                angle_deg=angle_deg,
                 coverslip_slope_x=coverslip_slope_x,
                 coverslip_slope_y=coverslip_slope_y,
                 mmc=mmc,
@@ -1823,6 +1852,7 @@ def setup_projection(
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
             scan_axis_overlap=tile_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
@@ -1837,6 +1867,7 @@ def setup_projection(
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
             scan_axis_overlap=tile_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
@@ -2174,6 +2205,9 @@ def setup_mirrorscan(
     scan_range_um = float(daq_config["scan_range_um"])
     scan_step_um = float(daq_config["scan_axis_step_um"])
     tile_axis_overlap = float(positions_config["tile_axis_overlap"])
+    scan_axis_overlap = float(
+        positions_config.get("scan_axis_overlap", tile_axis_overlap)
+    )
     z_axis_overlap = float(positions_config["z_axis_overlap"])
 
     # Flag for setting up a static mirror acquisition
@@ -2321,8 +2355,9 @@ def setup_mirrorscan(
             camera_crop_y=camera_crop_y,
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
-            scan_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=scan_axis_overlap,
             z_axis_overlap=z_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
@@ -2336,8 +2371,9 @@ def setup_mirrorscan(
             camera_crop_y=camera_crop_y,
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
-            scan_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=scan_axis_overlap,
             z_axis_overlap=z_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
@@ -2627,9 +2663,12 @@ def setup_stagescan(
     camera_center_y = int(acq_config["camera_roi"]["center_y"])
     camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
-    # Get pixel size and deskew Y-scale factor
+    # Get pixel size and the oblique camera contribution in laboratory axes.
     pixel_size_um = np.round(float(mmc.getPixelSizeUm()), 3)  # unit: um
-    opm_angle_scale = np.sin((np.pi / 180.0) * float(config["OPM"]["angle_deg"]))
+    angle_deg = float(config["OPM"]["angle_deg"])
+    camera_scan_extent_um, camera_z_extent_um = oblique_camera_extents_um(
+        camera_crop_y, pixel_size_um, angle_deg
+    )
 
     # Get the stage scan range, coverslip slope, and maximum CS dz change
     coverslip_slope = float(positions_config["coverslip_slope_x"])
@@ -2639,10 +2678,7 @@ def setup_stagescan(
     # Get the tile overlap settings
     tile_axis_overlap = float(positions_config["tile_axis_overlap"])
     scan_axis_step_um = float(daq_config["scan_axis_step_um"])
-    scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(
-        positions_config["scan_axis_overlap_um"]
-    )
-    scan_tile_overlap_mm = scan_tile_overlap_um / 1000.0
+    physical_scan_overlap_um = float(positions_config["scan_axis_overlap_um"])
 
     # Get the excess start / end
     excess_start_images = int(stage_config["excess_start_frames"])
@@ -2834,9 +2870,7 @@ def setup_stagescan(
 
     # --------------------------------------------------------------------#
     # Calculate tile steps / range
-    z_axis_step_max = (
-        camera_crop_y * pixel_size_um * opm_angle_scale * (1 - tile_axis_overlap)
-    )
+    z_axis_step_max = camera_z_extent_um * (1 - tile_axis_overlap)
     tile_axis_step_max = camera_crop_x * pixel_size_um * (1 - tile_axis_overlap)
 
     # Check if the coverslip slope determines the max scan range
@@ -2867,37 +2901,32 @@ def setup_stagescan(
     # --------------------------------------------------------------------#
     # Calculate scan axis tile locations, units: mm and s
 
-    # Break scan range up using max scan range
-    if scan_axis_max_range >= range_x_um:
-        n_scan_positions = 1
-        scan_tile_length_um = range_x_um
-    else:
-        # Round up so that the scan length is never longer than the max scan range
-        n_scan_positions = int(np.ceil(range_x_um / (scan_axis_max_range)))
-        scan_tile_length_um = np.round(
-            (range_x_um / n_scan_positions)
-            + (n_scan_positions - 1) * (scan_tile_overlap_um / n_scan_positions),
-            2,
-        )
+    # Split the requested laboratory-X range into raw stage trajectories.  The
+    # camera-height contribution bridges part (or all) of the requested physical
+    # overlap after deskewing, so raw trajectories need not overlap themselves.
+    (
+        scan_axis_start_pos_um,
+        scan_axis_end_pos_um,
+        raw_scan_overlap_um,
+        camera_scan_extent_um,
+    ) = split_stage_scan_bounds(
+        min_x_pos,
+        max_x_pos,
+        scan_axis_max_range,
+        physical_scan_overlap_um,
+        camera_crop_y,
+        pixel_size_um,
+        angle_deg,
+    )
+    n_scan_positions = len(scan_axis_start_pos_um)
+    scan_tile_length_um = float(scan_axis_end_pos_um[0] - scan_axis_start_pos_um[0])
     scan_axis_step_mm = scan_axis_step_um / 1000.0
-    scan_axis_start_mm = min_x_pos / 1000.0
-    scan_axis_end_mm = max_x_pos / 1000.0
     # ASI positions are expressed in millimetres, but the grid and scan step are
     # specified in micrometres.  Retain six decimal places here so converting to
     # millimetres does not quantize coordinates to the previous 10 um increments.
     scan_tile_length_mm = np.round(scan_tile_length_um / 1000.0, 6)
-
-    # Initialize scan position start/end arrays with the scan start / end values
-    scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
-    scan_axis_end_pos_mm = np.full(n_scan_positions, scan_axis_end_mm)
-    for ii in range(n_scan_positions):
-        scan_axis_start_pos_mm[ii] = scan_axis_start_mm + ii * (
-            scan_tile_length_mm - scan_tile_overlap_mm
-        )
-        scan_axis_end_pos_mm[ii] = scan_axis_start_pos_mm[ii] + scan_tile_length_mm
-
-    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_mm, 6)
-    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_mm, 6)
+    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_um / 1000.0, 6)
+    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_um / 1000.0, 6)
     scan_tile_length_w_overlap_mm = np.round(
         np.abs(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0]), 6
     )
@@ -2946,7 +2975,9 @@ def setup_stagescan(
         "SCAN AXIS CALCULATED PARAMETERS",
         f"number scan tiles: {n_scan_positions}",
         f"tile length um: {scan_tile_length_um}",
-        f"tile overlap um: {scan_tile_overlap_um}",
+        f"requested lab-space overlap um: {physical_scan_overlap_um}",
+        f"camera scan-axis extent um: {camera_scan_extent_um}",
+        f"raw trajectory overlap um: {raw_scan_overlap_um}",
         f"tile length mm: {scan_tile_length_mm}",
         f"tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
         f"scan tile with overlap equals scan tile length: {test_scan_length}",
@@ -3152,9 +3183,7 @@ def setup_stagescan(
                     for scan_axis_idx in range(n_scan_axis_indices):
                         for chan_idx in range(n_active_channels):
                             source_chan_idx = active_channel_indices[chan_idx]
-                            end_excess_idx = (
-                                scan_axis_positions + excess_start_images
-                            )
+                            end_excess_idx = scan_axis_positions + excess_start_images
                             if scan_axis_idx < excess_start_images:
                                 is_excess_image = True
                             elif scan_axis_idx >= end_excess_idx:

@@ -6,6 +6,238 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+from numpy.typing import ArrayLike, NDArray
+
+FloatArray = NDArray[np.float64]
+
+
+def _angle_components(angle_deg: float) -> tuple[float, float]:
+    """Return the sine and cosine of a valid OPM angle.
+
+    Parameters
+    ----------
+    angle_deg : float
+        OPM sheet angle in degrees.
+
+    Returns
+    -------
+    tuple[float, float]
+        Sine and cosine of the angle.
+
+    Raises
+    ------
+    ValueError
+        If the angle cannot define an oblique camera-to-laboratory transform.
+    """
+    theta = np.deg2rad(float(angle_deg))
+    sin_theta = float(np.sin(theta))
+    cos_theta = float(np.cos(theta))
+    if np.isclose(sin_theta, 0.0):
+        raise ValueError("OPM angle must have a nonzero sine")
+    return sin_theta, cos_theta
+
+
+def lab2cam(
+    lab_x: ArrayLike,
+    lab_scan: ArrayLike,
+    lab_z: ArrayLike,
+    angle_deg: float,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Transform laboratory coordinates into OPM camera coordinates.
+
+    This follows the axis convention in ``opm-processing-v2``.  Its laboratory
+    scan axis is mapped onto this microscope's physical stage X by callers.
+
+    Parameters
+    ----------
+    lab_x : ArrayLike
+        Laboratory coordinate parallel to camera X.
+    lab_scan : ArrayLike
+        Laboratory coordinate along the acquisition scan direction.
+    lab_z : ArrayLike
+        Laboratory axial coordinate.
+    angle_deg : float
+        OPM sheet angle in degrees.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
+        Camera X, camera Y, and raw scan-stage coordinates.
+    """
+    sin_theta, cos_theta = _angle_components(angle_deg)
+    x = np.asarray(lab_x, dtype=float)
+    scan = np.asarray(lab_scan, dtype=float)
+    z = np.asarray(lab_z, dtype=float)
+    camera_y = z / sin_theta
+    raw_scan = scan - z * cos_theta / sin_theta
+    return x, camera_y, raw_scan
+
+
+def cam2lab(
+    camera_x: ArrayLike,
+    camera_y: ArrayLike,
+    raw_scan: ArrayLike,
+    angle_deg: float,
+) -> tuple[FloatArray, FloatArray, FloatArray]:
+    """Transform OPM camera coordinates into laboratory coordinates.
+
+    Parameters
+    ----------
+    camera_x : ArrayLike
+        Coordinate along camera X.
+    camera_y : ArrayLike
+        Coordinate along camera Y in sample-space units.
+    raw_scan : ArrayLike
+        Hardware scan-stage coordinate.
+    angle_deg : float
+        OPM sheet angle in degrees.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, numpy.ndarray]
+        Laboratory X, scan-axis, and Z coordinates.
+    """
+    sin_theta, cos_theta = _angle_components(angle_deg)
+    x = np.asarray(camera_x, dtype=float)
+    y = np.asarray(camera_y, dtype=float)
+    scan = np.asarray(raw_scan, dtype=float)
+    lab_scan = scan + y * cos_theta
+    lab_z = y * sin_theta
+    return x, lab_scan, lab_z
+
+
+def oblique_camera_extents_um(
+    camera_crop_y: int,
+    pixel_size_um: float,
+    angle_deg: float,
+) -> tuple[float, float]:
+    """Return camera-height contributions along lab scan and lab Z.
+
+    Parameters
+    ----------
+    camera_crop_y : int
+        Camera ROI height in pixels.
+    pixel_size_um : float
+        Sample-space pixel size in micrometers.
+    angle_deg : float
+        OPM sheet angle in degrees.
+
+    Returns
+    -------
+    tuple[float, float]
+        Absolute scan-axis and Z extents in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If the camera shape or pixel size is not positive.
+    """
+    if camera_crop_y <= 0 or pixel_size_um <= 0:
+        raise ValueError("Camera crop and pixel size must be positive")
+    camera_height_um = float(camera_crop_y) * float(pixel_size_um)
+    _, lab_scan, lab_z = cam2lab(0.0, camera_height_um, 0.0, angle_deg)
+    return abs(float(lab_scan)), abs(float(lab_z))
+
+
+def covering_tile_origins(
+    start_um: float,
+    stop_um: float,
+    footprint_um: float,
+    overlap_fraction: float,
+) -> FloatArray:
+    """Return regular tile origins that cover an interval.
+
+    The footprint is expressed in reconstructed laboratory coordinates, not as
+    the raw hardware scan length.
+
+    Returns
+    -------
+    numpy.ndarray
+        Tile origins in ascending order, expressed in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If the footprint or overlap fraction is invalid.
+    """
+    if footprint_um <= 0:
+        raise ValueError("Tile footprint must be positive")
+    if not 0 <= overlap_fraction < 1:
+        raise ValueError("Tile overlap must be in the range [0, 1)")
+    lower, upper = sorted((float(start_um), float(stop_um)))
+    distance = upper - lower
+    if distance <= footprint_um or np.isclose(distance, footprint_um):
+        return np.asarray([lower], dtype=float)
+    stride_um = footprint_um * (1.0 - overlap_fraction)
+    tile_count = _ceil_ratio(distance - footprint_um, stride_um) + 1
+    return lower + np.arange(tile_count, dtype=float) * stride_um
+
+
+def split_stage_scan_bounds(
+    start_um: float,
+    stop_um: float,
+    max_raw_scan_length_um: float,
+    physical_overlap_um: float,
+    camera_crop_y: int,
+    pixel_size_um: float,
+    angle_deg: float,
+) -> tuple[FloatArray, FloatArray, float, float]:
+    """Split a lab-space interval into equal raw stage-scan trajectories.
+
+    The requested overlap is defined after transforming the skewed camera volume
+    into laboratory coordinates.  Consequently the raw hardware trajectories may
+    have less overlap, or a gap, while the reconstructed volumes retain exactly
+    the requested physical overlap.
+
+    Returns
+    -------
+    tuple[numpy.ndarray, numpy.ndarray, float, float]
+        Raw scan starts, raw scan ends, raw trajectory overlap, and the camera
+        contribution along the laboratory scan axis, all in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If the interval or scan constraints cannot form a valid plan.
+    """
+    lower, upper = sorted((float(start_um), float(stop_um)))
+    distance_um = upper - lower
+    if distance_um <= 0:
+        raise ValueError("Stage scan bounds must define a nonzero interval")
+    if max_raw_scan_length_um <= 0:
+        raise ValueError("Maximum raw stage-scan length must be positive")
+    if physical_overlap_um < 0:
+        raise ValueError("Physical stage-scan overlap cannot be negative")
+
+    camera_scan_extent_um, _ = oblique_camera_extents_um(
+        camera_crop_y, pixel_size_um, angle_deg
+    )
+    raw_overlap_um = float(physical_overlap_um) - camera_scan_extent_um
+
+    if distance_um <= max_raw_scan_length_um or np.isclose(
+        distance_um, max_raw_scan_length_um
+    ):
+        starts = np.asarray([lower], dtype=float)
+        ends = np.asarray([upper], dtype=float)
+        return starts, ends, raw_overlap_um, camera_scan_extent_um
+
+    available_stride_um = float(max_raw_scan_length_um) - raw_overlap_um
+    if available_stride_um <= 0:
+        raise ValueError(
+            "Physical overlap is too large for the maximum raw stage-scan length"
+        )
+    scan_count = max(
+        2,
+        _ceil_ratio(distance_um - raw_overlap_um, available_stride_um),
+    )
+    raw_scan_length_um = raw_overlap_um + (distance_um - raw_overlap_um) / scan_count
+    if raw_scan_length_um <= 0:
+        raise ValueError("Calculated raw stage-scan length is not positive")
+    raw_stride_um = raw_scan_length_um - raw_overlap_um
+    starts = lower + np.arange(scan_count, dtype=float) * raw_stride_um
+    ends = starts + raw_scan_length_um
+    ends[-1] = upper
+    return starts, ends, raw_overlap_um, camera_scan_extent_um
 
 
 def _ceil_ratio(distance: float, stride: float) -> int:
@@ -222,17 +454,26 @@ def generate_stage_positions(
     x_min, x_max = sorted(x_bounds_um)
     y_min, y_max = sorted(y_bounds_um)
     z_start, z_stop = z_bounds_um
-    range_x = x_max - x_min
     range_y = y_max - y_min
     range_z = abs(z_stop - z_start)
-    angle_scale = abs(np.sin(np.deg2rad(angle_deg)))
+    camera_scan_extent_um, camera_z_extent_um = oblique_camera_extents_um(
+        crop_y, pixel_size_um, angle_deg
+    )
     y_step_max = crop_x * pixel_size_um * (1 - tile_overlap)
-    z_step_max = crop_y * pixel_size_um * angle_scale * (1 - tile_overlap)
-    scan_stride = max(max_stage_scan_range_um - scan_axis_overlap_um, 1e-9)
-    n_scan = max(1, _ceil_ratio(range_x, scan_stride))
+    z_step_max = camera_z_extent_um * (1 - tile_overlap)
+    scan_starts, scan_ends, raw_scan_overlap_um, _ = split_stage_scan_bounds(
+        x_min,
+        x_max,
+        max_stage_scan_range_um,
+        scan_axis_overlap_um,
+        crop_y,
+        pixel_size_um,
+        angle_deg,
+    )
+    n_scan = len(scan_starts)
     n_tile = max(1, _ceil_ratio(range_y, y_step_max) + 1)
     n_z = max(1, _ceil_ratio(range_z, z_step_max) + 1)
-    x_positions = np.linspace(x_min, x_max, n_scan, endpoint=False)
+    x_positions = scan_starts
     y_positions = np.linspace(y_min, y_max, n_tile)
     z_positions = np.linspace(z_start, z_stop, n_z)
     positions = compose_stage_positions(
@@ -250,5 +491,8 @@ def generate_stage_positions(
         "num_tile_positions": n_tile,
         "num_z_positions": n_z,
         "num_stage_positions": len(positions),
+        "camera_scan_extent_um": camera_scan_extent_um,
+        "raw_scan_overlap_um": raw_scan_overlap_um,
+        "scan_end_positions_um": scan_ends.tolist(),
     }
     return positions, geometry

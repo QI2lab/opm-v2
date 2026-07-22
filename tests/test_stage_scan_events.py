@@ -7,6 +7,7 @@ from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
 from opm_v2.engine.setup_events import setup_stagescan
+from opm_v2.utils.position_tools import oblique_camera_extents_um
 
 
 @pytest.mark.parametrize(
@@ -109,9 +110,7 @@ def test_stage_scan_preserves_micrometre_grid_range_in_asi_millimetres(
         for event in events
         if getattr(event.action, "name", None) == ACTION_ASI_SETUP_SCAN
     )
-    assert asi_event.action.data["ASI"]["scan_axis_start_mm"] == pytest.approx(
-        3.167460
-    )
+    assert asi_event.action.data["ASI"]["scan_axis_start_mm"] == pytest.approx(3.167460)
     assert asi_event.action.data["ASI"]["scan_axis_end_mm"] == pytest.approx(3.168460)
     assert handler.index_sizes == {"t": 1, "p": 2, "c": 3, "z": 52}
 
@@ -178,3 +177,58 @@ def test_stage_scan_rejects_literal_exported_positions(
             MDASequence(stage_positions=[(100.0, 200.0, 7.0)]),
             workspace_tmp_path / "stage-point.ome.zarr",
         )
+
+
+def test_stage_scan_subdivision_preserves_deskewed_physical_overlap(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Convert lab-space overlap into the corresponding raw stage trajectories."""
+    requested_overlap_um = 20.0
+    config = opm_config_factory(
+        mode="stage",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(10.0,),
+        scan_axis_step_um=2.0,
+        updates={
+            "acq_config": {
+                "Positions": {"scan_axis_overlap_um": requested_overlap_um},
+                "stage_scan": {"max_stage_scan_range_um": 100.0},
+            }
+        },
+    )
+    events, handler = setup_stagescan(
+        demo_core,
+        config,
+        MDASequence(grid_plan={"top": 250.0, "bottom": 0.0, "left": 0.0, "right": 0.0}),
+        workspace_tmp_path / "stage-deskew-overlap.ome.zarr",
+    )
+    asi_events = [
+        event
+        for event in events
+        if getattr(event.action, "name", None) == ACTION_ASI_SETUP_SCAN
+    ]
+    starts_um = [
+        event.action.data["ASI"]["scan_axis_start_mm"] * 1000 for event in asi_events
+    ]
+    ends_um = [
+        event.action.data["ASI"]["scan_axis_end_mm"] * 1000 for event in asi_events
+    ]
+    camera_scan_extent_um, _ = oblique_camera_extents_um(
+        config["acq_config"]["camera_roi"]["crop_y"],
+        demo_core.getPixelSizeUm(),
+        config["OPM"]["angle_deg"],
+    )
+
+    assert len(asi_events) == 3
+    assert starts_um[0] == pytest.approx(0.0)
+    assert ends_um[-1] == pytest.approx(250.0)
+    assert all(end - start <= 100.0 for start, end in zip(starts_um, ends_um))
+    assert [
+        end + camera_scan_extent_um - next_start
+        for end, next_start in zip(ends_um[:-1], starts_um[1:])
+    ] == pytest.approx([requested_overlap_um, requested_overlap_um], abs=0.002)
+    assert handler.index_sizes["p"] == 3

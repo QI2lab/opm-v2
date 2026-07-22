@@ -118,8 +118,12 @@ def test_mirror_retiles_stage_explorer_region_in_physical_stage_axes(
     )
     image_events, _ = split_events(events)
 
-    assert sorted({event.x_pos for event in image_events}) == pytest.approx(
-        [100.0, 102.67, 105.34]
+    # The 4 um mirror sweep is the scan-plane footprint.  At 15% overlap its
+    # maximum X stride is 3.4 um, independent of the deskewed volume width.
+    x_positions = sorted({event.x_pos for event in image_events})
+    assert x_positions == pytest.approx([100.0, 103.4, 106.8])
+    assert [right - left for left, right in zip(x_positions, x_positions[1:])] == (
+        pytest.approx([3.4, 3.4])
     )
     assert {event.y_pos for event in image_events} == {200.0}
     assert {event.z_pos for event in image_events} == {9.0}
