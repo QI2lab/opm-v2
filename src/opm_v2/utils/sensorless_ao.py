@@ -2178,6 +2178,7 @@ def metric_localize_gauss2d(image: NDArray) -> float:
 def run_ao_grid_mapping(
     ao_dict: dict,
     stage_positions: list,
+    position_indices: list[int] | None = None,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
     save_dir_path: Path = None,
@@ -2189,6 +2190,9 @@ def run_ao_grid_mapping(
     ----------
     stage_positions : list
         Experimental stage positions. Optimized for stage scan acquisitions
+    position_indices : list[int] or None
+        Global AO position-array indices represented by ``stage_positions``.
+        ``None`` maps the positions contiguously from index zero.
     ao_dict : dict
         A dictionary containing AO optimization parameters
     num_tile_positions : int
@@ -2209,6 +2213,8 @@ def run_ao_grid_mapping(
     ------
     KeyError
         If the AO configuration omits a required optimization setting.
+    ValueError
+        If global position indices do not match the supplied stage positions.
     """
     required_ao_keys = {
         "channel_states",
@@ -2239,6 +2245,12 @@ def run_ao_grid_mapping(
         )
     AOMirror_local = AOMirror.instance()
     mmc = CMMCorePlus.instance()
+    if position_indices is None:
+        position_indices = list(range(len(stage_positions)))
+    if len(position_indices) != len(stage_positions):
+        raise ValueError(
+            "AO grid position indices must match the number of stage positions"
+        )
 
     stage_positions_array = np.array([
         (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
@@ -2418,8 +2430,8 @@ def run_ao_grid_mapping(
         print("\n++++++++++++++++ AO GRID OPTIMIZATION COMPLETE ++++++++++++++++\n")
 
     # Map ao_grid_wfc_coeffs to experiment stage positions.
-    position_wfc_coeffs = np.zeros(AOMirror_local.positions_modal_array.shape)
-    position_wfc_positions = np.zeros(AOMirror_local.positions_voltage_array.shape)
+    position_wfc_coeffs = AOMirror_local.positions_modal_array.copy()
+    position_wfc_positions = AOMirror_local.positions_voltage_array.copy()
     ao_stage_positions_array = np.array([
         (pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions
     ])
@@ -2427,7 +2439,9 @@ def run_ao_grid_mapping(
         (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
     ])
 
-    for pos_idx, (stage_z, stage_y, stage_x) in enumerate(stage_positions_array):
+    for local_pos_idx, (stage_z, stage_y, stage_x) in enumerate(
+        stage_positions_array
+    ):
         # Get matching target ao positions
         target_z = ao_stage_positions_array[:, 0][
             int(np.argmin(np.abs(stage_z - ao_stage_positions_array[:, 0])))
@@ -2456,13 +2470,15 @@ def run_ao_grid_mapping(
         )[0][0]
 
         # Assign AO data
+        pos_idx = int(position_indices[local_pos_idx])
         position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]
         position_wfc_coeffs[pos_idx] = ao_grid_wfc_coeffs[ao_grid_idx]
 
         if DEBUGGING:
             print(
                 f"\n\n ++++ AO grid position: {ao_stage_positions[ao_grid_idx]} ++++",
-                f"\n ++++ Exp. stage position: {stage_positions[pos_idx]} ++++",
+                f"\n ++++ Exp. stage position: "
+                f"{stage_positions[local_pos_idx]} ++++",
             )
     AOMirror_local.positions_modal_array = position_wfc_coeffs
     AOMirror_local.positions_voltage_array = position_wfc_positions

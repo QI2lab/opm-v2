@@ -142,6 +142,7 @@ class OPMEngineV2(MDAEngine):
         self.simulated_custom_actions: list[str] = []
         self.simulated_stage_move_speeds: list[dict[str, float]] = []
         self._stage_speeds_before_sequence: dict[str, str] = {}
+        self._stage_explorer_timeout_before_sequence: int | None = None
         self._stage_move_count = 0
         self._safe_stop_requested = ThreadEvent()
 
@@ -366,6 +367,9 @@ class OPMEngineV2(MDAEngine):
         self._stage_move_count = 0
         self._capture_stage_speeds()
         metadata = getattr(sequence, "metadata", {})
+        is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in metadata
+        if is_stage_explorer_preview:
+            self._extend_stage_explorer_timeout()
         speed_override = metadata.get(STAGE_MOVE_SPEED_METADATA_KEY, {})
         if isinstance(speed_override, Mapping):
             self._apply_stage_move_speeds(speed_override)
@@ -375,7 +379,32 @@ class OPMEngineV2(MDAEngine):
             else int(self._config["OPM"].get("circular_buffer_mb", 32000))
         )
         self.mmcore.setCircularBufferMemoryFootprint(buffer_mb)
-        return super().setup_sequence(sequence)
+        try:
+            return super().setup_sequence(sequence)
+        except Exception:
+            if is_stage_explorer_preview:
+                self._restore_stage_after_scan()
+                self._restore_stage_explorer_timeout()
+            raise
+
+    def _extend_stage_explorer_timeout(self) -> None:
+        """Keep a long core timeout active for a complete Explorer tile run."""
+        if getattr(self, "_stage_explorer_timeout_before_sequence", None) is not None:
+            return
+        original_timeout_ms = int(self.mmcore.getTimeoutMs())
+        self._stage_explorer_timeout_before_sequence = original_timeout_ms
+        if original_timeout_ms < LARGE_STAGE_MOVE_TIMEOUT_MS:
+            self.mmcore.setTimeoutMs(LARGE_STAGE_MOVE_TIMEOUT_MS)
+
+    def _restore_stage_explorer_timeout(self) -> None:
+        """Restore the core timeout saved before an Explorer tile run."""
+        original_timeout_ms = getattr(
+            self, "_stage_explorer_timeout_before_sequence", None
+        )
+        if original_timeout_ms is None:
+            return
+        self._stage_explorer_timeout_before_sequence = None
+        self.mmcore.setTimeoutMs(original_timeout_ms)
 
     def _capture_stage_speeds(self) -> None:
         """Remember the physical XY move speeds in effect before an MDA run."""
@@ -1028,6 +1057,7 @@ class OPMEngineV2(MDAEngine):
                 else:
                     run_ao_grid_mapping(
                         stage_positions=data_dict["AO"]["stage_positions"],
+                        position_indices=data_dict["AO"].get("position_indices"),
                         ao_dict=data_dict["AO"]["ao_dict"],
                         num_tile_positions=data_dict["AO"]["num_tile_positions"],
                         num_scan_positions=data_dict["AO"]["num_scan_positions"],
@@ -1172,4 +1202,6 @@ class OPMEngineV2(MDAEngine):
         finally:
             if is_stage_explorer_preview and not preview_stage_restored:
                 self._restore_stage_after_scan()
+            if is_stage_explorer_preview:
+                self._restore_stage_explorer_timeout()
             self.clear_safe_stop()

@@ -139,6 +139,198 @@ def oblique_camera_extents_um(
     return abs(float(lab_scan)), abs(float(lab_z))
 
 
+def sample_depth_levels_um(
+    start_um: float,
+    end_um: float,
+    axial_footprint_um: float,
+    overlap_fraction: float,
+) -> FloatArray:
+    """Return sample-depth slab centers relative to the coverslip.
+
+    The endpoints are always retained and intermediate levels are inserted so
+    adjacent OPM slabs overlap by at least ``overlap_fraction``.  A zero-width
+    range intentionally returns one level, preserving single-layer acquisition.
+
+    Parameters
+    ----------
+    start_um, end_um : float
+        Requested sample depths relative to the fitted coverslip plane.
+    axial_footprint_um : float
+        Reconstructed laboratory-Z extent of one OPM camera frame.
+    overlap_fraction : float
+        Fractional overlap between neighboring axial slabs.
+
+    Returns
+    -------
+    numpy.ndarray
+        Depth levels in the user-requested direction, in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If the footprint, overlap, or numeric inputs are invalid.
+    """
+    values = np.asarray((start_um, end_um, axial_footprint_um, overlap_fraction))
+    if not np.all(np.isfinite(values)):
+        raise ValueError("Sample-depth settings must be finite")
+    if axial_footprint_um <= 0:
+        raise ValueError("Axial OPM footprint must be positive")
+    if not 0 <= overlap_fraction < 1:
+        raise ValueError("Z slab overlap must be in the range [0, 1)")
+
+    span_um = abs(float(end_um) - float(start_um))
+    if np.isclose(span_um, 0.0):
+        return np.asarray([float(start_um)], dtype=float)
+
+    maximum_step_um = float(axial_footprint_um) * (1.0 - overlap_fraction)
+    interval_count = max(1, int(np.ceil(span_um / maximum_step_um)))
+    return np.linspace(float(start_um), float(end_um), interval_count + 1)
+
+
+def sample_depth_stage_sign(camera_zstage_orientation: str) -> float:
+    """Return the provisional stage sign for positive sample depth.
+
+    The mapping is intentionally isolated here because it must be confirmed on
+    the microscope.  User-facing depth remains positive into the sample while
+    this sign converts it to the configured physical Z-stage direction.
+
+    Returns
+    -------
+    float
+        ``1`` for positive orientation or ``-1`` for negative orientation.
+
+    Raises
+    ------
+    ValueError
+        If the configured orientation is not positive or negative.
+    """
+    orientation = str(camera_zstage_orientation).strip().casefold()
+    if orientation == "positive":
+        return 1.0
+    if orientation == "negative":
+        return -1.0
+    raise ValueError(
+        "camera_Zstage_orientation must be either 'positive' or 'negative'"
+    )
+
+
+def apply_oblique_scan_correction(
+    stage_positions: Sequence[dict[str, float]],
+    angle_deg: float,
+    camera_zstage_orientation: str,
+    reference_z_um: float | None = None,
+) -> list[dict[str, float]]:
+    """Convert intended lab scan origins into raw hardware X coordinates.
+
+    Physical stage X is this microscope's fast scan axis. In an oblique
+    acquisition, changing lab Z while retaining a fixed lab scan origin
+    requires a compensating raw stage-X shift. The intended lab coordinate is
+    retained for acquisition metadata and downstream fusion.
+
+    Parameters
+    ----------
+    stage_positions : Sequence[dict[str, float]]
+        Positions whose ``x`` values currently express intended lab scan
+        origins.
+    angle_deg : float
+        OPM sheet angle in degrees.
+    camera_zstage_orientation : str
+        Sign relating physical stage Z to camera/lab Z.
+    reference_z_um : float or None
+        Physical Z at which raw stage X and lab scan coordinates coincide.
+        Defaults to the first position's Z. A per-position
+        ``scan_reference_z_um`` value takes precedence.
+
+    Returns
+    -------
+    list[dict[str, float]]
+        Positions with corrected hardware ``x`` and retained ``lab_scan_um``.
+    """
+    if not stage_positions:
+        return []
+    default_reference_z = (
+        float(stage_positions[0]["z"])
+        if reference_z_um is None
+        else float(reference_z_um)
+    )
+    stage_sign = sample_depth_stage_sign(camera_zstage_orientation)
+    corrected: list[dict[str, float]] = []
+    for position in stage_positions:
+        updated = dict(position)
+        lab_scan_um = float(position.get("lab_scan_um", position["x"]))
+        scan_reference_z_um = float(
+            position.get("scan_reference_z_um", default_reference_z)
+        )
+        lab_z_offset_um = stage_sign * (
+            float(position["z"]) - scan_reference_z_um
+        )
+        _, _, raw_scan = lab2cam(
+            0.0,
+            lab_scan_um,
+            lab_z_offset_um,
+            angle_deg,
+        )
+        updated["x"] = float(raw_scan)
+        updated["lab_scan_um"] = lab_scan_um
+        updated["scan_reference_z_um"] = scan_reference_z_um
+        corrected.append(updated)
+    return corrected
+
+
+def expand_stage_positions_for_depth(
+    stage_positions: Sequence[dict[str, float]],
+    sample_depths_um: Sequence[float],
+    camera_zstage_orientation: str,
+    angle_deg: float | None = None,
+) -> list[dict[str, float]]:
+    """Repeat XYZ positions at coverslip-relative sample depths.
+
+    Positions are ordered by depth slab and then by their existing lateral
+    order.  Each output carries both the biological sample depth and the signed
+    hardware offset so acquisition metadata can describe the conversion.
+
+    Returns
+    -------
+    list[dict[str, float]]
+        Expanded depth-major physical stage positions.
+
+    Raises
+    ------
+    ValueError
+        If no valid depths are supplied or stage orientation is invalid.
+    """
+    depths = np.asarray(sample_depths_um, dtype=float)
+    if depths.ndim != 1 or len(depths) == 0 or not np.all(np.isfinite(depths)):
+        raise ValueError("At least one finite sample-depth level is required")
+    if len(depths) == 1 and np.isclose(depths[0], 0.0):
+        # Preserve the exact pre-depth position payload and event metadata when
+        # the new controls are disabled.
+        return [dict(position) for position in stage_positions]
+    stage_sign = sample_depth_stage_sign(camera_zstage_orientation)
+
+    expanded: list[dict[str, float]] = []
+    for depth_index, sample_depth_um in enumerate(depths):
+        stage_offset_um = stage_sign * float(sample_depth_um)
+        for position in stage_positions:
+            expanded_position = dict(position)
+            expanded_position["z"] = float(position["z"]) + stage_offset_um
+            if "lab_scan_um" in expanded_position:
+                if angle_deg is None:
+                    raise ValueError(
+                        "OPM angle is required for depth-expanded lab scan positions"
+                    )
+                expanded_position = apply_oblique_scan_correction(
+                    [expanded_position],
+                    angle_deg,
+                    camera_zstage_orientation,
+                )[0]
+            expanded_position["depth_index"] = int(depth_index)
+            expanded_position["sample_depth_um"] = float(sample_depth_um)
+            expanded_position["stage_depth_offset_um"] = stage_offset_um
+            expanded.append(expanded_position)
+    return expanded
+
+
 def covering_tile_origins(
     start_um: float,
     stop_um: float,
@@ -177,23 +369,23 @@ def split_stage_scan_bounds(
     start_um: float,
     stop_um: float,
     max_raw_scan_length_um: float,
-    physical_overlap_um: float,
+    configured_overlap_um: float,
     camera_crop_y: int,
     pixel_size_um: float,
     angle_deg: float,
 ) -> tuple[FloatArray, FloatArray, float, float]:
-    """Split a lab-space interval into equal raw stage-scan trajectories.
+    """Split a lab-space interval using the working main-branch placement rule.
 
-    The requested overlap is defined after transforming the skewed camera volume
-    into laboratory coordinates.  Consequently the raw hardware trajectories may
-    have less overlap, or a gap, while the reconstructed volumes retain exactly
-    the requested physical overlap.
+    Adjacent stage trajectories overlap by the projected camera axial footprint
+    plus the configured extra overlap.  This is the established hardware-tested
+    calculation from ``main``.  The split trajectories are equal length and
+    their union begins and ends at the requested bounds.
 
     Returns
     -------
     tuple[numpy.ndarray, numpy.ndarray, float, float]
-        Raw scan starts, raw scan ends, raw trajectory overlap, and the camera
-        contribution along the laboratory scan axis, all in micrometers.
+        Raw scan starts, raw scan ends, effective trajectory overlap, and the
+        camera axial footprint, all in micrometers.
 
     Raises
     ------
@@ -206,38 +398,43 @@ def split_stage_scan_bounds(
         raise ValueError("Stage scan bounds must define a nonzero interval")
     if max_raw_scan_length_um <= 0:
         raise ValueError("Maximum raw stage-scan length must be positive")
-    if physical_overlap_um < 0:
-        raise ValueError("Physical stage-scan overlap cannot be negative")
+    if configured_overlap_um < 0:
+        raise ValueError("Configured stage-scan overlap cannot be negative")
 
-    camera_scan_extent_um, _ = oblique_camera_extents_um(
+    _, camera_z_extent_um = oblique_camera_extents_um(
         camera_crop_y, pixel_size_um, angle_deg
     )
-    raw_overlap_um = float(physical_overlap_um) - camera_scan_extent_um
+    effective_overlap_um = camera_z_extent_um + float(configured_overlap_um)
 
     if distance_um <= max_raw_scan_length_um or np.isclose(
         distance_um, max_raw_scan_length_um
     ):
         starts = np.asarray([lower], dtype=float)
         ends = np.asarray([upper], dtype=float)
-        return starts, ends, raw_overlap_um, camera_scan_extent_um
+        return starts, ends, effective_overlap_um, camera_z_extent_um
 
-    available_stride_um = float(max_raw_scan_length_um) - raw_overlap_um
-    if available_stride_um <= 0:
-        raise ValueError(
-            "Physical overlap is too large for the maximum raw stage-scan length"
-        )
-    scan_count = max(
-        2,
-        _ceil_ratio(distance_um - raw_overlap_um, available_stride_um),
+    # This is algebraically identical to main:
+    #
+    #   length = range / count + (count - 1) * overlap / count
+    #   stride = length - overlap
+    #
+    # Retain floating-point micrometre precision here; main's subsequent
+    # 0.01 mm rounding was separately fixed because it erased small scans.
+    scan_count = int(np.ceil(distance_um / float(max_raw_scan_length_um)))
+    raw_scan_length_um = (
+        distance_um / scan_count
+        + (scan_count - 1) * effective_overlap_um / scan_count
     )
-    raw_scan_length_um = raw_overlap_um + (distance_um - raw_overlap_um) / scan_count
-    if raw_scan_length_um <= 0:
-        raise ValueError("Calculated raw stage-scan length is not positive")
-    raw_stride_um = raw_scan_length_um - raw_overlap_um
+    raw_stride_um = raw_scan_length_um - effective_overlap_um
+    if raw_stride_um <= 0:
+        raise ValueError(
+            "Camera footprint plus configured overlap is too large for the "
+            "calculated stage-scan segment"
+        )
     starts = lower + np.arange(scan_count, dtype=float) * raw_stride_um
     ends = starts + raw_scan_length_um
     ends[-1] = upper
-    return starts, ends, raw_overlap_um, camera_scan_extent_um
+    return starts, ends, effective_overlap_um, camera_z_extent_um
 
 
 def _ceil_ratio(distance: float, stride: float) -> int:
@@ -392,7 +589,10 @@ def compose_stage_positions(
     """
     return [
         {
-            "x": float(np.round(scan_position, 2)),
+            # ASI scan origins are calculated in millimetres to six decimal
+            # places. Preserve that sub-micrometre precision after converting
+            # back to micrometres.
+            "x": float(np.round(scan_position, 6)),
             "y": float(np.round(tile_position, 2)),
             "z": float(np.round(z_position + z_offset_per_scan_um * scan_index, 2)),
         }

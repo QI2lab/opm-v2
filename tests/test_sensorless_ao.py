@@ -46,8 +46,10 @@ def test_ao_grid_forwards_metric_acceptance(
     ao_dict = create_ao_grid_event(config).action.data["AO"]["ao_dict"]
 
     mirror = SimpleNamespace(
-        positions_modal_array=np.zeros((1, 2)),
-        positions_voltage_array=np.zeros((1, 3)),
+        positions_modal_array=np.asarray([[9.0, 8.0], [0.0, 0.0]]),
+        positions_voltage_array=np.asarray(
+            [[9.0, 8.0, 7.0], [0.0, 0.0, 0.0]]
+        ),
         current_coeffs=np.asarray([1.0, 2.0]),
         current_voltage=np.asarray([3.0, 4.0, 5.0]),
     )
@@ -66,6 +68,7 @@ def test_ao_grid_forwards_metric_acceptance(
     completed = sensorless_ao.run_ao_grid_mapping(
         ao_dict=ao_dict,
         stage_positions=[{"x": 0.0, "y": 0.0, "z": 0.0}],
+        position_indices=[1],
         save_dir_path=workspace_tmp_path,
         verbose=False,
     )
@@ -73,3 +76,11 @@ def test_ao_grid_forwards_metric_acceptance(
     assert completed
     assert len(calls) == 1
     assert calls[0]["mode_acceptance"] == "optimal"
+    np.testing.assert_allclose(
+        mirror.positions_modal_array,
+        [[9.0, 8.0], [1.0, 2.0]],
+    )
+    np.testing.assert_allclose(
+        mirror.positions_voltage_array,
+        [[9.0, 8.0, 7.0], [3.0, 4.0, 5.0]],
+    )

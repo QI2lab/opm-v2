@@ -55,6 +55,13 @@ class OPMSettingsV2(QWidget):
         with open(self.config_path) as config_file:
             config = json.load(config_file)
 
+        positions_config = config.setdefault("acq_config", {}).setdefault(
+            "Positions", {}
+        )
+        positions_config.setdefault("sample_depth_start_um", 0.0)
+        positions_config.setdefault("sample_depth_end_um", 0.0)
+        positions_config.setdefault("z_axis_overlap", 0.15)
+
         self.config = config
         self.widgets = {}
         self.create_ui()
@@ -837,6 +844,46 @@ class OPMSettingsV2(QWidget):
         self.layout_stage_slope.addWidget(QLabel("y:"))
         self.layout_stage_slope.addWidget(self.spbx_stage_slope_y)
 
+        self.spbx_sample_depth_start = self.create_dbspinbox(
+            value=self.config["acq_config"]["Positions"][
+                "sample_depth_start_um"
+            ],
+            min=-1000,
+            max=1000,
+            precision=2,
+            interval=1.0,
+            connect_to_fn=self.update_config,
+        )
+        self.spbx_sample_depth_end = self.create_dbspinbox(
+            value=self.config["acq_config"]["Positions"]["sample_depth_end_um"],
+            min=-1000,
+            max=1000,
+            precision=2,
+            interval=1.0,
+            connect_to_fn=self.update_config,
+        )
+        self.layout_sample_depth = QHBoxLayout()
+        self.layout_sample_depth.addWidget(QLabel("Sample depth from coverslip (µm):"))
+        self.layout_sample_depth.addStretch()
+        self.layout_sample_depth.addWidget(QLabel("start:"))
+        self.layout_sample_depth.addWidget(self.spbx_sample_depth_start)
+        self.layout_sample_depth.addWidget(QLabel("end:"))
+        self.layout_sample_depth.addWidget(self.spbx_sample_depth_end)
+
+        self.spbx_z_axis_overlap = self.create_dbspinbox(
+            value=100.0
+            * self.config["acq_config"]["Positions"]["z_axis_overlap"],
+            min=0,
+            max=95,
+            precision=1,
+            interval=1.0,
+            connect_to_fn=self.update_config,
+        )
+        self.spbx_z_axis_overlap.setProperty("config_scale", 0.01)
+        self.layout_z_axis_overlap = QHBoxLayout()
+        self.layout_z_axis_overlap.addWidget(QLabel("Z slab overlap (%):"))
+        self.layout_z_axis_overlap.addWidget(self.spbx_z_axis_overlap)
+
         self.spbx_proj_image_range = self.create_dbspinbox(
             value=self.config["acq_config"]["DAQ"]["scan_range_um"],
             max=250,
@@ -858,6 +905,8 @@ class OPMSettingsV2(QWidget):
         self.layout_scan_settings.addLayout(self.layout_stage_excess_frames)
         self.layout_scan_settings.addLayout(self.layout_proj_image_range)
         self.layout_scan_settings.addLayout(self.layout_stage_slope)
+        self.layout_scan_settings.addLayout(self.layout_sample_depth)
+        self.layout_scan_settings.addLayout(self.layout_z_axis_overlap)
         self.group_scan_settings = QGroupBox("Scan Settings")
         self.group_scan_settings.setLayout(self.layout_scan_settings)
 
@@ -921,6 +970,9 @@ class OPMSettingsV2(QWidget):
             "Positions": {
                 "coverslip_slope_x": self.spbx_stage_slope_x,
                 "coverslip_slope_y": self.spbx_stage_slope_y,
+                "sample_depth_start_um": self.spbx_sample_depth_start,
+                "sample_depth_end_um": self.spbx_sample_depth_end,
+                "z_axis_overlap": self.spbx_z_axis_overlap,
             },
             "camera_roi": {
                 "center_x": self.spbx_roi_center_x,
@@ -1195,9 +1247,11 @@ class OPMSettingsV2(QWidget):
                 widget = self.widgets[key_id][key]
 
                 if isinstance(widget, QSpinBox):
-                    config["acq_config"][key_id][key] = widget.value()
+                    scale = widget.property("config_scale") or 1.0
+                    config["acq_config"][key_id][key] = widget.value() * scale
                 elif isinstance(widget, QDoubleSpinBox):
-                    config["acq_config"][key_id][key] = widget.value()
+                    scale = widget.property("config_scale") or 1.0
+                    config["acq_config"][key_id][key] = widget.value() * scale
                 elif isinstance(widget, QComboBox):
                     config["acq_config"][key_id][key] = widget.currentText()
 

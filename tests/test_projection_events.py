@@ -11,6 +11,7 @@ from opm_v2.engine.setup_events import (
     normalize_autofocus_mode,
     setup_projection,
 )
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 
 
 @pytest.mark.parametrize(
@@ -154,3 +155,45 @@ def test_projection_retiles_stage_explorer_region_in_physical_stage_axes(
     assert {event.z_pos for event in image_events} == {7.0}
     assert custom_actions.count(ACTION_DAQ) == 3
     assert handler.index_sizes == {"t": 1, "p": 3, "c": 1}
+
+
+def test_projection_applies_exported_coverslip_plane(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+) -> None:
+    """Predict sample Z from every retiled physical projection coordinate."""
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(5.0,),
+        scan_range_um=4.0,
+    )
+    plane = CoverslipPlane(100.0, 200.0, 7.0, 0.1, 0.2)
+    region = AbsolutePosition(
+        z=7.0,
+        sequence=MDASequence(
+            metadata={COVERSLIP_METADATA_KEY: plane.to_metadata()},
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=108.0,
+                top=200.0,
+                bottom=204.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            ),
+        ),
+    )
+
+    events, _handler = setup_projection(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pc"),
+        workspace_tmp_path / "projection-coverslip.ome.zarr",
+    )
+    image_events, _custom_actions = split_events(events)
+
+    assert [event.z_pos for event in image_events] == pytest.approx([7.0, 7.27, 7.53])

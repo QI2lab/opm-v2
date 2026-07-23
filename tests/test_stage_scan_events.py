@@ -5,9 +5,13 @@ from __future__ import annotations
 import pytest
 from useq import AbsolutePosition, GridFromEdges, MDASequence
 
-from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
+from opm_v2.engine.opm_custom_events import (
+    ACTION_ASI_SETUP_SCAN,
+    ACTION_DAQ,
+    ACTION_STAGE_MOVE,
+)
 from opm_v2.engine.setup_events import setup_stagescan
-from opm_v2.utils.position_tools import oblique_camera_extents_um
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 
 
 @pytest.mark.parametrize(
@@ -161,6 +165,68 @@ def test_stage_scan_uses_stage_explorer_left_right_as_physical_fast_x(
     assert handler.index_sizes == {"t": 1, "p": 1, "c": 1, "z": 5}
 
 
+def test_stage_scan_applies_exported_plane_at_each_segment_and_tile(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Evaluate both plane slopes at stage-scan software move boundaries."""
+    config = opm_config_factory(
+        mode="stage",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(10.0,),
+        scan_axis_step_um=2.0,
+        updates={
+            "acq_config": {"stage_scan": {"max_stage_scan_range_um": 100.0}}
+        },
+    )
+    plane = CoverslipPlane(100.0, 200.0, 7.0, 0.01, -0.02)
+    region = AbsolutePosition(
+        z=7.0,
+        sequence=MDASequence(
+            metadata={COVERSLIP_METADATA_KEY: plane.to_metadata()},
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=350.0,
+                top=200.0,
+                bottom=300.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            ),
+        ),
+    )
+
+    events, _handler = setup_stagescan(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pzc"),
+        workspace_tmp_path / "stage-coverslip.ome.zarr",
+    )
+    moves = [
+        event.action.data["Stage"]
+        for event in events
+        if getattr(event.action, "name", None) == ACTION_STAGE_MOVE
+    ]
+    unique_moves = {
+        (move["x_pos"], move["y_pos"], move["z_pos"]) for move in moves
+    }
+
+    assert len({move[0] for move in unique_moves}) > 1
+    assert len({move[1] for move in unique_moves}) > 1
+    logical_positions = {}
+    for event in events:
+        if "p" in event.index and event.index.get("z") == 0:
+            stage = event.metadata["Stage"]
+            logical_positions.setdefault(
+                event.index["p"],
+                (stage["x_pos"], stage["y_pos"], stage["z_pos"]),
+            )
+    for x_um, y_um, z_um in logical_positions.values():
+        assert z_um == pytest.approx(plane.z_at(x_um, y_um), abs=0.005)
+
+
 def test_stage_scan_rejects_literal_exported_positions(
     demo_core,
     workspace_tmp_path,
@@ -179,13 +245,13 @@ def test_stage_scan_rejects_literal_exported_positions(
         )
 
 
-def test_stage_scan_subdivision_preserves_deskewed_physical_overlap(
+def test_stage_scan_subdivision_matches_main_overlap_rule(
     demo_core,
     workspace_tmp_path,
     opm_config_factory,
     simulated_acquisition_hardware,
 ) -> None:
-    """Convert lab-space overlap into the corresponding raw stage trajectories."""
+    """Use camera axial footprint plus the configured extra overlap."""
     requested_overlap_um = 20.0
     config = opm_config_factory(
         mode="stage",
@@ -217,18 +283,20 @@ def test_stage_scan_subdivision_preserves_deskewed_physical_overlap(
     ends_um = [
         event.action.data["ASI"]["scan_axis_end_mm"] * 1000 for event in asi_events
     ]
-    camera_scan_extent_um, _ = oblique_camera_extents_um(
-        config["acq_config"]["camera_roi"]["crop_y"],
-        demo_core.getPixelSizeUm(),
-        config["OPM"]["angle_deg"],
-    )
-
     assert len(asi_events) == 3
     assert starts_um[0] == pytest.approx(0.0)
     assert ends_um[-1] == pytest.approx(250.0)
-    assert all(end - start <= 100.0 for start, end in zip(starts_um, ends_um))
+    camera_axial_footprint_um = (
+        config["acq_config"]["camera_roi"]["crop_y"]
+        * demo_core.getPixelSizeUm()
+        * 0.5
+    )
+    effective_overlap_um = requested_overlap_um + camera_axial_footprint_um
     assert [
-        end + camera_scan_extent_um - next_start
+        end - next_start
         for end, next_start in zip(ends_um[:-1], starts_um[1:])
-    ] == pytest.approx([requested_overlap_um, requested_overlap_um], abs=0.002)
+    ] == pytest.approx(
+        [effective_overlap_um, effective_overlap_um],
+        abs=0.002,
+    )
     assert handler.index_sizes["p"] == 3

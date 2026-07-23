@@ -464,6 +464,17 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
         ),
         "spbx_stage_slope_x": ("acq_config", "Positions", "coverslip_slope_x"),
         "spbx_stage_slope_y": ("acq_config", "Positions", "coverslip_slope_y"),
+        "spbx_sample_depth_start": (
+            "acq_config",
+            "Positions",
+            "sample_depth_start_um",
+        ),
+        "spbx_sample_depth_end": (
+            "acq_config",
+            "Positions",
+            "sample_depth_end_um",
+        ),
+        "spbx_z_axis_overlap": ("acq_config", "Positions", "z_axis_overlap"),
         "spbx_roi_center_x": ("acq_config", "camera_roi", "center_x"),
         "spbx_roi_center_y": ("acq_config", "camera_roi", "center_y"),
         "spbx_roi_crop_x": ("acq_config", "camera_roi", "crop_x"),
@@ -486,8 +497,10 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
         control = getattr(settings, widget_name)
         for value in (control.minimum(), control.maximum()):
             control.setValue(value)
+            scale = control.property("config_scale") or 1.0
             assert (
-                _nested_value(_read_config(config_path), config_keys) == control.value()
+                _nested_value(_read_config(config_path), config_keys)
+                == control.value() * scale
             )
 
     expected_slider_names = {

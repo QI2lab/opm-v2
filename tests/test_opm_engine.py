@@ -170,6 +170,7 @@ def test_preview_stage_move_speed_override_is_restored() -> None:
         "MotorSpeedX-S(mm/s)": "0.05",
         "MotorSpeedY-S(mm/s)": "0.08",
     }[prop]
+    mmcore.getTimeoutMs.return_value = 5000
     sequence = MDASequence(
         metadata={
             STAGE_MOVE_SPEED_METADATA_KEY: {
@@ -183,6 +184,8 @@ def test_preview_stage_move_speed_override_is_restored() -> None:
         engine.setup_sequence(sequence)
 
     upstream_setup.assert_called_once_with(sequence)
+    mmcore.setTimeoutMs.assert_called_once_with(120_000)
+    assert engine._stage_explorer_timeout_before_sequence == 5000
     assert call("XYStage", "MotorSpeedX-S(mm/s)", 0.2) in (
         mmcore.setProperty.call_args_list
     )
@@ -204,6 +207,11 @@ def test_preview_stage_move_speed_override_is_restored() -> None:
         mmcore.setProperty.call_args_list
     )
     assert engine._stage_speeds_before_sequence == {}
+
+    engine._restore_stage_explorer_timeout()
+
+    assert mmcore.setTimeoutMs.call_args_list == [call(120_000), call(5000)]
+    assert engine._stage_explorer_timeout_before_sequence is None
 
 
 def test_explorer_teardown_returns_xy_before_restoring_normal_speed() -> None:

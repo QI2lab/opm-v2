@@ -51,10 +51,13 @@ from opm_v2.engine.opm_custom_events import (
 from opm_v2.handlers.opm_data_handler import OpmDataHandler
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 from opm_v2.utils.position_tools import (
+    apply_oblique_scan_correction,
     compose_stage_positions,
-    covering_tile_origins,
+    expand_stage_positions_for_depth,
     oblique_camera_extents_um,
+    sample_depth_levels_um,
     split_stage_scan_bounds,
 )
 
@@ -82,6 +85,7 @@ class StageExplorerRegion:
     y_max: float
     z: float
     name: str | None = None
+    coverslip_plane: CoverslipPlane | None = None
 
 
 def debug(header: str, *lines: object) -> None:
@@ -214,23 +218,12 @@ def stage_positions_from_grid(
     if scan_range_um == 0:
         warning("SCAN RANGE", "Scan range == 0.")
         return []
-    elif "mirror" in opm_mode:
-        # Mirror tiling is determined by the range over which the mirror places
-        # scan planes.  The projected camera height enlarges the bounding box of
-        # the reconstructed, deskewed volume, but it does not enlarge that plane
-        # acquisition footprint.  Including it here can put adjacent mirror
-        # sweeps farther apart than the configured scan range and create gaps.
-        scan_footprint_um = scan_range_um
-        x_positions = covering_tile_origins(
-            min_x_pos,
-            max_x_pos,
-            scan_footprint_um,
-            scan_axis_overlap,
-        )
-        n_x_positions = len(x_positions)
-        x_step_max = scan_footprint_um * (1.0 - scan_axis_overlap)
-        x_step_um = float(x_positions[1] - x_positions[0]) if n_x_positions > 1 else 0.0
     else:
+        # Preserve the working main-branch placement rule for both projection
+        # and mirror scans.  The requested interval determines the number of
+        # positions, then that interval is divided evenly.  This deliberately
+        # produces at least the requested overlap instead of placing every
+        # origin at the maximum allowed stride.
         x_step_max = scan_range_um * (1 - scan_axis_overlap)
         n_x_positions = max(1, int(np.ceil(range_x_um / x_step_max)))
         x_step_um = np.round(range_x_um / n_x_positions, 2)
@@ -358,6 +351,19 @@ def parse_mda_position_plan(
             right = float(nested_grid["right"])
             top = float(nested_grid["top"])
             bottom = float(nested_grid["bottom"])
+            nested_metadata = nested_sequence.get("metadata") or {}
+            plane_payload = nested_metadata.get(COVERSLIP_METADATA_KEY)
+            try:
+                coverslip_plane = (
+                    CoverslipPlane.from_metadata(plane_payload)
+                    if plane_payload is not None
+                    else None
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Stage Explorer ROI at MDA position {index} has invalid "
+                    "coverslip plane metadata"
+                ) from exc
             items.append(
                 StageExplorerRegion(
                     x_min=min(left, right),
@@ -366,6 +372,7 @@ def parse_mda_position_plan(
                     y_max=max(top, bottom),
                     z=float(z_value),
                     name=str(name) if name is not None else None,
+                    coverslip_plane=coverslip_plane,
                 )
             )
             continue
@@ -462,23 +469,31 @@ def stage_positions_from_position_plan(
             "bottom": item.y_min,
             "top": item.y_max,
         }
-        stage_positions.extend(
-            stage_positions_from_grid(
-                mda_grid_plan=region_grid,
-                mda_z_plan={"bottom": item.z, "top": item.z},
-                opm_mode=opm_mode,
-                camera_crop_x=camera_crop_x,
-                camera_crop_y=camera_crop_y,
-                scan_range_um=scan_range_um,
-                scan_axis_overlap=scan_axis_overlap,
-                tile_axis_overlap=tile_axis_overlap,
-                z_axis_overlap=z_axis_overlap,
-                angle_deg=angle_deg,
-                coverslip_slope_x=coverslip_slope_x,
-                coverslip_slope_y=coverslip_slope_y,
-                mmc=mmc,
-            )
+        region_positions = stage_positions_from_grid(
+            mda_grid_plan=region_grid,
+            mda_z_plan={"bottom": item.z, "top": item.z},
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            scan_axis_overlap=scan_axis_overlap,
+            tile_axis_overlap=tile_axis_overlap,
+            z_axis_overlap=z_axis_overlap,
+            angle_deg=angle_deg,
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
         )
+        if item.coverslip_plane is not None:
+            scan_reference_z_um = item.coverslip_plane.z_at(item.x_min, item.y_min)
+            for position in region_positions:
+                position["z"] = float(
+                    np.round(
+                        item.coverslip_plane.z_at(position["x"], position["y"]), 2
+                    )
+                )
+                position["scan_reference_z_um"] = float(scan_reference_z_um)
+        stage_positions.extend(region_positions)
     return stage_positions
 
 
@@ -572,6 +587,21 @@ def populate_opm_metadata(
         ao_mirror_coeffs.tolist() if ao_mirror_coeffs is not None else None
     )
     ao_mirror_volts = ao_mirror_volts.tolist() if ao_mirror_volts is not None else None
+    stage_metadata = {
+        "x_pos": float(stage_position.get("lab_scan_um", stage_position["x"])),
+        "y_pos": float(stage_position["y"]),
+        "z_pos": float(stage_position["z"]),
+    }
+    if "depth_index" in stage_position:
+        stage_metadata.update(
+            {
+                "depth_index": int(stage_position["depth_index"]),
+                "sample_depth_um": float(stage_position["sample_depth_um"]),
+                "stage_depth_offset_um": float(
+                    stage_position["stage_depth_offset_um"]
+                ),
+            }
+        )
     metadata = {
         "DAQ": {
             "mode": str(daq_mode),
@@ -600,11 +630,7 @@ def populate_opm_metadata(
             "camera_XYstage_orientation": str(camera_XYstage_orientation),
             "camera_mirror_orientation": str(camera_mirror_orientation),
         },
-        "Stage": {
-            "x_pos": float(stage_position["x"]),
-            "y_pos": float(stage_position["y"]),
-            "z_pos": float(stage_position["z"]),
-        },
+        "Stage": stage_metadata,
         "AO_mirror": {"modal_coeffs": ao_mirror_coeffs, "voltages": ao_mirror_volts},
     }
     return metadata
@@ -630,6 +656,84 @@ def get_sequence_plans(sequence: MDASequence) -> dict:
         "positions": sequence_dict["stage_positions"],
         "z": sequence_dict["z_plan"],
     }
+
+
+def apply_opm_sample_depth_plan(
+    stage_positions: list[dict[str, float]],
+    *,
+    config: dict,
+    camera_crop_y: int,
+    pixel_size_um: float,
+    mda_z_plan: dict | None,
+) -> tuple[list[dict[str, float]], NDArray[np.float64]]:
+    """Expand physical positions over coverslip-relative sample depths.
+
+    The OPM widget owns this depth plan.  Native MDA Z plans retain their
+    existing behavior when the OPM depth controls are both zero, but combining
+    the two plans is rejected because their reference frames are different.
+
+    Returns
+    -------
+    tuple[list[dict[str, float]], numpy.ndarray]
+        Expanded positions and user-facing sample depths in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If depth settings are invalid or conflict with a native MDA Z plan.
+    """
+    positions_config = config["acq_config"]["Positions"]
+    depth_start_um = float(positions_config.get("sample_depth_start_um", 0.0))
+    depth_end_um = float(positions_config.get("sample_depth_end_um", 0.0))
+    depth_plan_active = not (
+        np.isclose(depth_start_um, 0.0) and np.isclose(depth_end_um, 0.0)
+    )
+    if depth_plan_active and mda_z_plan is not None:
+        raise ValueError(
+            "OPM sample depth cannot be combined with the native MDA Z plan. "
+            "Disable the MDA Z tab and set depth in OPM Settings."
+        )
+
+    _scan_extent_um, axial_footprint_um = oblique_camera_extents_um(
+        int(camera_crop_y), float(pixel_size_um), float(config["OPM"]["angle_deg"])
+    )
+    sample_depths_um = sample_depth_levels_um(
+        depth_start_um,
+        depth_end_um,
+        axial_footprint_um,
+        float(positions_config["z_axis_overlap"]),
+    )
+    needs_scan_correction = (
+        depth_plan_active
+        or not np.isclose(float(positions_config.get("coverslip_slope_x", 0.0)), 0.0)
+        or not np.isclose(float(positions_config.get("coverslip_slope_y", 0.0)), 0.0)
+        or any("scan_reference_z_um" in position for position in stage_positions)
+    )
+    corrected_positions = (
+        apply_oblique_scan_correction(
+            stage_positions,
+            float(config["OPM"]["angle_deg"]),
+            str(config["OPM"]["camera_Zstage_orientation"]),
+        )
+        if needs_scan_correction
+        else [dict(position) for position in stage_positions]
+    )
+    expanded = expand_stage_positions_for_depth(
+        corrected_positions,
+        sample_depths_um,
+        str(config["OPM"]["camera_Zstage_orientation"]),
+        angle_deg=float(config["OPM"]["angle_deg"]),
+    )
+    debug(
+        "OPM SAMPLE DEPTH PLAN",
+        f"requested start/end: {depth_start_um}/{depth_end_um} um",
+        f"axial slab footprint: {axial_footprint_um:.3f} um",
+        f"z overlap: {positions_config['z_axis_overlap']}",
+        f"sample depths: {sample_depths_um.tolist()}",
+        f"stage orientation: {config['OPM']['camera_Zstage_orientation']}",
+        f"base/expanded positions: {len(stage_positions)}/{len(expanded)}",
+    )
+    return expanded, sample_depths_um
 
 
 def normalize_ao_mode(mode: str) -> str:
@@ -1124,6 +1228,93 @@ class AOEventScheduler:
         opm_events.append(ao_event)
 
 
+def stage_position_z_groups(
+    stage_positions: list[dict[str, float]],
+) -> list[list[int]]:
+    """Group depth-major positions into levels with an identical XY pattern.
+
+    OPM position generators repeat the complete XY tile pattern at each
+    logical Z level.  Coverslip correction may give tiles within one level
+    different physical Z coordinates, so grouping on unique Z values would
+    incorrectly split a sloped level.
+
+    Returns
+    -------
+    list[list[int]]
+        Global position indices for each logical Z level.
+    """
+    n_positions = len(stage_positions)
+    if n_positions == 0:
+        return []
+    xy_positions = np.asarray(
+        [
+            (position.get("lab_scan_um", position["x"]), position["y"])
+            for position in stage_positions
+        ],
+        dtype=float,
+    )
+    positions_per_level = n_positions
+    for candidate in range(1, n_positions):
+        if n_positions % candidate:
+            continue
+        expected = np.tile(xy_positions[:candidate], (n_positions // candidate, 1))
+        if np.allclose(xy_positions, expected, rtol=0.0, atol=1e-6):
+            positions_per_level = candidate
+            break
+    return [
+        list(range(start, start + positions_per_level))
+        for start in range(0, n_positions, positions_per_level)
+    ]
+
+
+def append_ao_grid_z_event(
+    opm_events: list[MDAEvent],
+    ao_grid_event: MDAEvent,
+    stage_positions: list[dict[str, float]],
+    position_indices: list[int],
+    output_dir: Path,
+    *,
+    time_idx: int,
+    z_idx: int,
+) -> None:
+    """Schedule AO mapping for one logical Z level."""
+    current_output_dir = output_dir / Path(
+        f"time_{time_idx}_z_{z_idx}_ao_grid_results"
+    )
+    current_output_dir.mkdir(parents=True, exist_ok=True)
+    current_event = clone_event(ao_grid_event)
+    current_event.action.data["AO"]["stage_positions"] = [
+        stage_positions[index] for index in position_indices
+    ]
+    current_event.action.data["AO"]["position_indices"] = position_indices
+    current_event.action.data["AO"]["output_path"] = current_output_dir
+    current_event.action.data["AO"]["time_idx"] = int(time_idx)
+    current_event.action.data["AO"]["z_idx"] = int(z_idx)
+    opm_events.append(current_event)
+
+
+def should_run_ao_grid_z_level(
+    ao_mode: str,
+    time_idx: int,
+    *,
+    interval: int = 1,
+) -> bool:
+    """Return whether the current timepoint requires per-Z AO mapping.
+
+    Returns
+    -------
+    bool
+        Whether AO mapping should run at this Z-level boundary.
+    """
+    if ao_mode == "grid at start":
+        return time_idx == 0
+    return (
+        ao_mode == "grid at timepoints"
+        and interval > 0
+        and time_idx % interval == 0
+    )
+
+
 def create_opm_image_event(
     *,
     index: dict,
@@ -1343,9 +1534,21 @@ def create_stage_scan_image_event(
                 "excess_scan_start_positions": int(excess_start_images),
             },
             "Stage": {
-                "x_pos": stage_position["x"] + (scan_axis_idx * scan_axis_step_um),
+                "x_pos": stage_position.get("lab_scan_um", stage_position["x"])
+                + (scan_axis_idx * scan_axis_step_um),
                 "y_pos": stage_position["y"],
                 "z_pos": stage_position["z"],
+                **(
+                    {
+                        "depth_index": int(stage_position["depth_index"]),
+                        "sample_depth_um": float(stage_position["sample_depth_um"]),
+                        "stage_depth_offset_um": float(
+                            stage_position["stage_depth_offset_um"]
+                        ),
+                    }
+                    if "depth_index" in stage_position
+                    else {}
+                ),
                 "excess_image": is_excess_image,
             },
         },
@@ -1872,6 +2075,13 @@ def setup_projection(
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
         )
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=pixel_size_um,
+        mda_z_plan=mda_z_plan,
+    )
     n_stage_positions = len(stage_positions)
 
     # ----------------------------------------------------------------#
@@ -1930,6 +2140,12 @@ def setup_projection(
         # Update the mirror's position array
         AOmirror_setup.n_positions = n_stage_positions
     ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
     # ----------------------------------------------------------------#
     # Create the o2o3 AF event data
@@ -1951,6 +2167,7 @@ def setup_projection(
         "PROJECTION ACQUISITION PARAMETERS",
         f"timepoints / interval: {n_time_steps} / {time_interval}",
         f"stage positions: {n_stage_positions}",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
         f"active channels: {n_active_channels}",
         f"o2o3 focus frequency: {o2o3_mode}",
         f"AO frequency: {ao_mode}",
@@ -1975,7 +2192,7 @@ def setup_projection(
                 )
                 opm_events.append(clone_event(ao_optimize_event))
 
-            elif ao_mode == "grid at start":
+            elif ao_mode == "grid at start" and not use_per_z_ao_grid:
                 opm_events.append(clone_event(ao_grid_event))
 
             # Move stage to starting position
@@ -1994,14 +2211,15 @@ def setup_projection(
             opm_events.append(o2o3_event)
 
         # Create AO optimization events
-        ao_scheduler.append_timepoint_event(
-            opm_events,
-            time_idx,
-            ao_output_dir if ao_mode != "none" else output.parent,
-            optimize_dir_template="time_{time_idx}_ao_results",
-            grid_dir_template="time_{time_idx}_ao_grid_results",
-            interval=timepoint_interval,
-        )
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+                optimize_dir_template="time_{time_idx}_ao_results",
+                grid_dir_template="time_{time_idx}_ao_grid_results",
+                interval=timepoint_interval,
+            )
 
         # Update the mirror state if not running optimization.
         if ao_mode == "none":
@@ -2013,6 +2231,26 @@ def setup_projection(
         # iterate over stage positions
         # --------------------------------------------------------------------#
         for pos_idx in range(n_stage_positions):
+            if (
+                use_per_z_ao_grid
+                and pos_idx in ao_z_group_at_position
+                and should_run_ao_grid_z_level(
+                    ao_mode,
+                    time_idx,
+                    interval=timepoint_interval,
+                )
+            ):
+                z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                append_ao_grid_z_event(
+                    opm_events,
+                    ao_grid_event,
+                    stage_positions,
+                    position_indices,
+                    ao_output_dir,
+                    time_idx=time_idx,
+                    z_idx=z_idx,
+                )
+
             # Move stage to position
             opm_events.append(create_stage_event(stage_positions[pos_idx]))
 
@@ -2378,6 +2616,13 @@ def setup_mirrorscan(
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
         )
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+        mda_z_plan=mda_z_plan,
+    )
     n_stage_positions = len(stage_positions)
 
     # update AO grid event with stage positions
@@ -2386,6 +2631,12 @@ def setup_mirrorscan(
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
     ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
     # ----------------------------------------------------------------#
     # Create MDA event structure
@@ -2398,6 +2649,7 @@ def setup_mirrorscan(
         "MIRROR SCAN ACQUISITION SETTINGS",
         f"timepoints / interval: {n_time_steps} / {time_interval}",
         f"stage positions: {n_stage_positions}",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
         f"active channels: {n_active_channels}",
         f"AO frequency: {ao_mode}",
         f"o2o3 focus frequency: {o2o3_mode}",
@@ -2431,7 +2683,7 @@ def setup_mirrorscan(
 
             if "start" in o2o3_mode:
                 opm_events.append(o2o3_event)
-            if "start" in ao_mode:
+            if "start" in ao_mode and not use_per_z_ao_grid:
                 if "grid" in ao_mode:
                     curr_ao_grid_event = clone_event(ao_grid_event)
                     opm_events.append(curr_ao_grid_event)
@@ -2444,11 +2696,12 @@ def setup_mirrorscan(
         if o2o3_mode == "at timepoints":
             opm_events.append(o2o3_event)
 
-        ao_scheduler.append_timepoint_event(
-            opm_events,
-            time_idx,
-            ao_output_dir if ao_mode != "none" else output.parent,
-        )
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+            )
 
         if "none" in ao_mode and (time_interval > 0):
             ao_mirror_update_event = create_ao_mirror_update_event(
@@ -2459,8 +2712,26 @@ def setup_mirrorscan(
         # --------------------------------------------------------------------#
         # iterate over stage positions
         for pos_idx in range(n_stage_positions):
+            ran_z_grid = False
+            if (
+                use_per_z_ao_grid
+                and pos_idx in ao_z_group_at_position
+                and should_run_ao_grid_z_level(ao_mode, time_idx)
+            ):
+                z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                append_ao_grid_z_event(
+                    opm_events,
+                    ao_grid_event,
+                    stage_positions,
+                    position_indices,
+                    ao_output_dir,
+                    time_idx=time_idx,
+                    z_idx=z_idx,
+                )
+                ran_z_grid = True
+
             # Move stage to position
-            if need_to_setup_stage and pos_idx != 0:
+            if (need_to_setup_stage and pos_idx != 0) or ran_z_grid:
                 stage_event = create_stage_event(stage_positions[pos_idx])
                 opm_events.append(stage_event)
 
@@ -2672,13 +2943,14 @@ def setup_stagescan(
 
     # Get the stage scan range, coverslip slope, and maximum CS dz change
     coverslip_slope = float(positions_config["coverslip_slope_x"])
+    coverslip_slope_y = float(positions_config["coverslip_slope_y"])
     scan_axis_max_range = float(stage_config["max_stage_scan_range_um"])
     coverslip_max_dz = float(positions_config["coverslip_max_dz"])
 
     # Get the tile overlap settings
     tile_axis_overlap = float(positions_config["tile_axis_overlap"])
     scan_axis_step_um = float(daq_config["scan_axis_step_um"])
-    physical_scan_overlap_um = float(positions_config["scan_axis_overlap_um"])
+    configured_scan_overlap_um = float(positions_config["scan_axis_overlap_um"])
 
     # Get the excess start / end
     excess_start_images = int(stage_config["excess_start_frames"])
@@ -2794,6 +3066,7 @@ def setup_stagescan(
     # ----------------------------------------------------------------#
     # Generate xyz stage positions
     stage_positions = []
+    region_coverslip_plane: CoverslipPlane | None = None
 
     if mda_grid_plan is None:
         spatial_items = parse_mda_position_plan(mda_positions_plan)
@@ -2816,6 +3089,7 @@ def setup_stagescan(
             )
 
         region = regions[0]
+        region_coverslip_plane = region.coverslip_plane
         # Feed the Stage Explorer region into the established transposed-grid stage
         # planner.  Only this adapter is new: all scan tiling, physical-X ASI setup,
         # exposure calculation, and speed restoration below remain unchanged.
@@ -2853,6 +3127,13 @@ def setup_stagescan(
     else:
         min_z_pos = mmc.getZPosition()
         max_z_pos = mmc.getZPosition()
+
+    if region_coverslip_plane is not None:
+        coverslip_slope = region_coverslip_plane.slope_x
+        coverslip_slope_y = region_coverslip_plane.slope_y
+        anchor_z = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
+        min_z_pos = anchor_z
+        max_z_pos = anchor_z
 
     if range_x_um <= 0:
         raise ValueError(
@@ -2892,7 +3173,7 @@ def setup_stagescan(
         f"tile end: {max_y_pos}",
         f"z position min: {min_z_pos}",
         f"z position max: {max_z_pos}",
-        f"coverslip slope: {coverslip_slope}",
+        f"coverslip slope (x/y): {coverslip_slope}/{coverslip_slope_y}",
         f"coverslip low: {cs_min_pos}",
         f"coverslip high: {cs_max_pos}",
         f"max scan range (CS used? {coverslip_slope != 0}): {scan_axis_max_range}",
@@ -2901,19 +3182,19 @@ def setup_stagescan(
     # --------------------------------------------------------------------#
     # Calculate scan axis tile locations, units: mm and s
 
-    # Split the requested laboratory-X range into raw stage trajectories.  The
-    # camera-height contribution bridges part (or all) of the requested physical
-    # overlap after deskewing, so raw trajectories need not overlap themselves.
+    # Split the requested laboratory-X range using the hardware-tested
+    # main-branch rule: the camera axial footprint plus the configured extra
+    # overlap separates adjacent scan end/start pairs.
     (
         scan_axis_start_pos_um,
         scan_axis_end_pos_um,
-        raw_scan_overlap_um,
-        camera_scan_extent_um,
+        scan_tile_overlap_um,
+        camera_z_overlap_um,
     ) = split_stage_scan_bounds(
         min_x_pos,
         max_x_pos,
         scan_axis_max_range,
-        physical_scan_overlap_um,
+        configured_scan_overlap_um,
         camera_crop_y,
         pixel_size_um,
         angle_deg,
@@ -2975,9 +3256,9 @@ def setup_stagescan(
         "SCAN AXIS CALCULATED PARAMETERS",
         f"number scan tiles: {n_scan_positions}",
         f"tile length um: {scan_tile_length_um}",
-        f"requested lab-space overlap um: {physical_scan_overlap_um}",
-        f"camera scan-axis extent um: {camera_scan_extent_um}",
-        f"raw trajectory overlap um: {raw_scan_overlap_um}",
+        f"configured extra overlap um: {configured_scan_overlap_um}",
+        f"camera axial footprint um: {camera_z_overlap_um}",
+        f"effective trajectory overlap um: {scan_tile_overlap_um}",
         f"tile length mm: {scan_tile_length_mm}",
         f"tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
         f"scan tile with overlap equals scan tile length: {test_scan_length}",
@@ -3036,13 +3317,39 @@ def setup_stagescan(
 
     # --------------------------------------------------------------------#
     # Generate stage positions
-    n_stage_positions = n_scan_positions * n_tile_positions * n_z_positions
     stage_positions = compose_stage_positions(
         scan_axis_start_pos_mm * 1000,
         tile_axis_positions,
         z_positions,
         z_offset_per_scan_um=dz_per_scan_tile,
     )
+    if region_coverslip_plane is not None:
+        scan_reference_z_um = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
+        for position in stage_positions:
+            position["z"] = float(
+                np.round(
+                    region_coverslip_plane.z_at(position["x"], position["y"]), 2
+                )
+            )
+            position["scan_reference_z_um"] = float(scan_reference_z_um)
+    elif coverslip_slope_y != 0:
+        for position in stage_positions:
+            position["z"] = float(
+                np.round(
+                    position["z"]
+                    + coverslip_slope_y * (position["y"] - min_y_pos),
+                    2,
+                )
+            )
+
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=pixel_size_um,
+        mda_z_plan=sequence_plans["z"],
+    )
+    n_stage_positions = len(stage_positions)
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
@@ -3050,6 +3357,12 @@ def setup_stagescan(
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
     ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
     # ----------------------------------------------------------------#
     # Create MDA event structure
@@ -3060,6 +3373,7 @@ def setup_stagescan(
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
     debug(
         "STAGE SCAN ACQUISITION SHAPE",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
         f"timepoints / interval: {n_time_steps} / {time_interval}",
         f"stage positions: {n_stage_positions}",
         f"scan positions: {n_scan_axis_indices}",
@@ -3087,7 +3401,7 @@ def setup_stagescan(
             # Create 'start' optimization events
             if "start" in o2o3_mode:
                 opm_events.append(o2o3_event)
-            if "start" in ao_mode:
+            if "start" in ao_mode and not use_per_z_ao_grid:
                 if "grid" in ao_mode:
                     curr_ao_grid_event = clone_event(ao_grid_event)
                     opm_events.append(curr_ao_grid_event)
@@ -3100,11 +3414,12 @@ def setup_stagescan(
         if o2o3_mode == "at timepoints":
             opm_events.append(o2o3_event)
 
-        ao_scheduler.append_timepoint_event(
-            opm_events,
-            time_idx,
-            ao_output_dir if ao_mode != "none" else output.parent,
-        )
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+            )
 
         if "none" in ao_mode and (time_interval > 0):
             ao_mirror_update_event = create_ao_mirror_update_event(
@@ -3115,13 +3430,33 @@ def setup_stagescan(
         # --------------------------------------------------------------------#
         # iterate over stage positions
         pos_idx = 0
-        for z_idx in trange(n_z_positions, desc="Z-axis-tiles:", leave=False):
+        for z_idx in trange(
+            n_z_positions * len(sample_depths_um),
+            desc="Z-axis-tiles:",
+            leave=False,
+        ):
             for scan_idx in trange(
                 n_scan_positions, desc="Scan-axis-tiles:", leave=False
             ):
                 for tile_idx in trange(
                     n_tile_positions, desc="Tile-axis-tiles:", leave=False
                 ):
+                    if (
+                        use_per_z_ao_grid
+                        and pos_idx in ao_z_group_at_position
+                        and should_run_ao_grid_z_level(ao_mode, time_idx)
+                    ):
+                        ao_z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                        append_ao_grid_z_event(
+                            opm_events,
+                            ao_grid_event,
+                            stage_positions,
+                            position_indices,
+                            ao_output_dir,
+                            time_idx=time_idx,
+                            z_idx=ao_z_idx,
+                        )
+
                     # ----------------------------------------------------------------#
                     # Move stage to position
                     current_stage_event = create_stage_event(stage_positions[pos_idx])
@@ -3170,9 +3505,14 @@ def setup_stagescan(
                     opm_events.append(daq_event)
 
                     # Set ASI controller for stage scanning and Camera for external Trig
+                    raw_scan_start_mm = float(stage_positions[pos_idx]["x"]) / 1000.0
+                    raw_scan_length_mm = float(
+                        scan_axis_end_pos_mm[scan_idx]
+                        - scan_axis_start_pos_mm[scan_idx]
+                    )
                     current_asi_setup_event = create_asi_scan_setup_event(
-                        start_mm=float(scan_axis_start_pos_mm[scan_idx]),
-                        end_mm=float(scan_axis_end_pos_mm[scan_idx]),
+                        start_mm=raw_scan_start_mm,
+                        end_mm=raw_scan_start_mm + raw_scan_length_mm,
                         speed_mm_s=float(scan_axis_speed),
                     )
                     opm_events.append(current_asi_setup_event)

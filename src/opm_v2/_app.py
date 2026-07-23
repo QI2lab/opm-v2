@@ -14,7 +14,13 @@ import useq
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
-from pymmcore_gui._qt.QtWidgets import QApplication, QMessageBox, QTabBar
+from pymmcore_gui._qt.QtWidgets import (
+    QApplication,
+    QMenu,
+    QMessageBox,
+    QTabBar,
+    QToolButton,
+)
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
 from pymmcore_gui.actions import widget_actions as pymmcore_widget_actions
 from pymmcore_plus import CMMCorePlus
@@ -31,6 +37,11 @@ from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
+from opm_v2.utils.coverslip import (
+    COVERSLIP_METADATA_KEY,
+    CoverslipPlane,
+    fit_coverslip_plane,
+)
 
 DEBUGGING = True
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
@@ -215,6 +226,252 @@ def _refresh_stage_explorer_position_marker_footprint(
     marker.set_rect_size(float(local_size[0]), float(local_size[1]))
 
 
+def _position_with_coverslip_plane(
+    position: useq.AbsolutePosition, plane: CoverslipPlane | None
+) -> useq.AbsolutePosition:
+    """Attach a selected ROI's coverslip plane to its nested sequence.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position carrying the plane in nested sequence metadata.
+    """
+    if plane is None:
+        return position
+    sequence = position.sequence or useq.MDASequence()
+    metadata = dict(sequence.metadata)
+    metadata[COVERSLIP_METADATA_KEY] = plane.to_metadata()
+    return position.model_copy(
+        update={"sequence": sequence.model_copy(update={"metadata": metadata})}
+    )
+
+
+def _position_on_coverslip_plane(
+    position: useq.AbsolutePosition, plane: CoverslipPlane | None
+) -> useq.AbsolutePosition:
+    """Apply a plane directly to an exported literal XY position.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position with its predicted Z coordinate.
+    """
+    if plane is None or position.x is None or position.y is None:
+        return position
+    return position.model_copy(update={"z": plane.z_at(position.x, position.y)})
+
+
+def _stage_explorer_controller(stage_explorer):
+    """Return the OPM controller attached to a Stage Explorer instance.
+
+    Returns
+    -------
+    OPMAppController or None
+        Attached application controller when available.
+    """
+    return getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+
+
+def _update_coverslip_point_visual(stage_explorer) -> None:
+    """Show the active coverslip focus points on the Explorer canvas."""
+    points = stage_explorer._opm_coverslip_points
+    visual = stage_explorer._opm_coverslip_points_visual
+    if visual is None:
+        from vispy.scene.visuals import Markers
+
+        visual = Markers(
+            parent=stage_explorer._stage_viewer.view.scene,
+            symbol="cross",
+            face_color="#00ffff",
+            edge_color="#003333",
+            size=12,
+            edge_width=2,
+            scaling=False,
+        )
+        stage_explorer._opm_coverslip_points_visual = visual
+    if points:
+        visual.set_data(pos=np.asarray([(x, y) for x, y, _z in points]))
+        visual.visible = True
+    else:
+        visual.visible = False
+
+
+def _restore_coverslip_live_mode(stage_explorer) -> None:
+    """Restore the Micro-Manager live-mode preset used before calibration."""
+    previous = stage_explorer._opm_coverslip_previous_live_preset
+    stage_explorer._opm_coverslip_previous_live_preset = None
+    if not previous:
+        return
+    mmc = stage_explorer._mmc
+    presets = set(mmc.getAvailableConfigs("OPM-live-mode"))
+    if previous in presets and mmc.getCurrentConfig("OPM-live-mode") != previous:
+        mmc.setConfig("OPM-live-mode", previous)
+        mmc.waitForConfig("OPM-live-mode", previous)
+
+
+def _start_coverslip_calibration(stage_explorer) -> None:
+    """Begin point collection in the non-projection Standard live mode."""
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        return
+    if stage_explorer._mmc.mda.is_running():
+        controller.warning(
+            "COVERSLIP PLANE", "Cannot calibrate during an active acquisition"
+        )
+        return
+    if stage_explorer._opm_coverslip_target_roi is not None:
+        controller.warning(
+            "COVERSLIP PLANE",
+            "Finish or clear the active coverslip calibration first",
+        )
+        return
+    selected = stage_explorer.roi_manager.selected_rois()
+    if len(selected) != 1:
+        controller.warning(
+            "COVERSLIP PLANE", "Select exactly one Stage Explorer ROI first"
+        )
+        return
+
+    mmc = stage_explorer._mmc
+    if "OPM-live-mode" not in set(mmc.getAvailableConfigGroups()):
+        controller.warning(
+            "COVERSLIP PLANE",
+            "The Micro-Manager OPM-live-mode config group is unavailable",
+        )
+        return
+    presets = set(mmc.getAvailableConfigs("OPM-live-mode"))
+    if "Standard" not in presets:
+        controller.warning(
+            "COVERSLIP PLANE",
+            "The OPM-live-mode config group has no Standard preset",
+        )
+        return
+
+    previous = mmc.getCurrentConfig("OPM-live-mode")
+    if previous != "Standard":
+        mmc.setConfig("OPM-live-mode", "Standard")
+        mmc.waitForConfig("OPM-live-mode", "Standard")
+    stage_explorer._opm_coverslip_previous_live_preset = previous
+    stage_explorer._opm_coverslip_target_roi = selected[0]
+    stage_explorer._opm_coverslip_points = []
+    _update_coverslip_point_visual(stage_explorer)
+    controller.info(
+        "COVERSLIP PLANE CALIBRATION",
+        "OPM live mode: Standard",
+        "Use Live view, focus the sample Z stage, then add at least three XYZ points",
+    )
+
+
+def _add_coverslip_focus_point(stage_explorer) -> None:
+    """Record the current physical sample-stage XYZ position."""
+    controller = _stage_explorer_controller(stage_explorer)
+    roi = stage_explorer._opm_coverslip_target_roi
+    if controller is None or roi is None:
+        if controller is not None:
+            controller.warning(
+                "COVERSLIP PLANE", "Start a coverslip calibration first"
+            )
+        return
+    x_um, y_um = stage_explorer._mmc.getXYPosition()
+    z_um = stage_explorer._mmc.getZPosition()
+    point = (float(x_um), float(y_um), float(z_um))
+    if not roi.contains(point[:2]):
+        controller.warning(
+            "COVERSLIP PLANE",
+            f"Current XY position {point[:2]} is outside the selected ROI",
+        )
+        return
+    stage_explorer._opm_coverslip_points.append(point)
+    _update_coverslip_point_visual(stage_explorer)
+    controller.info(
+        "COVERSLIP FOCUS POINT",
+        f"Point {len(stage_explorer._opm_coverslip_points)}: "
+        f"X={point[0]:.2f}, Y={point[1]:.2f}, Z={point[2]:.2f} um",
+    )
+
+
+def _fit_coverslip_calibration(stage_explorer) -> None:
+    """Fit and attach the active focus points to the selected ROI."""
+    controller = _stage_explorer_controller(stage_explorer)
+    roi = stage_explorer._opm_coverslip_target_roi
+    if controller is None or roi is None:
+        if controller is not None:
+            controller.warning(
+                "COVERSLIP PLANE", "Start a coverslip calibration first"
+            )
+        return
+    try:
+        plane = fit_coverslip_plane(stage_explorer._opm_coverslip_points)
+    except ValueError as exc:
+        controller.warning("COVERSLIP PLANE", str(exc))
+        return
+    roi._opm_coverslip_plane = plane
+    left, top, right, bottom = roi.bbox()
+    corner_z = [
+        plane.z_at(x_um, y_um)
+        for x_um in (left, right)
+        for y_um in (top, bottom)
+    ]
+    stage_explorer._opm_coverslip_target_roi = None
+    _restore_coverslip_live_mode(stage_explorer)
+    controller.info(
+        "COVERSLIP PLANE APPLIED",
+        f"Slope X/Y: {plane.slope_x:.6f} / {plane.slope_y:.6f}",
+        f"Fit RMS: {plane.rms_error_um:.3f} um",
+        f"ROI predicted Z range: {min(corner_z):.2f} to {max(corner_z):.2f} um",
+    )
+
+
+def _clear_coverslip_calibration(stage_explorer) -> None:
+    """Clear point collection and any plane attached to selected ROIs."""
+    controller = _stage_explorer_controller(stage_explorer)
+    targets = stage_explorer.roi_manager.selected_rois()
+    if not targets and stage_explorer._opm_coverslip_target_roi is not None:
+        targets = [stage_explorer._opm_coverslip_target_roi]
+    for roi in targets:
+        if hasattr(roi, "_opm_coverslip_plane"):
+            del roi._opm_coverslip_plane
+    stage_explorer._opm_coverslip_target_roi = None
+    stage_explorer._opm_coverslip_points = []
+    _update_coverslip_point_visual(stage_explorer)
+    _restore_coverslip_live_mode(stage_explorer)
+    if controller is not None:
+        controller.info("COVERSLIP PLANE CLEARED")
+
+
+def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
+    """Add coverslip-plane calibration actions to one Explorer toolbar."""
+    if hasattr(stage_explorer, "_opm_coverslip_points"):
+        return
+    stage_explorer._opm_coverslip_points = []
+    stage_explorer._opm_coverslip_points_visual = None
+    stage_explorer._opm_coverslip_target_roi = None
+    stage_explorer._opm_coverslip_previous_live_preset = None
+
+    action = stage_explorer._toolbar.addAction("Coverslip")
+    button = stage_explorer._toolbar.widgetForAction(action)
+    if not isinstance(button, QToolButton):
+        return
+    menu = QMenu(button)
+    menu.addAction("Start calibration (Standard live mode)").triggered.connect(
+        lambda: _start_coverslip_calibration(stage_explorer)
+    )
+    menu.addAction("Add current XYZ focus point").triggered.connect(
+        lambda: _add_coverslip_focus_point(stage_explorer)
+    )
+    menu.addAction("Fit plane and apply to selected ROI").triggered.connect(
+        lambda: _fit_coverslip_calibration(stage_explorer)
+    )
+    menu.addSeparator()
+    menu.addAction("Clear selected ROI plane").triggered.connect(
+        lambda: _clear_coverslip_calibration(stage_explorer)
+    )
+    button.setMenu(menu)
+    button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+
+
 def _update_stage_explorer_transformed_fov(stage_explorer) -> None:
     """Update ROI tiling after the upstream camera/ROI bookkeeping runs."""
     stage_explorer._opm_original_on_roi_changed()
@@ -283,8 +540,9 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
         overlap=overlap,
         mode=mode,
     )
+    plane = getattr(roi, "_opm_coverslip_plane", None)
     if position.sequence and position.sequence.grid_plan:
-        return position
+        return _position_with_coverslip_plane(position, plane)
 
     left, top, right, bottom = roi.bbox()
     if type(roi).__name__ != "RectangleROI":
@@ -299,7 +557,9 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
         overlap=(overlap, overlap),
         mode=mode,
     )
-    return position.replace(sequence=useq.MDASequence(grid_plan=grid_plan))
+    return _position_with_coverslip_plane(
+        position.replace(sequence=useq.MDASequence(grid_plan=grid_plan)), plane
+    )
 
 
 def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
@@ -429,6 +689,7 @@ def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
     roi_model = stage_explorer.roi_manager.roi_model
     for row in range(roi_model.rowCount()):
         roi = roi_model.index(row).internalPointer()
+        plane = getattr(roi, "_opm_coverslip_plane", None)
         position = roi.create_useq_position(
             fov_w,
             fov_h,
@@ -438,14 +699,23 @@ def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
         )
         if position.sequence and position.sequence.grid_plan:
             if flatten:
-                positions.extend(stage_explorer._flatten_to_single_positions([position]))
+                positions.extend(
+                    _position_on_coverslip_plane(flat_position, plane)
+                    for flat_position in stage_explorer._flatten_to_single_positions(
+                        [position]
+                    )
+                )
             else:
-                positions.append(position)
+                positions.append(_position_with_coverslip_plane(position, plane))
             continue
 
         center_x, center_y = roi.center()
         if flatten:
-            positions.append(position.replace(x=center_x, y=center_y))
+            positions.append(
+                _position_on_coverslip_plane(
+                    position.replace(x=center_x, y=center_y), plane
+                )
+            )
             continue
 
         # ``ROI.create_grid_plan`` intentionally returns None when an ROI fits in
@@ -472,7 +742,10 @@ def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
                 mode=mode,
             )
         positions.append(
-            position.replace(sequence=useq.MDASequence(grid_plan=grid_plan))
+            _position_with_coverslip_plane(
+                position.replace(sequence=useq.MDASequence(grid_plan=grid_plan)),
+                plane,
+            )
         )
 
     if not positions:
@@ -496,6 +769,7 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     if stage_explorer is None or mda_widget is None:
         return
     stage_explorer._opm_controller = getattr(stage_explorer.window(), "opm_controller", None)
+    _install_stage_explorer_coverslip_controls(stage_explorer)
 
     def _on_send_to_mda(positions: list, clear: bool) -> None:
         if clear:
