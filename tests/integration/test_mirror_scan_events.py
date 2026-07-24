@@ -1,4 +1,4 @@
-"""Component tests for mirror and timelapse generation with demo hardware."""
+"""Integrate mirror and timelapse planning with MMCore demo hardware."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Test OPM metadata and pixels written through the TensorStore handler."""
+"""Integrate the OPM data handler with its TensorStore backend."""
 
 from __future__ import annotations
 
@@ -256,6 +256,16 @@ def test_opm_data_handler_validates_order_and_sequence_lifecycle(
     with pytest.raises(RuntimeError, match="0 of 2 expected frames"):
         incomplete.sequenceFinished(sequence)
     assert not incomplete.is_finalized
+
+    errored = OpmDataHandler(
+        path=workspace_tmp_path / "errored.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    errored.sequenceStarted(sequence, {})
+    errored.set_finish_reason_getter(lambda: "errored")
+    errored.sequenceFinished(sequence)
+    assert not errored.is_finalized
 
     canceled = OpmDataHandler(
         path=workspace_tmp_path / "canceled.zarr",

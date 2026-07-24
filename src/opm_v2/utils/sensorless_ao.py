@@ -18,6 +18,8 @@ from scipy.fft import dct
 from scipy.ndimage import center_of_mass, laplace
 from scipy.optimize import curve_fit
 
+from opm_v2.utils.position_tools import ao_grid_positions
+
 try:
     from opm_v2.hardware.AOMirror import AOMirror
     from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -2237,6 +2239,23 @@ def run_ao_grid_mapping(
         missing = ", ".join(sorted(missing_ao_keys))
         raise KeyError(f"AO grid ao_dict is missing required keys: {missing}")
 
+    grid_counts = {
+        "num_scan_positions": num_scan_positions,
+        "num_tile_positions": num_tile_positions,
+    }
+    normalized_counts: dict[str, int] = {}
+    for name, value in grid_counts.items():
+        numeric_value = float(value)
+        if (
+            not np.isfinite(numeric_value)
+            or not numeric_value.is_integer()
+            or numeric_value < 1
+        ):
+            raise ValueError(f"{name} must be a positive integer; received {value!r}")
+        normalized_counts[name] = int(numeric_value)
+    num_scan_positions = normalized_counts["num_scan_positions"]
+    num_tile_positions = normalized_counts["num_tile_positions"]
+
     if verbose:
         print(
             "\n++++++++++++++++ RUNNING SENSORLESS GRID AO ++++++++++++++++\n",
@@ -2252,82 +2271,17 @@ def run_ao_grid_mapping(
             "AO grid position indices must match the number of stage positions"
         )
 
-    stage_positions_array = np.array([
-        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
-    ])
-    # Extract unique positions along each axis
-    tile_axis_positions = np.unique(stage_positions_array[:, 1])
-    scan_axis_positions = np.unique(stage_positions_array[:, 2])
-
-    stage_z_positions = np.unique(
-        stage_positions_array[stage_positions_array[:, 2] == scan_axis_positions[0]][
-            :, 0
-        ]
+    stage_positions_array = np.asarray(
+        [(pos["z"], pos["y"], pos["x"]) for pos in stage_positions],
+        dtype=float,
     )
-    num_z_positions = stage_z_positions.shape[0]
-
-    if num_scan_positions == 1:
-        if len(scan_axis_positions) == 1:
-            # TODO: Right now I am blindly adding 100um from scan start
-            ao_scan_axis_positions = np.asarray(scan_axis_positions + 100)
-        else:
-            ao_scan_axis_positions = np.asarray([np.mean(scan_axis_positions)])
-    elif len(scan_axis_positions) == 1:
-        ao_scan_length = num_scan_positions * 100
-        scan_axis_min = scan_axis_positions[0]
-        scan_axis_max = scan_axis_min + ao_scan_length
-        ao_scan_axis_positions = np.linspace(
-            scan_axis_min, scan_axis_max, num_scan_positions + 2, endpoint=True
-        )[1:-1]
-    else:
-        if num_scan_positions > len(scan_axis_positions) + 1:
-            num_scan_positions = len(scan_axis_positions) + 1
-        scan_axis_min = scan_axis_positions[0]
-        scan_axis_max = scan_axis_positions[-1]
-        ao_scan_axis_positions = np.linspace(
-            scan_axis_min, scan_axis_max, num_scan_positions + 2, endpoint=True
-        )[1:-1]
-
-    if num_tile_positions == 1:
-        ao_tile_axis_positions = np.asarray([np.mean(tile_axis_positions)])
-    elif len(tile_axis_positions) == 1:
-        ao_tile_axis_positions = tile_axis_positions
-        num_tile_positions = 1
-    else:
-        if num_tile_positions > len(tile_axis_positions) + 1:
-            num_tile_positions = len(tile_axis_positions) + 1
-        tile_axis_min = tile_axis_positions[0]
-        tile_axis_max = tile_axis_positions[-1]
-        ao_tile_axis_positions = np.linspace(
-            tile_axis_min, tile_axis_max, num_tile_positions + 2, endpoint=True
-        )[1:-1]
-
-    # compile AO stage positions to visit, visit XY positions before stepping in Z
-    ao_stage_positions = []
-    # starting_mirror_positions = AOMirror_local.current_voltage.copy()
-    # TODO: Set to starting mirror positions
-    #       or refer to z-plane correction at each z plane.
-    for z_idx in range(num_z_positions):
-        for tile_idx in range(num_tile_positions):
-            for scan_idx in range(num_scan_positions):
-                scan_pos_filter = (
-                    np.ceil(
-                        ao_scan_axis_positions[scan_idx] - stage_positions_array[:, 2]
-                    )
-                    == 1
-                )
-
-                if not any(scan_pos_filter):
-                    z_tile_positions = stage_z_positions
-                else:
-                    z_tile_positions = np.unique(
-                        stage_positions_array[scan_pos_filter][:, 0]
-                    )
-                ao_stage_positions.append({
-                    "z": np.round(z_tile_positions[z_idx], 2),
-                    "y": np.round(ao_tile_axis_positions[tile_idx], 2),
-                    "x": np.round(ao_scan_axis_positions[scan_idx], 2),
-                })
+    ao_stage_positions = ao_grid_positions(
+        stage_positions,
+        num_scan_positions=num_scan_positions,
+        num_tile_positions=num_tile_positions,
+    )
+    num_scan_positions = len({position["x"] for position in ao_stage_positions})
+    num_tile_positions = len({position["y"] for position in ao_stage_positions})
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
@@ -2345,7 +2299,6 @@ def run_ao_grid_mapping(
         print(
             "---------------- AO GRID GENERATION ---------------",
             f"\nNumber of positions for AO GRID: {num_ao_pos}",
-            f"\nNum. AO unique Z positions: {num_z_positions}",
             f"\nNum. AO Tile positions (Y): {num_tile_positions}",
             f"\nNum. AO Scan positions (X): {num_scan_positions}\n",
         )
@@ -2392,14 +2345,7 @@ def run_ao_grid_mapping(
             current_x, current_y = mmc.getXYPosition()
             sleep(0.5)
 
-        if ao_pos_idx == 0:
-            if target_z == stage_z_positions[0]:
-                mirror_state = ao_dict["mirror_state"]
-            else:
-                # TODO: Don"t start from starting mirror positions for different z-distances
-                mirror_state = ao_dict["mirror_state"]
-        else:
-            mirror_state = "optimized"
+        mirror_state = ao_dict["mirror_state"] if ao_pos_idx == 0 else "optimized"
 
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)

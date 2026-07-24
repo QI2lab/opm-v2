@@ -261,7 +261,11 @@ def apply_oblique_scan_correction(
         scan_reference_z_um = float(
             position.get("scan_reference_z_um", default_reference_z)
         )
-        lab_z_offset_um = stage_sign * (
+        # Moving the specimen stage in +Z moves the sampled plane in the
+        # opposite lab-frame direction.  The configured sign describes the
+        # physical stage direction for increasing biological depth; lab2cam
+        # consumes the corresponding sample-coordinate displacement.
+        lab_z_offset_um = -stage_sign * (
             float(position["z"]) - scan_reference_z_um
         )
         _, _, raw_scan = lab2cam(
@@ -483,6 +487,97 @@ def positions_array(stage_positions: Sequence[dict[str, float]]) -> np.ndarray:
         [(position["z"], position["y"], position["x"]) for position in stage_positions],
         dtype=float,
     )
+
+
+def ao_grid_positions(
+    stage_positions: Sequence[dict[str, float]],
+    num_scan_positions: int,
+    num_tile_positions: int,
+) -> list[dict[str, float]]:
+    """Generate AO sample positions on the acquisition's physical XYZ surface.
+
+    The supplied positions represent one logical sample-depth level. Their
+    physical Z values already include coverslip tilt, sample-depth offset, and
+    oblique-scan correction. Fitting in physical stage coordinates therefore
+    preserves the complete X/Y-dependent focus surface at intermediate AO
+    sample locations.
+
+    Parameters
+    ----------
+    stage_positions : Sequence[dict[str, float]]
+        Acquisition positions for one logical depth level.
+    num_scan_positions : int
+        Requested number of AO samples along physical stage X.
+    num_tile_positions : int
+        Requested number of AO samples along physical stage Y.
+
+    Returns
+    -------
+    list[dict[str, float]]
+        AO target positions in physical stage coordinates.
+
+    Raises
+    ------
+    ValueError
+        If the position list is empty or either requested count is invalid.
+    """
+    if num_scan_positions < 1 or num_tile_positions < 1:
+        raise ValueError("AO grid dimensions must be positive")
+
+    coordinates = positions_array(stage_positions)
+    z_values, y_values, x_values = coordinates.T
+    unique_x = np.unique(x_values)
+    unique_y = np.unique(y_values)
+
+    def _axis_targets(unique_values: FloatArray, count: int) -> FloatArray:
+        if len(unique_values) == 1:
+            return unique_values.copy()
+        count = min(int(count), len(unique_values) + 1)
+        if count == 1:
+            return np.asarray([np.mean(unique_values)], dtype=float)
+        return np.linspace(
+            float(unique_values[0]),
+            float(unique_values[-1]),
+            count + 2,
+            endpoint=True,
+        )[1:-1]
+
+    target_x = _axis_targets(unique_x, num_scan_positions)
+    target_y = _axis_targets(unique_y, num_tile_positions)
+
+    # Center coordinates before fitting to keep the intercept well-conditioned
+    # for the large absolute positions used by the microscope stages. Include
+    # only axes that vary; this also handles one-dimensional and single-position
+    # acquisitions without inventing an unconstrained slope.
+    x_center = float(np.mean(x_values))
+    y_center = float(np.mean(y_values))
+    fit_columns = [np.ones(len(coordinates), dtype=float)]
+    varying_x = not np.isclose(np.ptp(x_values), 0.0)
+    varying_y = not np.isclose(np.ptp(y_values), 0.0)
+    if varying_x:
+        fit_columns.append(x_values - x_center)
+    if varying_y:
+        fit_columns.append(y_values - y_center)
+    design = np.column_stack(fit_columns)
+    coefficients, *_ = np.linalg.lstsq(design, z_values, rcond=None)
+
+    targets: list[dict[str, float]] = []
+    for y_value in target_y:
+        for x_value in target_x:
+            prediction = [1.0]
+            if varying_x:
+                prediction.append(float(x_value) - x_center)
+            if varying_y:
+                prediction.append(float(y_value) - y_center)
+            z_value = float(np.dot(coefficients, prediction))
+            targets.append(
+                {
+                    "z": float(np.round(z_value, 2)),
+                    "y": float(np.round(y_value, 2)),
+                    "x": float(np.round(x_value, 2)),
+                }
+            )
+    return targets
 
 
 def select_ao_positions(

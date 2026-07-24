@@ -1,4 +1,4 @@
-"""Component tests for projection event generation with demo hardware."""
+"""Integrate projection event planning with MMCore demo hardware."""
 
 from __future__ import annotations
 

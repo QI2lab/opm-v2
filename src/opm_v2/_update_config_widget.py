@@ -1247,8 +1247,12 @@ class OPMSettingsV2(QWidget):
                 widget = self.widgets[key_id][key]
 
                 if isinstance(widget, QSpinBox):
-                    scale = widget.property("config_scale") or 1.0
-                    config["acq_config"][key_id][key] = widget.value() * scale
+                    scale = widget.property("config_scale")
+                    config["acq_config"][key_id][key] = (
+                        widget.value()
+                        if scale is None
+                        else widget.value() * float(scale)
+                    )
                 elif isinstance(widget, QDoubleSpinBox):
                     scale = widget.property("config_scale") or 1.0
                     config["acq_config"][key_id][key] = widget.value() * scale

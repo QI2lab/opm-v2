@@ -12,7 +12,9 @@ Change Log:
 import json
 import logging
 from collections.abc import Callable, Iterable, Mapping
+from contextlib import contextmanager
 from copy import deepcopy
+from math import ceil
 from pathlib import Path
 from threading import Event as ThreadEvent
 from time import monotonic, sleep
@@ -54,6 +56,7 @@ DEBUGGING = True
 POWER_STR = " - PowerSetpoint (%)"
 LARGE_STAGE_MOVE_TIMEOUT_MS = 120_000
 STAGE_MOVE_TIMEOUT_MARGIN_S = 2.0
+LARGE_STAGE_MOVE_SPEED_MULTIPLIER = 4.0
 
 
 def debug(header: str, *lines: object) -> None:
@@ -142,7 +145,7 @@ class OPMEngineV2(MDAEngine):
         self.simulated_custom_actions: list[str] = []
         self.simulated_stage_move_speeds: list[dict[str, float]] = []
         self._stage_speeds_before_sequence: dict[str, str] = {}
-        self._stage_explorer_timeout_before_sequence: int | None = None
+        self._is_stage_explorer_preview = False
         self._stage_move_count = 0
         self._safe_stop_requested = ThreadEvent()
 
@@ -368,8 +371,7 @@ class OPMEngineV2(MDAEngine):
         self._capture_stage_speeds()
         metadata = getattr(sequence, "metadata", {})
         is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in metadata
-        if is_stage_explorer_preview:
-            self._extend_stage_explorer_timeout()
+        self._is_stage_explorer_preview = is_stage_explorer_preview
         speed_override = metadata.get(STAGE_MOVE_SPEED_METADATA_KEY, {})
         if isinstance(speed_override, Mapping):
             self._apply_stage_move_speeds(speed_override)
@@ -382,29 +384,8 @@ class OPMEngineV2(MDAEngine):
         try:
             return super().setup_sequence(sequence)
         except Exception:
-            if is_stage_explorer_preview:
-                self._restore_stage_after_scan()
-                self._restore_stage_explorer_timeout()
+            self._restore_stage_speeds()
             raise
-
-    def _extend_stage_explorer_timeout(self) -> None:
-        """Keep a long core timeout active for a complete Explorer tile run."""
-        if getattr(self, "_stage_explorer_timeout_before_sequence", None) is not None:
-            return
-        original_timeout_ms = int(self.mmcore.getTimeoutMs())
-        self._stage_explorer_timeout_before_sequence = original_timeout_ms
-        if original_timeout_ms < LARGE_STAGE_MOVE_TIMEOUT_MS:
-            self.mmcore.setTimeoutMs(LARGE_STAGE_MOVE_TIMEOUT_MS)
-
-    def _restore_stage_explorer_timeout(self) -> None:
-        """Restore the core timeout saved before an Explorer tile run."""
-        original_timeout_ms = getattr(
-            self, "_stage_explorer_timeout_before_sequence", None
-        )
-        if original_timeout_ms is None:
-            return
-        self._stage_explorer_timeout_before_sequence = None
-        self.mmcore.setTimeoutMs(original_timeout_ms)
 
     def _capture_stage_speeds(self) -> None:
         """Remember the physical XY move speeds in effect before an MDA run."""
@@ -418,8 +399,14 @@ class OPMEngineV2(MDAEngine):
                     xy_stage, prop
                 )
 
-    def _apply_stage_move_speeds(self, speeds: Mapping[str, float]) -> None:
-        """Apply optional per-axis speeds after normal speeds have been captured."""
+    def _apply_stage_move_speeds(self, speeds: Mapping[str, float]) -> dict[str, float]:
+        """Apply per-axis speeds and return the values accepted by the adapter.
+
+        Returns
+        -------
+        dict[str, float]
+            Accepted speed for each configured axis.
+        """
         speed_properties = {
             "move_speed_x_mm_s": ("x", "MotorSpeedX-S(mm/s)"),
             "move_speed_y_mm_s": ("y", "MotorSpeedY-S(mm/s)"),
@@ -433,8 +420,57 @@ class OPMEngineV2(MDAEngine):
             applied[axis] = speed
             if xy_stage and self.mmcore.hasProperty(xy_stage, property_name):
                 self.mmcore.setProperty(xy_stage, property_name, speed)
+                try:
+                    applied[axis] = float(
+                        self.mmcore.getProperty(xy_stage, property_name)
+                    )
+                except (TypeError, ValueError):
+                    # Some simulated adapters do not expose a numeric readback.
+                    pass
         if self.simulate_hardware and applied:
             self.simulated_stage_move_speeds.append(applied)
+        return applied
+
+    def _xy_stage_timeout_ms(self) -> int:
+        """Return the effective MMCore timeout for the active XY stage.
+
+        Returns
+        -------
+        int
+            Effective XY-stage timeout in milliseconds.
+        """
+        xy_stage = self.mmcore.getXYStageDevice()
+        if xy_stage and hasattr(self.mmcore, "getDeviceTimeoutMs"):
+            return int(self.mmcore.getDeviceTimeoutMs(xy_stage))
+        return int(self.mmcore.getTimeoutMs())
+
+    @contextmanager
+    def _temporary_xy_stage_timeout(self, timeout_ms: int):
+        """Temporarily override only the XY-stage wait timeout."""
+        xy_stage = self.mmcore.getXYStageDevice()
+        if self.simulate_hardware or not xy_stage:
+            yield
+            return
+
+        if not hasattr(self.mmcore, "setDeviceTimeoutMs"):
+            original_timeout_ms = int(self.mmcore.getTimeoutMs())
+            self.mmcore.setTimeoutMs(int(timeout_ms))
+            try:
+                yield
+            finally:
+                self.mmcore.setTimeoutMs(original_timeout_ms)
+            return
+
+        had_override = bool(self.mmcore.hasDeviceTimeout(xy_stage))
+        original_timeout_ms = int(self.mmcore.getDeviceTimeoutMs(xy_stage))
+        self.mmcore.setDeviceTimeoutMs(xy_stage, int(timeout_ms))
+        try:
+            yield
+        finally:
+            if had_override:
+                self.mmcore.setDeviceTimeoutMs(xy_stage, original_timeout_ms)
+            else:
+                self.mmcore.unsetDeviceTimeout(xy_stage)
 
     @staticmethod
     def _xy_move_duration_s(
@@ -478,7 +514,7 @@ class OPMEngineV2(MDAEngine):
         tuple[int, float]
             Selected timeout in milliseconds and estimated move duration in seconds.
         """
-        original_timeout_ms = int(self.mmcore.getTimeoutMs())
+        original_timeout_ms = self._xy_stage_timeout_ms()
         estimated_duration_s = self._xy_move_duration_s(
             current_x_um,
             current_y_um,
@@ -493,28 +529,140 @@ class OPMEngineV2(MDAEngine):
             >= original_timeout_ms / 1000.0
         )
         if is_initial_move or exceeds_normal_timeout:
-            return max(original_timeout_ms, LARGE_STAGE_MOVE_TIMEOUT_MS), (
-                estimated_duration_s
+            estimated_timeout_ms = (
+                LARGE_STAGE_MOVE_TIMEOUT_MS
+                if not np.isfinite(estimated_duration_s)
+                else ceil((estimated_duration_s + STAGE_MOVE_TIMEOUT_MARGIN_S) * 1000)
             )
+            return max(
+                original_timeout_ms,
+                LARGE_STAGE_MOVE_TIMEOUT_MS,
+                estimated_timeout_ms,
+            ), estimated_duration_s
         return original_timeout_ms, estimated_duration_s
 
+    def _is_large_stage_move(
+        self,
+        estimated_duration_s: float,
+        timeout_ms: int,
+        *,
+        include_initial_move: bool = True,
+    ) -> bool:
+        """Return whether an XY move should use the accelerated move speed.
+
+        Returns
+        -------
+        bool
+            Whether the move is initial or exceeds the normal timeout budget.
+        """
+        is_initial_move = (
+            include_initial_move and getattr(self, "_stage_move_count", 0) == 0
+        )
+        exceeds_normal_timeout = (
+            estimated_duration_s + STAGE_MOVE_TIMEOUT_MARGIN_S >= timeout_ms / 1000.0
+        )
+        return is_initial_move or exceeds_normal_timeout
+
+    def _teardown_return_timeout_ms(self) -> int:
+        """Prepare the return speed and timeout for the pre-MDA XY position.
+
+        Returns
+        -------
+        int
+            Distance-derived XY-stage timeout in milliseconds.
+        """
+        initial_state = getattr(self, "_initial_state", None) or {}
+        target_xy = initial_state.get("xy_position")
+        xy_stage = self.mmcore.getXYStageDevice()
+        if not xy_stage or target_xy is None:
+            return self._xy_stage_timeout_ms()
+
+        current_x, current_y = self.mmcore.getXYPosition()
+        target_x, target_y = (float(target_xy[0]), float(target_xy[1]))
+        fallback_speed = float(
+            self._config.get("OPM", {}).get("stage_move_speed", 0.05)
+        )
+        if self._is_stage_explorer_preview:
+            normal_speed_x = float(
+                self._stage_speeds_before_sequence.get(
+                    "MotorSpeedX-S(mm/s)", fallback_speed
+                )
+            )
+            normal_speed_y = float(
+                self._stage_speeds_before_sequence.get(
+                    "MotorSpeedY-S(mm/s)", fallback_speed
+                )
+            )
+        else:
+            normal_speed_x = fallback_speed
+            normal_speed_y = fallback_speed
+
+        normal_timeout_ms = self._xy_stage_timeout_ms()
+        normal_duration_s = self._xy_move_duration_s(
+            current_x,
+            current_y,
+            target_x,
+            target_y,
+            normal_speed_x,
+            normal_speed_y,
+        )
+        is_large_move = self._is_large_stage_move(
+            normal_duration_s,
+            normal_timeout_ms,
+            include_initial_move=False,
+        )
+        use_accelerated_speed = self._is_stage_explorer_preview or is_large_move
+        multiplier = (
+            LARGE_STAGE_MOVE_SPEED_MULTIPLIER if use_accelerated_speed else 1.0
+        )
+        accepted = self._apply_stage_move_speeds({
+            "move_speed_x_mm_s": normal_speed_x * multiplier,
+            "move_speed_y_mm_s": normal_speed_y * multiplier,
+        })
+        speed_x = accepted.get("x", normal_speed_x * multiplier)
+        speed_y = accepted.get("y", normal_speed_y * multiplier)
+        timeout_ms, estimated_duration_s = self._stage_move_timeout_ms(
+            current_x,
+            current_y,
+            target_x,
+            target_y,
+            speed_x,
+            speed_y,
+        )
+        if use_accelerated_speed:
+            move_kind = (
+                "Stage Explorer preview return"
+                if self._is_stage_explorer_preview
+                else "large acquisition return"
+            )
+            info(
+                "OPM ACCELERATED RETURN MOVE",
+                f"type: {move_kind}",
+                f"target: ({target_x:.2f}, {target_y:.2f}) um",
+                f"4x speed: ({speed_x:g}, {speed_y:g}) mm/s",
+                f"estimated duration: {estimated_duration_s:.2f} s",
+                f"timeout: {timeout_ms} ms",
+            )
+        return timeout_ms
+
     def _stop_active_stage_scan(self, timeout_s: float = 30.0) -> None:
-        """Stop an ASI scan and wait for its controller cleanup to finish.
+        """Stop only the ASI scan state machine and wait for it to report Idle.
 
         Parameters
         ----------
         timeout_s : float
-            Maximum time to wait for the scan state and XY device to become idle.
+            Maximum time to wait for the scan state machine to become idle.
 
         Raises
         ------
         RuntimeError
-            If the ASI controller does not become idle before the timeout.
+            If the ASI scan state machine does not become idle before the timeout.
         """
         self.start_asi_scan_after_camera_sequence = False
         if self.simulate_hardware:
             if self.simulated_asi_state.get("scan_state") == "Running":
                 self.simulated_asi_state["scan_state"] = "Idle"
+                self.simulated_asi_transitions.append("Idle")
             return
 
         xy_stage = self.mmcore.getXYStageDevice()
@@ -532,38 +680,83 @@ class OPMEngineV2(MDAEngine):
         deadline = monotonic() + float(timeout_s)
         while True:
             scan_state = self.mmcore.getProperty(xy_stage, "ScanState")
-            stage_busy = bool(self.mmcore.deviceBusy(xy_stage))
-            if scan_state == "Idle" and not stage_busy:
+            if scan_state == "Idle":
                 return
             if monotonic() >= deadline:
                 raise RuntimeError(
-                    f'ASI stage did not become idle within {timeout_s:g}s '
-                    f'(ScanState={scan_state!r}, deviceBusy={stage_busy})'
+                    f"ASI scan state did not become Idle within {timeout_s:g}s "
+                    f"(ScanState={scan_state!r})"
                 )
             sleep(0.05)
 
-    def _restore_stage_after_scan(self) -> None:
-        """Stop an ASI scan and restore the pre-acquisition XY move speeds."""
-        self.start_asi_scan_after_camera_sequence = False
-        if self.simulate_hardware:
-            if self.simulated_asi_state:
-                self.simulated_asi_state["scan_state"] = "Idle"
-                self.simulated_asi_transitions.append("Idle")
+    def _halt_xy_stage(self, operation: str) -> None:
+        """Halt a timed-out point move and confirm that the XY stage is idle."""
+        xy_stage = self.mmcore.getXYStageDevice()
+        if self.simulate_hardware or not xy_stage:
+            return
+        warning(
+            "OPM XY STAGE TIMEOUT",
+            f"{operation} exceeded its calculated timeout.",
+            "Sending the Micro-Manager stage Stop command before teardown.",
+        )
+        self.mmcore.stop(xy_stage)
+        with self._temporary_xy_stage_timeout(LARGE_STAGE_MOVE_TIMEOUT_MS):
+            self.mmcore.waitForDevice(xy_stage)
 
+    def _halt_xy_stage_if_busy(self, operation: str) -> None:
+        """Halt XY only when teardown failed while physical motion is active."""
+        xy_stage = self.mmcore.getXYStageDevice()
+        if self.simulate_hardware or not xy_stage:
+            return
+        try:
+            is_busy = bool(self.mmcore.deviceBusy(xy_stage))
+        except Exception:
+            logging.getLogger(__name__).exception(
+                "Could not determine XY busy state after %s", operation
+            )
+            return
+        if is_busy:
+            self._halt_xy_stage(operation)
+
+    def _wait_for_xy_stage(
+        self,
+        timeout_ms: int,
+        *,
+        operation: str,
+        stop_on_timeout: bool,
+        raise_after_stop: bool = True,
+    ) -> None:
+        """Wait for physical XY motion, optionally halting it on failure."""
+        xy_stage = self.mmcore.getXYStageDevice()
+        if self.simulate_hardware or not xy_stage:
+            return
+        try:
+            with self._temporary_xy_stage_timeout(timeout_ms):
+                self.mmcore.waitForDevice(xy_stage)
+        except Exception:
+            if stop_on_timeout:
+                self._halt_xy_stage(operation)
+                if not raise_after_stop:
+                    return
+            raise
+
+    def _prepare_xy_for_point_move(self, *, recover_for_teardown: bool = False) -> None:
+        """End hardware scanning and ensure the axes are idle before a point move."""
+        self._stop_active_stage_scan()
+        self._wait_for_xy_stage(
+            LARGE_STAGE_MOVE_TIMEOUT_MS,
+            operation="ASI scan cleanup",
+            stop_on_timeout=True,
+            raise_after_stop=not recover_for_teardown,
+        )
+
+    def _restore_stage_speeds(self) -> None:
+        """Restore the pre-sequence XY speeds without waiting on active motion."""
         xy_stage = self.mmcore.getXYStageDevice()
         if not xy_stage:
             self._stage_speeds_before_sequence = {}
             return
-
-        if not self.simulate_hardware:
-            try:
-                self._stop_active_stage_scan()
-            except Exception:
-                logging.getLogger(__name__).exception(
-                    "Could not return the ASI stage scan to Idle"
-                )
-
-        fallback_speed = self._config["OPM"]["stage_move_speed"]
+        fallback_speed = self._config.get("OPM", {}).get("stage_move_speed", 0.05)
         for prop in ("MotorSpeedX-S(mm/s)", "MotorSpeedY-S(mm/s)"):
             if not self.mmcore.hasProperty(xy_stage, prop):
                 continue
@@ -574,12 +767,6 @@ class OPMEngineV2(MDAEngine):
                 logging.getLogger(__name__).exception(
                     "Could not restore %s to %s", prop, speed
                 )
-        try:
-            self.mmcore.waitForDevice(xy_stage)
-        except Exception:
-            logging.getLogger(__name__).exception(
-                "Stage did not become ready after restoring move speeds"
-            )
         self._stage_speeds_before_sequence = {}
 
     def setup_event(self, event: MDAEvent) -> None:
@@ -601,6 +788,8 @@ class OPMEngineV2(MDAEngine):
             When a cooperative STOP is honored before a custom software command.
         RuntimeError
             If a completed stage move remains outside the target tolerance.
+        ValueError
+            If an OPM stage-move action omits standard MDAEvent XYZ positions.
         """
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
@@ -627,20 +816,53 @@ class OPMEngineV2(MDAEngine):
                 self.configure_camera(data_dict)
 
             elif action_name == ACTION_STAGE_MOVE:
-                # Move the stage at the normal configured speed unless this event
-                # explicitly requests an accelerated Stage Explorer preview move.
+                # The standard pymmcore-plus engine owns XYZ positioning and
+                # waitForSystem. OPM only prepares ASI scan state, speed, and
+                # the XY-specific timeout around that standard setup.
                 stage_data = data_dict["Stage"]
                 stage_move_speed = float(self._config["OPM"]["stage_move_speed"])
-                stage_move_speed_x = float(
+                normal_stage_move_speed_x = float(
                     stage_data.get("move_speed_x_mm_s", stage_move_speed)
                 )
-                stage_move_speed_y = float(
+                normal_stage_move_speed_y = float(
                     stage_data.get("move_speed_y_mm_s", stage_move_speed)
                 )
-                target_x = np.round(float(stage_data["x_pos"]), 2)
-                target_y = np.round(float(stage_data["y_pos"]), 2)
+                if event.x_pos is None or event.y_pos is None or event.z_pos is None:
+                    raise ValueError(
+                        "Stage-Move events require standard MDAEvent XYZ positions"
+                    )
+                target_x = float(event.x_pos)
+                target_y = float(event.y_pos)
+
+                # ScanState and physical-axis Busy are independent in the ASI
+                # adapter.  End the scan state machine, then wait for actual
+                # motion to stop before measuring distance or issuing a point move.
+                self._prepare_xy_for_point_move()
                 current_x, current_y = self.mmcore.getXYPosition()
-                original_timeout_ms = int(self.mmcore.getTimeoutMs())
+                normal_timeout_ms = self._xy_stage_timeout_ms()
+                normal_duration_s = self._xy_move_duration_s(
+                    current_x,
+                    current_y,
+                    target_x,
+                    target_y,
+                    normal_stage_move_speed_x,
+                    normal_stage_move_speed_y,
+                )
+                is_large_move = self._is_large_stage_move(
+                    normal_duration_s, normal_timeout_ms
+                )
+                speed_multiplier = (
+                    LARGE_STAGE_MOVE_SPEED_MULTIPLIER if is_large_move else 1.0
+                )
+                requested_speed_x = normal_stage_move_speed_x * speed_multiplier
+                requested_speed_y = normal_stage_move_speed_y * speed_multiplier
+
+                accepted_speeds = self._apply_stage_move_speeds({
+                    "move_speed_x_mm_s": requested_speed_x,
+                    "move_speed_y_mm_s": requested_speed_y,
+                })
+                stage_move_speed_x = accepted_speeds.get("x", requested_speed_x)
+                stage_move_speed_y = accepted_speeds.get("y", requested_speed_y)
                 move_timeout_ms, estimated_duration_s = self._stage_move_timeout_ms(
                     current_x,
                     current_y,
@@ -649,50 +871,47 @@ class OPMEngineV2(MDAEngine):
                     stage_move_speed_x,
                     stage_move_speed_y,
                 )
-                if move_timeout_ms != original_timeout_ms:
+                if move_timeout_ms != normal_timeout_ms:
                     debug(
-                        "EXTENDED STAGE MOVE TIMEOUT",
+                        "XY STAGE MOVE TIMEOUT",
                         f"move: ({current_x:.2f}, {current_y:.2f}) -> "
                         f"({target_x:.2f}, {target_y:.2f}) um",
                         f"estimated duration: {estimated_duration_s:.2f} s",
-                        f"timeout: {original_timeout_ms} -> {move_timeout_ms} ms",
+                        f"timeout: {normal_timeout_ms} -> {move_timeout_ms} ms",
                     )
-                    self.mmcore.setTimeoutMs(move_timeout_ms)
+                if is_large_move:
+                    info(
+                        "OPM LARGE STAGE MOVE",
+                        f"target: ({target_x:.2f}, {target_y:.2f}) um",
+                        "4x speed: "
+                        f"({stage_move_speed_x:g}, {stage_move_speed_y:g}) mm/s",
+                        f"estimated duration: {estimated_duration_s:.2f} s",
+                        f"timeout: {move_timeout_ms} ms",
+                    )
 
                 try:
-                    # A camera sequence can finish while the ASI controller is
-                    # still completing its scan cleanup.  Stop it explicitly before
-                    # changing speeds or commanding the next XY position.
-                    self._stop_active_stage_scan()
-                    self._apply_stage_move_speeds(
-                        {
-                            "move_speed_x_mm_s": stage_move_speed_x,
-                            "move_speed_y_mm_s": stage_move_speed_y,
-                        }
+                    with self._temporary_xy_stage_timeout(move_timeout_ms):
+                        super().setup_event(event)
+                except Exception:
+                    self._halt_xy_stage(
+                        f"point move to ({target_x:.2f}, {target_y:.2f}) um"
                     )
-                    self.mmcore.setPosition(
-                        np.round(float(stage_data["z_pos"]), 2)
+                    raise
+                current_x, current_y = self.mmcore.getXYPosition()
+                if not (
+                    np.isclose(current_x, target_x, rtol=0.0, atol=1.0)
+                    and np.isclose(current_y, target_y, rtol=0.0, atol=1.0)
+                ):
+                    raise RuntimeError(
+                        "Stage stopped outside the target tolerance: "
+                        f"current=({current_x:.2f}, {current_y:.2f}) um, "
+                        f"target=({target_x:.2f}, {target_y:.2f}) um"
                     )
-                    self.mmcore.waitForDevice(self.mmcore.getFocusDevice())
-                    self.mmcore.setXYPosition(target_x, target_y)
-                    self.mmcore.waitForDevice(self.mmcore.getXYStageDevice())
-                    current_x, current_y = self.mmcore.getXYPosition()
-                    if not (
-                        np.isclose(current_x, target_x, rtol=0.0, atol=1.0)
-                        and np.isclose(current_y, target_y, rtol=0.0, atol=1.0)
-                    ):
-                        raise RuntimeError(
-                            "Stage stopped outside the target tolerance: "
-                            f"current=({current_x:.2f}, {current_y:.2f}) um, "
-                            f"target=({target_x:.2f}, {target_y:.2f}) um"
-                        )
-                    self._stage_move_count = getattr(self, "_stage_move_count", 0) + 1
-                finally:
-                    if move_timeout_ms != original_timeout_ms:
-                        self.mmcore.setTimeoutMs(original_timeout_ms)
+                self._stage_move_count = getattr(self, "_stage_move_count", 0) + 1
 
             elif action_name == ACTION_ASI_SETUP_SCAN:
                 if self.simulate_hardware:
+                    previous_scan_state = self.simulated_asi_state.get("scan_state")
                     self.simulated_asi_state = {
                         "scan_axis_start_mm": float(
                             data_dict["ASI"]["scan_axis_start_mm"]
@@ -703,7 +922,8 @@ class OPMEngineV2(MDAEngine):
                         ),
                         "scan_state": "Idle",
                     }
-                    self.simulated_asi_transitions.append("Idle")
+                    if previous_scan_state != "Idle":
+                        self.simulated_asi_transitions.append("Idle")
                     self.start_asi_scan_after_camera_sequence = True
                     return
                 # --------------------------------------------------------#
@@ -1118,16 +1338,11 @@ class OPMEngineV2(MDAEngine):
         """
         debug("TEARDOWN", "Acquisition finished, tearing down.")
         sequence_metadata = getattr(sequence, "metadata", {})
-        is_stage_explorer_preview = (
-            STAGE_MOVE_SPEED_METADATA_KEY in sequence_metadata
-        )
-        preview_stage_restored = False
+        is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in sequence_metadata
 
         try:
-            # Shut down the trigger source before stopping the hardware scan.
-            # Saved OPM acquisitions restore move speeds immediately.  Explorer
-            # previews keep their temporary 4x speed through the upstream return
-            # to the pre-scan XY position.
+            # Shut down the trigger source, then end the ASI scan state machine
+            # and any residual physical scan motion before commanding a return.
             try:
                 self.opmDAQ.clear_tasks()
                 self.opmDAQ.reset()
@@ -1137,8 +1352,7 @@ class OPMEngineV2(MDAEngine):
                     )
                 )
             finally:
-                if not is_stage_explorer_preview:
-                    self._restore_stage_after_scan()
+                self._prepare_xy_for_point_move(recover_for_teardown=True)
 
             # Put cameras that expose the Hamamatsu trigger properties back in
             # internal mode.
@@ -1168,25 +1382,16 @@ class OPMEngineV2(MDAEngine):
                 self.AOMirror.save_positions_array()
             self.mmcore.clearCircularBuffer()
 
-            # Upstream restores the pre-acquisition XYZ position here.  That
-            # return is commonly much longer than a neighboring tile move, so
-            # keep the extended timeout active until the return command and all
-            # subsequent state restoration have completed.
-            original_timeout_ms = int(self.mmcore.getTimeoutMs())
-            teardown_timeout_ms = max(
-                original_timeout_ms, LARGE_STAGE_MOVE_TIMEOUT_MS
-            )
-            if teardown_timeout_ms != original_timeout_ms:
-                self.mmcore.setTimeoutMs(teardown_timeout_ms)
+            # Upstream commands the pre-acquisition XYZ return and then calls
+            # waitForSystem().  Give only the XY stage a distance-derived timeout;
+            # all other devices retain their normal Core timeout.
+            teardown_timeout_ms = self._teardown_return_timeout_ms()
             try:
-                super().teardown_sequence(sequence)
-            finally:
-                if teardown_timeout_ms != original_timeout_ms:
-                    self.mmcore.setTimeoutMs(original_timeout_ms)
-
-            if is_stage_explorer_preview:
-                self._restore_stage_after_scan()
-                preview_stage_restored = True
+                with self._temporary_xy_stage_timeout(teardown_timeout_ms):
+                    super().teardown_sequence(sequence)
+            except Exception:
+                self._halt_xy_stage_if_busy("return to the pre-acquisition position")
+                raise
 
             if self._post_teardown is not None:
                 try:
@@ -1200,8 +1405,6 @@ class OPMEngineV2(MDAEngine):
                         "Live preview will rebuild the DAQ waveform when started.",
                     )
         finally:
-            if is_stage_explorer_preview and not preview_stage_restored:
-                self._restore_stage_after_scan()
-            if is_stage_explorer_preview:
-                self._restore_stage_explorer_timeout()
+            self._restore_stage_speeds()
+            self._is_stage_explorer_preview = False
             self.clear_safe_stop()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
@@ -10,13 +11,20 @@ import pytest
 from pymmcore_gui import WidgetAction
 from pymmcore_gui._qt.QtCore import Qt
 from pymmcore_gui._qt.QtWidgets import QApplication
+from pymmcore_gui.actions import widget_actions as pymmcore_widget_actions
+from pymmcore_widgets import StageExplorer
 from pymmcore_widgets.control._rois.roi_model import RectangleROI
 
 from opm_v2._app import (
+    _STAGE_EXPLORER_REQUIRED_METHODS,
     OPM_WIDGET_KEY,
     OPMAppController,
+    _install_stage_explorer_export_compatibility,
     _stage_explorer_accelerated_speeds,
+    _stage_explorer_mouse_double_click,
     _stage_explorer_on_frame_ready,
+    _stage_explorer_scratch_output,
+    _validate_stage_explorer_compatibility,
     launch_opm_app,
 )
 from opm_v2.engine.opm_custom_events import (
@@ -27,6 +35,7 @@ from opm_v2.engine.setup_events import OPMEventBuilder
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 
 
 def test_registered_extension_composes_gui_engine_and_hardware_instances(
@@ -119,10 +128,20 @@ def test_registered_extension_composes_gui_engine_and_hardware_instances(
         window.close()
 
 
+@pytest.mark.parametrize(
+    "with_coverslip",
+    (False, True),
+    ids=("without-coverslip", "with-coverslip"),
+)
 def test_stage_explorer_export_activates_unambiguous_mda_positions(
-    demo_core, workspace_tmp_path, qtbot, offline_icons, opm_config_factory
+    demo_core,
+    workspace_tmp_path,
+    qtbot,
+    offline_icons,
+    opm_config_factory,
+    with_coverslip,
 ) -> None:
-    """Send preserved ROI bounds and literal centers into the native MDA widget."""
+    """Export a real Stage Explorer ROI with and without a fitted plane."""
     config_path = opm_config_factory.write(
         opm_config_factory(mode="projection"),
         workspace_tmp_path / "opm_explorer.json",
@@ -164,6 +183,9 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             text="sample",
             fov_size=explorer._fov_w_h(),
         )
+        plane = CoverslipPlane(100.0, 200.0, 7.0, 0.01, -0.02)
+        if with_coverslip:
+            roi._opm_coverslip_plane = plane
         explorer.roi_manager.add_roi(roi)
 
         mda_widget = controller.mda_widget
@@ -194,6 +216,13 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         assert region.right == pytest.approx(110.0)
         assert region.top == pytest.approx(200.0)
         assert region.bottom == pytest.approx(205.0)
+        nested_metadata = dict(exported[0].sequence.metadata or {})
+        if with_coverslip:
+            assert CoverslipPlane.from_metadata(
+                nested_metadata[COVERSLIP_METADATA_KEY]
+            ) == plane
+        else:
+            assert COVERSLIP_METADATA_KEY not in nested_metadata
 
         # Send the exact MDAWidget value produced by the real export connection
         # through every requested OPM planner.  This guards the integration seam
@@ -210,6 +239,23 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             assert events
             assert handler is not None
             assert handler.index_sizes["p"] >= 1
+            if with_coverslip:
+                image_events = [
+                    event
+                    for event in events
+                    if "DAQ" in event.metadata and "Stage" in event.metadata
+                ]
+                assert image_events
+                for event in image_events:
+                    if mode == "stage" and event.index.get("z", 0) != 0:
+                        # ASI advances physical X during the hardware sequence;
+                        # the Z correction is applied at each software boundary.
+                        continue
+                    stage = event.metadata["Stage"]
+                    assert stage["z_pos"] == pytest.approx(
+                        plane.z_at(stage["x_pos"], stage["y_pos"]),
+                        abs=0.01,
+                    )
             handler.close()
 
         explorer._send_mode_group.actions()[1].setChecked(True)
@@ -343,6 +389,13 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
         active_channels=(0, 2),
         channel_powers=(13.0, 37.0),
         channel_exposures_ms=(5.0, 9.0),
+        updates={
+            "OPM": {
+                "stage_explorer_scratch_dir": str(
+                    workspace_tmp_path / "stage_explorer_scratch"
+                )
+            }
+        },
     )
     config_path = opm_config_factory.write(
         preview_config,
@@ -396,12 +449,44 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
             controller.config["acq_config"]["DAQ"]
             == preview_config["acq_config"]["DAQ"]
         )
+        assert len(controller._stage_explorer_scratch_dirs) == 1
+        scratch_path = Path(controller._stage_explorer_scratch_dirs[0].name)
+        assert scratch_path.parent == workspace_tmp_path / "stage_explorer_scratch"
+        assert (scratch_path / "manifest.json").is_file()
     finally:
         window.close()
 
 
-def test_stage_explorer_preview_uses_four_times_current_xy_speed() -> None:
-    """Annotate every preview move from the actual per-axis stage speeds."""
+def test_stage_explorer_scratch_output_uses_unique_configured_child(
+    workspace_tmp_path,
+) -> None:
+    """Never use the configured scratch parent itself as an overwrite target."""
+    scratch_parent = workspace_tmp_path / "explorer_data"
+    controller = SimpleNamespace(
+        config={"OPM": {"stage_explorer_scratch_dir": str(scratch_parent)}},
+        _stage_explorer_scratch_dirs=[],
+    )
+
+    first = _stage_explorer_scratch_output(controller)
+    second = _stage_explorer_scratch_output(controller)
+
+    try:
+        first_path = Path(first.root_path)
+        second_path = Path(second.root_path)
+        assert first.format.name == "scratch"
+        assert first.overwrite
+        assert first_path.parent == scratch_parent
+        assert second_path.parent == scratch_parent
+        assert first_path != second_path
+        assert first_path.is_dir()
+        assert second_path.is_dir()
+    finally:
+        for scratch_dir in controller._stage_explorer_scratch_dirs:
+            scratch_dir.cleanup()
+
+
+def test_stage_explorer_preview_uses_four_times_y_speed_for_both_axes() -> None:
+    """Use the Y point-move speed for both axes during an ROI preview."""
     mmc = MagicMock()
     mmc.getXYStageDevice.return_value = "XYStage"
     mmc.hasProperty.return_value = True
@@ -412,8 +497,70 @@ def test_stage_explorer_preview_uses_four_times_current_xy_speed() -> None:
     accelerated = _stage_explorer_accelerated_speeds(mmc)
 
     assert accelerated == pytest.approx(
-        {"move_speed_x_mm_s": 0.2, "move_speed_y_mm_s": 0.32}
+        {"move_speed_x_mm_s": 0.32, "move_speed_y_mm_s": 0.32}
     )
+    mmc.setProperty.assert_called_once_with(
+        "XYStage", "MotorSpeedX-S(mm/s)", 0.08
+    )
+
+
+def test_stage_explorer_double_click_equalizes_speed_then_delegates_upstream() -> None:
+    """Preserve upstream move-and-snap after setting X equal to Y."""
+    mmc = MagicMock()
+    mmc.getXYStageDevice.return_value = "XYStage"
+    mmc.hasProperty.return_value = True
+    mmc.getProperty.return_value = "0.08"
+    original_callback = MagicMock()
+    explorer = SimpleNamespace(
+        _mmc=mmc,
+        _opm_original_on_mouse_double_click=original_callback,
+    )
+    event = object()
+
+    _stage_explorer_mouse_double_click(explorer, event)
+
+    mmc.setProperty.assert_called_once_with(
+        "XYStage", "MotorSpeedX-S(mm/s)", 0.08
+    )
+    original_callback.assert_called_once_with(event)
+
+
+def test_stage_explorer_double_click_wrapper_is_installed() -> None:
+    """Install the equal-speed wrapper around the upstream callback."""
+    _install_stage_explorer_export_compatibility()
+
+    assert (
+        pymmcore_widget_actions._StageExplorer._on_mouse_double_click
+        is _stage_explorer_mouse_double_click
+    )
+    assert (
+        pymmcore_widget_actions._StageExplorer._opm_original_on_mouse_double_click
+        is StageExplorer._on_mouse_double_click
+    )
+
+
+def test_stage_explorer_private_api_is_validated_before_patching() -> None:
+    """Fail clearly when a pymmcore-gui update changes the private shim API."""
+    incompatible_actions = SimpleNamespace(
+        _StageExplorer=type(
+            "ChangedStageExplorer",
+            (),
+            {
+                method_name: object()
+                for method_name in (
+                    set(_STAGE_EXPLORER_REQUIRED_METHODS)
+                    - {"_on_scan_action"}
+                )
+            },
+        ),
+        _setup_stage_mda_connections=object(),
+    )
+
+    with pytest.raises(
+        RuntimeError,
+        match=r"Unsupported pymmcore-gui.*missing: _on_scan_action",
+    ):
+        _validate_stage_explorer_compatibility(incompatible_actions)
 
 
 def test_stage_explorer_ignores_frames_from_regular_opm_acquisition() -> None:
@@ -458,6 +605,26 @@ def test_regular_opm_temporarily_disconnects_stage_explorer_frames() -> None:
     frame_ready.disconnect.assert_called_once_with(explorer._on_frame_ready)
     frame_ready.connect.assert_called_once_with(explorer._on_frame_ready)
     assert controller._suspended_stage_explorer is None
+
+
+def test_regular_opm_temporarily_stops_stage_explorer_position_polling() -> None:
+    """Avoid serial W X/W Y traffic while acquisition code waits on ASI Busy."""
+    controller = object.__new__(OPMAppController)
+    explorer = SimpleNamespace(poll_stage_position=True)
+    controller.win = SimpleNamespace(get_widget=MagicMock(return_value=explorer))
+    controller._stage_explorer_polling_was_enabled = None
+
+    controller._set_stage_explorer_position_polling(False)
+    controller._set_stage_explorer_position_polling(False)
+
+    assert explorer.poll_stage_position is False
+    assert controller._stage_explorer_polling_was_enabled is True
+
+    controller._set_stage_explorer_position_polling(True)
+    controller._set_stage_explorer_position_polling(True)
+
+    assert explorer.poll_stage_position is True
+    assert controller._stage_explorer_polling_was_enabled is None
 
 
 def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
@@ -547,6 +714,7 @@ def test_opm_preview_coalesces_frames_and_restores_native_follow_mode() -> None:
     controller._opm_preview_last_frame = -1
     controller.opm_engine = MagicMock()
     controller._set_stage_explorer_frame_updates = MagicMock()
+    controller._set_stage_explorer_position_polling = MagicMock()
     controller.refresh_stage_explorer_footprint = MagicMock()
 
     controller._on_mda_sequence_started()
@@ -556,6 +724,7 @@ def test_opm_preview_coalesces_frames_and_restores_native_follow_mode() -> None:
 
     assert not manager._follow_acquisition
     controller._set_stage_explorer_frame_updates.assert_called_once_with(False)
+    controller._set_stage_explorer_position_polling.assert_called_once_with(False)
     controller.refresh_stage_explorer_footprint.assert_called_once_with()
     assert current_index == {"t": 0, "p": 2, "c": 1, "z": 37}
     data_changed.assert_called_once_with()
@@ -565,6 +734,7 @@ def test_opm_preview_coalesces_frames_and_restores_native_follow_mode() -> None:
     assert manager._follow_acquisition
     assert not controller._opm_acquisition_active
     controller._set_stage_explorer_frame_updates.assert_called_with(True)
+    controller._set_stage_explorer_position_polling.assert_called_with(True)
     assert controller.refresh_stage_explorer_footprint.call_count == 2
     assert data_changed.call_count == 2
     controller.opm_engine.clear_safe_stop.assert_called_once_with()

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from os import PathLike
 from pathlib import Path
@@ -100,6 +100,7 @@ class OpmDataHandler:
         self._frame_count = int(np.prod(tuple(self.index_sizes.values())))
         self._is_finalized = False
         self._was_canceled = False
+        self._finish_reason_getter: Callable[[], object] | None = None
 
     @property
     def indice_sizes(self) -> dict[str, int]:
@@ -133,6 +134,16 @@ class OpmDataHandler:
             ``True`` only after ``sequenceCanceled`` is received.
         """
         return self._was_canceled
+
+    def set_finish_reason_getter(self, getter: Callable[[], object]) -> None:
+        """Provide access to the active MDA runner's completion reason.
+
+        Parameters
+        ----------
+        getter : Callable[[], object]
+            Callback returning a value such as ``FinishReason.ERRORED``.
+        """
+        self._finish_reason_getter = getter
 
     def sequenceStarted(
         self, _sequence: MDASequence, meta: SummaryMetaV1 | dict[str, Any]
@@ -226,6 +237,19 @@ class OpmDataHandler:
         # so cancellation owns finalization and must not trigger the missing-frame
         # error used for unexpectedly truncated acquisitions.
         if self._was_canceled:
+            return
+        finish_reason = (
+            self._finish_reason_getter()
+            if self._finish_reason_getter is not None
+            else None
+        )
+        if str(finish_reason).casefold() == "errored":
+            self._is_finalized = False
+            info(
+                "OPM IMAGE ACQUISITION ERRORED",
+                f"Frames saved: {self._next_frame} of {self._frame_count}",
+                "See the preceding acquisition exception for the root cause",
+            )
             return
         if self._next_frame != self._frame_count:
             raise RuntimeError(

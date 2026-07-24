@@ -6,11 +6,14 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from functools import partial
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Literal
 
 import numpy as np
 import useq
+from ome_writers import AcquisitionSettings
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QTimer
@@ -49,6 +52,17 @@ MIN_PROJECTION_EXPOSURE = 50  # ms
 DEFUALT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
 OPM_PREVIEW_INTERVAL_MS = 250
+_STAGE_EXPLORER_REQUIRED_METHODS = (
+    "_fov_w_h",
+    "_on_frame_ready",
+    "_on_mouse_double_click",
+    "_on_pixel_size_affine_changed",
+    "_on_pixel_size_changed",
+    "_on_roi_changed",
+    "_on_scan_action",
+    "_on_scan_options_changed",
+    "_on_send_to_mda",
+)
 
 
 def _disconnect_system_configuration_callback(
@@ -353,6 +367,7 @@ def _start_coverslip_calibration(stage_explorer) -> None:
     if previous != "Standard":
         mmc.setConfig("OPM-live-mode", "Standard")
         mmc.waitForConfig("OPM-live-mode", "Standard")
+
     stage_explorer._opm_coverslip_previous_live_preset = previous
     stage_explorer._opm_coverslip_target_roi = selected[0]
     stage_explorer._opm_coverslip_points = []
@@ -562,27 +577,62 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
     )
 
 
+def _equalize_stage_explorer_xy_speed(mmc: CMMCorePlus) -> float | None:
+    """Set the Stage Explorer X point-move speed equal to the Y speed.
+
+    Stage scanning temporarily gives X a scan-specific speed.  Interactive
+    Explorer moves are ordinary XY point moves and should use the Y-axis move
+    speed on both axes.
+
+    Returns
+    -------
+    float or None
+        Equalized point-move speed, or ``None`` when the ASI properties are not
+        available.
+    """
+    xy_stage = mmc.getXYStageDevice()
+    if not xy_stage:
+        return None
+    x_property = "MotorSpeedX-S(mm/s)"
+    y_property = "MotorSpeedY-S(mm/s)"
+    if not mmc.hasProperty(xy_stage, y_property):
+        return None
+
+    point_move_speed = float(mmc.getProperty(xy_stage, y_property))
+    if mmc.hasProperty(xy_stage, x_property):
+        mmc.setProperty(xy_stage, x_property, point_move_speed)
+    return point_move_speed
+
+
 def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
-    """Return four times the current XY speeds for an Explorer preview.
+    """Return four times the common XY speed for an Explorer preview.
 
     Returns
     -------
     dict[str, float]
-        Per-axis speed keys and accelerated speeds in millimeters per second.
+        Equal per-axis accelerated speeds in millimeters per second.
     """
     xy_stage = mmc.getXYStageDevice()
+    point_move_speed = _equalize_stage_explorer_xy_speed(mmc)
+    if not xy_stage or point_move_speed is None:
+        return {}
+
     speed_keys = {
         "MotorSpeedX-S(mm/s)": "move_speed_x_mm_s",
         "MotorSpeedY-S(mm/s)": "move_speed_y_mm_s",
     }
     accelerated: dict[str, float] = {}
     for property_name, event_key in speed_keys.items():
-        if xy_stage and mmc.hasProperty(xy_stage, property_name):
-            accelerated[event_key] = 4.0 * float(
-                mmc.getProperty(xy_stage, property_name)
-            )
+        if mmc.hasProperty(xy_stage, property_name):
+            accelerated[event_key] = 4.0 * point_move_speed
 
     return accelerated
+
+
+def _stage_explorer_mouse_double_click(stage_explorer, event) -> None:
+    """Equalize XY point-move speeds, then delegate move-and-snap upstream."""
+    _equalize_stage_explorer_xy_speed(stage_explorer._mmc)
+    stage_explorer._opm_original_on_mouse_double_click(event)
 
 
 def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
@@ -621,6 +671,60 @@ def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
             "before scanning an ROI"
         )
     return channel_group, channel_preset
+
+
+def _stage_explorer_scratch_output(controller) -> AcquisitionSettings:
+    """Create an application-owned disk-backed Stage Explorer output.
+
+    Each preview receives a unique child directory so enabling overwrite can
+    never remove the configured parent or another scan.  Keeping the temporary
+    directory object on the controller retains the data for the lifetime of the
+    GUI and schedules best-effort cleanup when the process exits.
+
+    Parameters
+    ----------
+    controller : OPMAppController
+        Active application controller containing the OPM configuration.
+
+    Returns
+    -------
+    AcquisitionSettings
+        Scratch settings backed by the configured directory.
+
+    Raises
+    ------
+    RuntimeError
+        If the configured scratch parent cannot be created.
+    """
+    configured_parent = controller.config.get("OPM", {}).get(
+        "stage_explorer_scratch_dir"
+    )
+    if not configured_parent:
+        return AcquisitionSettings(format="scratch")
+
+    scratch_parent = Path(configured_parent).expanduser()
+    try:
+        scratch_parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not create Stage Explorer scratch directory: {scratch_parent}"
+        ) from exc
+
+    scratch_dir = TemporaryDirectory(
+        prefix="opm_stage_explorer_",
+        dir=scratch_parent,
+        ignore_cleanup_errors=True,
+    )
+    retained_dirs = getattr(controller, "_stage_explorer_scratch_dirs", None)
+    if retained_dirs is None:
+        retained_dirs = []
+        controller._stage_explorer_scratch_dirs = retained_dirs
+    retained_dirs.append(scratch_dir)
+    return AcquisitionSettings(
+        root_path=scratch_dir.name,
+        format="scratch",
+        overwrite=True,
+    )
 
 
 def _scan_stage_explorer_roi(stage_explorer) -> None:
@@ -666,8 +770,13 @@ def _scan_stage_explorer_roi(stage_explorer) -> None:
         controller.suspend_live_preview_for_mda()
         controller.prepare_stage_explorer_preview()
         stage_explorer._our_mda_running = True
+        scratch_output = _stage_explorer_scratch_output(controller)
+        controller.info(
+            "STAGE EXPLORER STORAGE",
+            f"Disk-backed scratch: {scratch_output.root_path}",
+        )
         controller._opm_mda_thread = controller.mmc.run_mda(
-            sequence, output="memory"
+            sequence, output=scratch_output
         )
     except ValueError as exc:
         controller.warning("STAGE EXPLORER PREVIEW", str(exc))
@@ -787,36 +896,91 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     stage_explorer.sendToMDARequested.connect(_on_send_to_mda)
 
 
+def _validate_stage_explorer_compatibility(widget_actions):
+    """Validate the pinned private Stage Explorer API before patching it.
+
+    OPM needs behavior that pymmcore-gui does not expose through public hooks.
+    Keeping the private API check in one place prevents an upstream update from
+    leaving the class partially patched and failing later during interaction.
+
+    Parameters
+    ----------
+    widget_actions : module
+        ``pymmcore_gui.actions.widget_actions`` or a test double.
+
+    Returns
+    -------
+    type
+        The compatible private Stage Explorer class.
+
+    Raises
+    ------
+    RuntimeError
+        If the installed pymmcore-gui revision lacks an API used by the shim.
+    """
+    missing_module_attributes = [
+        name
+        for name in ("_StageExplorer", "_setup_stage_mda_connections")
+        if not hasattr(widget_actions, name)
+    ]
+    explorer_class = getattr(widget_actions, "_StageExplorer", None)
+    missing_methods = (
+        [
+            name
+            for name in _STAGE_EXPLORER_REQUIRED_METHODS
+            if not hasattr(explorer_class, name)
+        ]
+        if explorer_class is not None
+        else []
+    )
+    if not missing_module_attributes and not missing_methods:
+        return explorer_class
+
+    try:
+        installed_version = version("pymmcore-gui")
+    except PackageNotFoundError:
+        installed_version = "unknown"
+    missing = ", ".join((*missing_module_attributes, *missing_methods))
+    raise RuntimeError(
+        "Unsupported pymmcore-gui Stage Explorer private API "
+        f"(installed {installed_version}); missing: {missing}. "
+        "Install the revision pinned in pyproject.toml."
+    )
+
+
 def _install_stage_explorer_export_compatibility() -> None:
-    """Complete Stage Explorer affine/FOV and export behavior for OPM use."""
+    """Install the guarded private Stage Explorer compatibility shim."""
     if getattr(pymmcore_widget_actions, "_opm_export_compatibility", False):
         return
-    explorer_class = pymmcore_widget_actions._StageExplorer
-    explorer_class._opm_original_on_roi_changed = explorer_class._on_roi_changed
-    explorer_class._opm_original_on_pixel_size_changed = (
-        explorer_class._on_pixel_size_changed
+    explorer_class = _validate_stage_explorer_compatibility(
+        pymmcore_widget_actions
     )
-    explorer_class._opm_original_on_pixel_size_affine_changed = (
-        explorer_class._on_pixel_size_affine_changed
+    method_patches = {
+        "_fov_w_h": _stage_explorer_world_fov_w_h,
+        "_on_frame_ready": _stage_explorer_on_frame_ready,
+        "_on_mouse_double_click": _stage_explorer_mouse_double_click,
+        "_on_pixel_size_affine_changed": _refresh_stage_explorer_pixel_affine,
+        "_on_pixel_size_changed": _refresh_stage_explorer_pixel_size,
+        "_on_roi_changed": _update_stage_explorer_transformed_fov,
+        "_on_scan_action": _scan_stage_explorer_roi,
+        "_on_scan_options_changed": _refresh_stage_explorer_scan_options,
+        "_on_send_to_mda": _send_stage_explorer_rois_to_mda,
+    }
+    for method_name in method_patches:
+        setattr(
+            explorer_class,
+            f"_opm_original{method_name}",
+            getattr(explorer_class, method_name),
+        )
+    for method_name, replacement in method_patches.items():
+        setattr(explorer_class, method_name, replacement)
+
+    pymmcore_widget_actions._opm_original_setup_stage_mda_connections = (
+        pymmcore_widget_actions._setup_stage_mda_connections
     )
-    explorer_class._opm_original_on_scan_action = explorer_class._on_scan_action
-    explorer_class._opm_original_on_frame_ready = explorer_class._on_frame_ready
-    explorer_class._opm_original_on_scan_options_changed = (
-        explorer_class._on_scan_options_changed
-    )
-    explorer_class._fov_w_h = _stage_explorer_world_fov_w_h
-    explorer_class._on_roi_changed = _update_stage_explorer_transformed_fov
-    explorer_class._on_pixel_size_changed = _refresh_stage_explorer_pixel_size
-    explorer_class._on_pixel_size_affine_changed = (
-        _refresh_stage_explorer_pixel_affine
-    )
-    explorer_class._on_scan_action = _scan_stage_explorer_roi
-    explorer_class._on_frame_ready = _stage_explorer_on_frame_ready
-    explorer_class._on_scan_options_changed = _refresh_stage_explorer_scan_options
     pymmcore_widget_actions._setup_stage_mda_connections = (
         _connect_stage_explorer_to_mda
     )
-    explorer_class._on_send_to_mda = _send_stage_explorer_rois_to_mda
     pymmcore_widget_actions._opm_export_compatibility = True
 
 
@@ -1005,6 +1169,8 @@ class OPMAppController:
         self._mda_state_timer = None
         self._opm_preview_last_frame = -1
         self._suspended_stage_explorer = None
+        self._stage_explorer_polling_was_enabled: bool | None = None
+        self._stage_explorer_scratch_dirs: list[TemporaryDirectory] = []
         self._opm_mda_thread = None
         self._suspended_live_preview = None
         self._live_action_was_enabled = None
@@ -1436,6 +1602,33 @@ class OPMAppController:
             return
         self._suspended_stage_explorer = explorer
 
+    def _set_stage_explorer_position_polling(self, enabled: bool) -> None:
+        """Suspend Explorer's serial position queries during an OPM acquisition."""
+        if enabled:
+            previous = self._stage_explorer_polling_was_enabled
+            if previous is None:
+                return
+            self._stage_explorer_polling_was_enabled = None
+        elif self._stage_explorer_polling_was_enabled is not None:
+            return
+
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is None:
+            return
+
+        if enabled:
+            if bool(explorer.poll_stage_position) != previous:
+                explorer.poll_stage_position = previous
+            return
+
+        previous = bool(explorer.poll_stage_position)
+        self._stage_explorer_polling_was_enabled = previous
+        if previous:
+            explorer.poll_stage_position = False
+
     def sync_live_button_state(self) -> None:
         """Clear a stale live-button highlight after an MDA camera sequence."""
         if self.mmc.mda.is_running() or self.mmc.isSequenceRunning():
@@ -1808,6 +2001,7 @@ class OPMAppController:
         # again before the first camera frame can enqueue a GUI refresh.
         self._set_mda_follow_acquisition(False)
         self._set_stage_explorer_frame_updates(False)
+        self._set_stage_explorer_position_polling(False)
         self._opm_preview_last_frame = -1
         self._opm_scan_footprint_active = False
         self.refresh_stage_explorer_footprint()
@@ -1839,6 +2033,7 @@ class OPMAppController:
         self.sync_opm_mda_preview(force=True)
         self._set_mda_follow_acquisition(True)
         self._set_stage_explorer_frame_updates(True)
+        self._set_stage_explorer_position_polling(True)
         self._opm_acquisition_active = False
         self._opm_scan_footprint_active = False
         self.refresh_stage_explorer_footprint()
@@ -1907,6 +2102,10 @@ class OPMAppController:
 
         opm_events, handler = self.create_opm_events(optimize_now, opm_mode, output)
         self.data_handler = handler
+        if handler is not None:
+            handler.set_finish_reason_getter(
+                lambda: self.mmc.mda.status.finish_reason
+            )
 
         if opm_events is None:
             self.warning("ACQUISITION NOT STARTED", "OPM events are empty")
@@ -1926,6 +2125,7 @@ class OPMAppController:
         # new viewer.
         self._set_mda_follow_acquisition(False)
         self._set_stage_explorer_frame_updates(False)
+        self._set_stage_explorer_position_polling(False)
         self._opm_preview_last_frame = -1
         self._opm_scan_footprint_active = False
         self._opm_acquisition_active = True
@@ -1937,6 +2137,7 @@ class OPMAppController:
             self._opm_scan_footprint_active = False
             self._set_mda_follow_acquisition(True)
             self._set_stage_explorer_frame_updates(True)
+            self._set_stage_explorer_position_polling(True)
             self.refresh_stage_explorer_footprint()
             self.opm_engine.clear_safe_stop()
             self.opm_settings_widget.set_acquisition_idle()

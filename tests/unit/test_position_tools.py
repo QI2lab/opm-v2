@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from opm_v2.utils.position_tools import (
+    ao_grid_positions,
     apply_oblique_scan_correction,
     cam2lab,
     covering_tile_origins,
@@ -15,6 +16,43 @@ from opm_v2.utils.position_tools import (
     sample_depth_levels_um,
     split_stage_scan_bounds,
 )
+
+
+def test_ao_grid_positions_follow_coverslip_surface_in_both_xy_axes() -> None:
+    """Evaluate AO target Z from the complete physical acquisition surface."""
+    positions = [
+        {
+            "x": x,
+            "y": y,
+            "z": 45.0 + 0.01 * x - 0.02 * y,
+        }
+        for x in (100.0, 200.0)
+        for y in (300.0, 500.0)
+    ]
+
+    targets = ao_grid_positions(
+        positions,
+        num_scan_positions=3,
+        num_tile_positions=2,
+    )
+
+    assert len(targets) == 6
+    for target in targets:
+        assert target["z"] == pytest.approx(
+            45.0 + 0.01 * target["x"] - 0.02 * target["y"],
+            abs=0.01,
+        )
+
+
+def test_single_position_ao_grid_does_not_invent_an_xy_offset() -> None:
+    """Keep AO at the acquisition position when no lateral slope is observable."""
+    targets = ao_grid_positions(
+        [{"x": 100.0, "y": 200.0, "z": 50.0}],
+        num_scan_positions=3,
+        num_tile_positions=3,
+    )
+
+    assert targets == [{"x": 100.0, "y": 200.0, "z": 50.0}]
 
 
 def test_lab_camera_transforms_match_processing_axis_convention() -> None:
@@ -44,7 +82,7 @@ def test_oblique_scan_correction_preserves_lab_xy_across_tilted_z() -> None:
     corrected = apply_oblique_scan_correction(
         positions,
         angle_deg=30.0,
-        camera_zstage_orientation="negative",
+        camera_zstage_orientation="positive",
     )
 
     assert [position["lab_scan_um"] for position in corrected] == [100.0, 180.0]
@@ -131,3 +169,31 @@ def test_sample_depth_expansion_is_depth_major_and_orientation_aware() -> None:
         20.0,
         20.0,
     ]
+
+
+def test_positive_depth_and_oblique_correction_share_one_stage_orientation() -> None:
+    """Move deeper toward +Z while compensating the opposite lab displacement."""
+    corrected_surface = apply_oblique_scan_correction(
+        [
+            {
+                "x": 100.0,
+                "y": 200.0,
+                "z": 50.0,
+                "scan_reference_z_um": 50.0,
+            }
+        ],
+        angle_deg=30.0,
+        camera_zstage_orientation="positive",
+    )
+
+    expanded = expand_stage_positions_for_depth(
+        corrected_surface,
+        [0.0, 10.0],
+        "positive",
+        angle_deg=30.0,
+    )
+
+    assert expanded[1]["z"] == pytest.approx(60.0)
+    assert expanded[1]["stage_depth_offset_um"] == pytest.approx(10.0)
+    assert expanded[1]["lab_scan_um"] == pytest.approx(100.0)
+    assert expanded[1]["x"] == pytest.approx(100.0 + 10.0 / np.tan(np.pi / 6))

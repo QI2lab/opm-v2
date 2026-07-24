@@ -718,10 +718,11 @@ def apply_opm_sample_depth_plan(
         if needs_scan_correction
         else [dict(position) for position in stage_positions]
     )
+    zstage_orientation = str(config["OPM"]["camera_Zstage_orientation"])
     expanded = expand_stage_positions_for_depth(
         corrected_positions,
         sample_depths_um,
-        str(config["OPM"]["camera_Zstage_orientation"]),
+        zstage_orientation,
         angle_deg=float(config["OPM"]["angle_deg"]),
     )
     debug(
@@ -730,7 +731,7 @@ def apply_opm_sample_depth_plan(
         f"axial slab footprint: {axial_footprint_um:.3f} um",
         f"z overlap: {positions_config['z_axis_overlap']}",
         f"sample depths: {sample_depths_um.tolist()}",
-        f"stage orientation: {config['OPM']['camera_Zstage_orientation']}",
+        f"camera/sample-depth Z orientation: {zstage_orientation}",
         f"base/expanded positions: {len(stage_positions)}/{len(expanded)}",
     )
     return expanded, sample_depths_um

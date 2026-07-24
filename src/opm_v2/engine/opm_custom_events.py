@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
+from math import isfinite
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,36 @@ ACTION_ASI_SETUP_SCAN = "ASI-setupscan"
 STAGE_MOVE_SPEED_METADATA_KEY = "opm_stage_move_speeds_mm_s"
 
 VALID_DAQ_MODES = {"2d", "projection", "mirror", "stage"}
+
+
+def _positive_integer(value: object, name: str) -> int:
+    """Normalize an integral numeric configuration value.
+
+    Parameters
+    ----------
+    value : object
+        Configuration value to normalize.
+    name : str
+        Setting name included in validation errors.
+
+    Returns
+    -------
+    int
+        Positive integer value.
+
+    Raises
+    ------
+    ValueError
+        If the value is not finite, integral, and positive.
+    """
+    numeric_value = float(value)
+    if (
+        not isfinite(numeric_value)
+        or not numeric_value.is_integer()
+        or numeric_value < 1
+    ):
+        raise ValueError(f"{name} must be a positive integer; received {value!r}")
+    return int(numeric_value)
 
 
 def _as_list(value: Any) -> list | None:
@@ -295,8 +326,14 @@ def create_ao_grid_event(
         {
             "AO": {
                 "stage_positions": None,
-                "num_scan_positions": ao_config["num_scan_positions"],
-                "num_tile_positions": ao_config["num_tile_positions"],
+                # Older GUI snapshots serialized QSpinBox values as integral
+                # JSON floats.  Normalize the event payload at its boundary.
+                "num_scan_positions": _positive_integer(
+                    ao_config["num_scan_positions"], "num_scan_positions"
+                ),
+                "num_tile_positions": _positive_integer(
+                    ao_config["num_tile_positions"], "num_tile_positions"
+                ),
                 "output_path": output_dir_path,
                 "apply_ao_map": False,
                 "pos_idx": 0,
@@ -490,15 +527,23 @@ def create_stage_event(stage_position: Mapping[str, float]) -> MDAEvent:
     MDAEvent
         Stage-move event.
     """
-    return _custom_event(
-        ACTION_STAGE_MOVE,
-        {
-            "Stage": {
-                "x_pos": stage_position["x"],
-                "y_pos": stage_position["y"],
-                "z_pos": stage_position["z"],
-            }
-        },
+    x_pos = round(float(stage_position["x"]), 2)
+    y_pos = round(float(stage_position["y"]), 2)
+    z_pos = round(float(stage_position["z"]), 2)
+    return MDAEvent(
+        x_pos=x_pos,
+        y_pos=y_pos,
+        z_pos=z_pos,
+        action=CustomAction(
+            name=ACTION_STAGE_MOVE,
+            data={
+                "Stage": {
+                    "x_pos": x_pos,
+                    "y_pos": y_pos,
+                    "z_pos": z_pos,
+                }
+            },
+        ),
     )
 
 

@@ -1,4 +1,4 @@
-"""Component tests for stage-scan generation with demo hardware."""
+"""Integrate stage-scan event planning with MMCore demo hardware."""
 
 from __future__ import annotations
 

@@ -89,6 +89,11 @@ minversion = "7.0"
 testpaths = ["tests"]
 pythonpath = ["."]
 filterwarnings = ["error"]
+markers = [
+    "unit: isolated logic using pure inputs, mocks, or in-memory hardware",
+    "gui: Qt widgets, application bootstrap, and Stage Explorer behavior",
+    "integration: MMCore composition, event builders, storage, drivers, and scripts",
+]
 
 [tool.ruff]
 target-version = "py312"

@@ -1,4 +1,4 @@
-"""Component coverage for coverslip-relative OPM depth slabs."""
+"""Integrate coverslip-relative depth slabs with OPM mode planners."""
 
 from __future__ import annotations
 
@@ -86,11 +86,11 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
             surface_event.metadata["Stage"]["x_pos"]
         )
         assert depth_event.y_pos == pytest.approx(surface_event.y_pos)
-        # The test configuration uses provisional negative stage orientation.
-        assert depth_event.z_pos == pytest.approx(surface_event.z_pos - 1.0)
+        # On this microscope, increasing physical Z moves into the sample.
+        assert depth_event.z_pos == pytest.approx(surface_event.z_pos + 1.0)
         assert surface_event.metadata["Stage"]["sample_depth_um"] == 0.0
         assert depth_event.metadata["Stage"]["sample_depth_um"] == 1.0
-        assert depth_event.metadata["Stage"]["stage_depth_offset_um"] == -1.0
+        assert depth_event.metadata["Stage"]["stage_depth_offset_um"] == 1.0
 
 
 @pytest.mark.parametrize(
@@ -175,6 +175,9 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
         (position.get("lab_scan_um", position["x"]), position["y"])
         for position in second_positions
     ]
+    assert [position["z"] for position in second_positions] == pytest.approx(
+        [position["z"] + 1.0 for position in first_positions]
+    )
 
     image_event_indices_by_position: dict[int, list[int]] = {}
     for event_idx, event in enumerate(events):
