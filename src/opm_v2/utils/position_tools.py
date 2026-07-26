@@ -145,16 +145,20 @@ def sample_depth_levels_um(
     axial_footprint_um: float,
     overlap_fraction: float,
 ) -> FloatArray:
-    """Return sample-depth slab centers relative to the coverslip.
+    """Return slab origins that cover the requested sample-depth interval.
 
-    The endpoints are always retained and intermediate levels are inserted so
-    adjacent OPM slabs overlap by at least ``overlap_fraction``.  A zero-width
-    range intentionally returns one level, preserving single-layer acquisition.
+    ``start_um`` and ``end_um`` are coverage bounds, not a list of slab origins.
+    Each OPM slab extends one axial camera footprint from its origin into the
+    sample.  Origins are distributed so the first slab starts at ``start_um``,
+    the final slab ends at ``end_um``, and adjacent slabs overlap by at least
+    ``overlap_fraction``.  An interval no thicker than one footprint requires
+    only one slab.
 
     Parameters
     ----------
     start_um, end_um : float
-        Requested sample depths relative to the fitted coverslip plane.
+        Requested shallow and deep coverage bounds relative to the fitted
+        coverslip plane.  ``end_um`` must not be less than ``start_um``.
     axial_footprint_um : float
         Reconstructed laboratory-Z extent of one OPM camera frame.
     overlap_fraction : float
@@ -163,7 +167,7 @@ def sample_depth_levels_um(
     Returns
     -------
     numpy.ndarray
-        Depth levels in the user-requested direction, in micrometers.
+        Slab-origin depths in increasing biological-depth order.
 
     Raises
     ------
@@ -178,13 +182,24 @@ def sample_depth_levels_um(
     if not 0 <= overlap_fraction < 1:
         raise ValueError("Z slab overlap must be in the range [0, 1)")
 
-    span_um = abs(float(end_um) - float(start_um))
-    if np.isclose(span_um, 0.0):
+    start_um = float(start_um)
+    end_um = float(end_um)
+    if end_um < start_um and not np.isclose(end_um, start_um):
+        raise ValueError("Sample-depth end must be greater than or equal to start")
+
+    span_um = end_um - start_um
+    if span_um <= axial_footprint_um or np.isclose(
+        span_um, axial_footprint_um
+    ):
         return np.asarray([float(start_um)], dtype=float)
 
     maximum_step_um = float(axial_footprint_um) * (1.0 - overlap_fraction)
-    interval_count = max(1, int(np.ceil(span_um / maximum_step_um)))
-    return np.linspace(float(start_um), float(end_um), interval_count + 1)
+    uncovered_after_first_slab_um = span_um - float(axial_footprint_um)
+    interval_count = max(
+        1, int(np.ceil(uncovered_after_first_slab_um / maximum_step_um))
+    )
+    final_origin_um = end_um - float(axial_footprint_um)
+    return np.linspace(start_um, final_origin_um, interval_count + 1)
 
 
 def sample_depth_stage_sign(camera_zstage_orientation: str) -> float:
@@ -378,18 +393,21 @@ def split_stage_scan_bounds(
     pixel_size_um: float,
     angle_deg: float,
 ) -> tuple[FloatArray, FloatArray, float, float]:
-    """Split a lab-space interval using the working main-branch placement rule.
+    """Split a lab-space interval into overlapping stage-scan trajectories.
 
-    Adjacent stage trajectories overlap by the projected camera axial footprint
-    plus the configured extra overlap.  This is the established hardware-tested
-    calculation from ``main``.  The split trajectories are equal length and
-    their union begins and ends at the requested bounds.
+    Deskewing spreads each oblique camera plane along the laboratory scan axis.
+    Adjacent raw trajectories must therefore overlap by that scan-axis camera
+    extent *plus* the requested fully sampled overlap.  Using the camera axial
+    extent here leaves only ``configured_overlap - (scan_extent - z_extent)``
+    of valid overlap and may create seams between reconstructed scan tiles.
+    The split trajectories are equal length and their union begins and ends at
+    the requested bounds.
 
     Returns
     -------
     tuple[numpy.ndarray, numpy.ndarray, float, float]
         Raw scan starts, raw scan ends, effective trajectory overlap, and the
-        camera axial footprint, all in micrometers.
+        camera scan-axis footprint, all in micrometers.
 
     Raises
     ------
@@ -405,17 +423,17 @@ def split_stage_scan_bounds(
     if configured_overlap_um < 0:
         raise ValueError("Configured stage-scan overlap cannot be negative")
 
-    _, camera_z_extent_um = oblique_camera_extents_um(
+    camera_scan_extent_um, _ = oblique_camera_extents_um(
         camera_crop_y, pixel_size_um, angle_deg
     )
-    effective_overlap_um = camera_z_extent_um + float(configured_overlap_um)
+    effective_overlap_um = camera_scan_extent_um + float(configured_overlap_um)
 
     if distance_um <= max_raw_scan_length_um or np.isclose(
         distance_um, max_raw_scan_length_um
     ):
         starts = np.asarray([lower], dtype=float)
         ends = np.asarray([upper], dtype=float)
-        return starts, ends, effective_overlap_um, camera_z_extent_um
+        return starts, ends, effective_overlap_um, camera_scan_extent_um
 
     # This is algebraically identical to main:
     #
@@ -438,7 +456,7 @@ def split_stage_scan_bounds(
     starts = lower + np.arange(scan_count, dtype=float) * raw_stride_um
     ends = starts + raw_scan_length_um
     ends[-1] = upper
-    return starts, ends, effective_overlap_um, camera_z_extent_um
+    return starts, ends, effective_overlap_um, camera_scan_extent_um
 
 
 def _ceil_ratio(distance: float, stride: float) -> int:
@@ -578,6 +596,50 @@ def ao_grid_positions(
                 }
             )
     return targets
+
+
+def nearest_ao_grid_indices(
+    stage_positions: Sequence[dict[str, float]],
+    ao_stage_positions: Sequence[dict[str, float]],
+) -> np.ndarray:
+    """Assign each acquisition position to its nearest lateral AO sample.
+
+    AO grids are generated on one logical depth surface, where physical Z is a
+    dependent function of XY due to coverslip tilt and oblique acquisition
+    geometry.  Quantizing Z independently can construct an XYZ combination that
+    does not exist in the AO grid.  Lateral XY distance therefore defines the
+    AO prediction region.
+
+    Parameters
+    ----------
+    stage_positions : Sequence[dict[str, float]]
+        Acquisition positions on one logical depth surface.
+    ao_stage_positions : Sequence[dict[str, float]]
+        AO optimization positions on the same surface.
+
+    Returns
+    -------
+    numpy.ndarray
+        Integer AO-grid index for each acquisition position.
+
+    Raises
+    ------
+    ValueError
+        If either position collection is empty.
+    """
+    if not stage_positions:
+        raise ValueError("At least one acquisition position is required")
+    if not ao_stage_positions:
+        raise ValueError("At least one AO-grid position is required")
+    stage_coordinates = positions_array(stage_positions)
+    ao_coordinates = positions_array(ao_stage_positions)
+    stage_xy = stage_coordinates[:, (2, 1)]
+    ao_xy = ao_coordinates[:, (2, 1)]
+    squared_distances = np.sum(
+        (stage_xy[:, np.newaxis, :] - ao_xy[np.newaxis, :, :]) ** 2,
+        axis=2,
+    )
+    return np.argmin(squared_distances, axis=1).astype(int, copy=False)
 
 
 def select_ao_positions(

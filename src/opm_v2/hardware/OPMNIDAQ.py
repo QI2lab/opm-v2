@@ -191,16 +191,27 @@ class OPMNIDAQ:
 
         # Configure hardware pin addresses.
         self._dev_name = name
+        device_prefix = f"/{self._dev_name}"
         # Program DO port0 using 8-bit waveforms
-        self._address_channel_do = "/Dev1/port0/line0:7"  # laser lines 0:4
+        self._address_channel_do = (
+            f"{device_prefix}/port0/line0:7"  # laser lines 0:4
+        )
         self._address_ao_mirrors = [
-            "/Dev1/ao0",  # image scanning galvo
-            "/Dev1/ao1",  # projection scanning galvo
+            f"{device_prefix}/ao0",  # image scanning galvo
+            f"{device_prefix}/ao1",  # projection scanning galvo
         ]
-        self._channel_di_trigger_from_camera = "/Dev1/PFI0"  # camera trig port 0
-        self._channel_di_start_trigger = "/Dev1/PFI1"  # Empty PFI pin
-        self._channel_di_change_trigger = "/Dev1/PFI2"  # Empty PFI pin
-        self._channel_ao_start_trigger = "/Dev1/PFI3"  # Route channel_do_trigger
+        self._channel_di_trigger_from_camera = (
+            f"{device_prefix}/PFI0"  # camera trig port 0
+        )
+        self._channel_di_start_trigger = (
+            f"{device_prefix}/PFI1"  # Empty PFI pin
+        )
+        self._channel_di_change_trigger = (
+            f"{device_prefix}/PFI2"  # Empty PFI pin
+        )
+        self._channel_ao_start_trigger = (
+            f"{device_prefix}/PFI3"  # Route channel_do_trigger
+        )
 
         # task handles
         self._task_do = None

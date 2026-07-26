@@ -24,6 +24,11 @@ ACTION_ASI_SETUP_SCAN = "ASI-setupscan"
 # upstream engine, then restores the captured speeds during teardown.
 STAGE_MOVE_SPEED_METADATA_KEY = "opm_stage_move_speeds_mm_s"
 
+# Added to camera events emitted by a restarted hardware-triggered tile.  The
+# OPM data handler uses this marker to overwrite every frame already written by
+# the failed attempt instead of treating the repeated indices as duplicates.
+TILE_RETRY_ATTEMPT_METADATA_KEY = "opm_tile_retry_attempt"
+
 VALID_DAQ_MODES = {"2d", "projection", "mirror", "stage"}
 
 

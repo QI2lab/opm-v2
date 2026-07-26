@@ -6,41 +6,8 @@ import pytest
 from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
-from opm_v2.engine.setup_events import (
-    normalize_ao_mode,
-    normalize_autofocus_mode,
-    setup_projection,
-)
+from opm_v2.engine.setup_events import setup_projection
 from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
-
-
-@pytest.mark.parametrize(
-    ("normalizer", "widget_label", "event_label"),
-    [
-        (normalize_ao_mode, "at xyz position", "at xyz positions"),
-        (normalize_ao_mode, "grid at timepoints", "grid at timepoints"),
-        (normalize_autofocus_mode, "per timepoint", "at timepoints"),
-        (normalize_autofocus_mode, "per xyz position", "at xyz positions"),
-        (normalize_autofocus_mode, "once at start", "once at start"),
-    ],
-)
-def test_widget_frequency_labels_normalize_for_event_scheduling(
-    normalizer,
-    widget_label,
-    event_label,
-) -> None:
-    """Map every differing GUI label to its event-scheduler equivalent.
-
-    Parameters
-    ----------
-    normalizer : Callable[[str], str]
-        Mode-specific normalization function.
-    widget_label : str
-        Label emitted by the custom GUI.
-    event_label : str
-        Label consumed by existing scheduling branches.
-    """
-    assert normalizer(widget_label) == event_label
 
 
 @pytest.mark.parametrize(

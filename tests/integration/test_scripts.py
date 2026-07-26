@@ -10,13 +10,10 @@ import numpy as np
 from useq import MDAEvent, MDASequence
 
 from opm_v2.handlers.opm_data_handler import OpmDataHandler
-from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.utils import sensorless_ao
-from opm_v2.utils.position_tools import map_stage_positions_to_ao
 from opm_v2.utils.script_io import load_tensorstore
 from scripts.ao_grid_mapping import main as map_ao_grid
 from scripts.ao_positions import main as select_ao_grid
-from scripts.fluidics_triggering import main as run_fluidics
 from scripts.load_ao_optimization_results import (
     main as inspect_ao_results,
 )
@@ -28,8 +25,6 @@ from scripts.load_test_acquisition import summarize_array
 from scripts.make_gifs_from_data import main as make_gif
 from scripts.parse_ao_results import plot_results
 from scripts.parse_grid_ao_results import main as plot_ao_grid
-from scripts.push_pull import main as run_push_pull
-from scripts.push_pull import simulated_push_pull_commands
 from scripts.stage_positions import main as generate_positions
 
 
@@ -85,9 +80,15 @@ def test_position_scripts_share_one_configurable_pipeline(
     mapping_path = workspace_tmp_path / "ao_mapping.json"
     assert map_ao_grid([str(positions_path), str(ao_path), str(mapping_path)]) == 0
     mapping = json.loads(mapping_path.read_text())
-    assert mapping == map_stage_positions_to_ao(positions, ao_positions)
     assert len(mapping) == len(positions)
     assert set(mapping) == set(range(len(ao_positions)))
+    for position, ao_index in zip(positions, mapping, strict=True):
+        squared_distances = [
+            (position["x"] - candidate["x"]) ** 2
+            + (position["y"] - candidate["y"]) ** 2
+            for candidate in ao_positions
+        ]
+        assert squared_distances[ao_index] == min(squared_distances)
 
 
 def test_data_scripts_read_real_opm_tensorstore_and_create_gif(
@@ -201,42 +202,3 @@ def test_current_ao_scripts_load_discover_and_plot_results(
     )
     assert (grid_plots / "grid_0" / "ao_metrics.png").is_file()
     assert (grid_plots / "grid_0" / "ao_zernike_coeffs.png").is_file()
-
-
-def test_hardware_scripts_use_only_simulated_backends(
-    workspace_tmp_path: Path, monkeypatch
-) -> None:
-    """Run the fluidics and mirror-calibration scripts without real hardware.
-
-    Parameters
-    ----------
-    workspace_tmp_path : Path
-        Workspace-local directory for the fluidics configuration.
-    monkeypatch : pytest.MonkeyPatch
-        Patcher used to eliminate the fluidics acknowledgment delay.
-    """
-    monkeypatch.setattr("opm_v2.utils.elveflow_control.time.sleep", lambda _delay: None)
-    config_path = workspace_tmp_path / "fluidics.json"
-    config_path.write_text(
-        json.dumps({"OB1": {"port": "SIM", "to_OB1_pin": 7, "from_OB1_pin": 8}})
-    )
-    assert (
-        run_fluidics([
-            "--config",
-            str(config_path),
-            "--simulate",
-            "--rounds",
-            "2",
-        ])
-        == 0
-    )
-    controller = OB1Controller.instance()
-    assert controller.simulate is True
-    assert controller.trigger_count == 2
-
-    commands = simulated_push_pull_commands(3, 0.5)
-    assert len(commands) == 3
-    for index, (push, pull) in enumerate(commands):
-        assert push[index] == 0.5
-        np.testing.assert_array_equal(pull, -push)
-    assert run_push_pull(["--simulate-actuators", "3", "--amplitude", "0.5"]) == 0

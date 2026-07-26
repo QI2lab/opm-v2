@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from useq import AbsolutePosition, GridFromEdges, MDASequence
 
@@ -245,13 +246,13 @@ def test_stage_scan_rejects_literal_exported_positions(
         )
 
 
-def test_stage_scan_subdivision_matches_main_overlap_rule(
+def test_stage_scan_events_preserve_requested_reconstructed_overlap(
     demo_core,
     workspace_tmp_path,
     opm_config_factory,
     simulated_acquisition_hardware,
 ) -> None:
-    """Use camera axial footprint plus the configured extra overlap."""
+    """Program raw trajectories with the margin consumed during deskew."""
     requested_overlap_um = 20.0
     config = opm_config_factory(
         mode="stage",
@@ -286,17 +287,21 @@ def test_stage_scan_subdivision_matches_main_overlap_rule(
     assert len(asi_events) == 3
     assert starts_um[0] == pytest.approx(0.0)
     assert ends_um[-1] == pytest.approx(250.0)
-    camera_axial_footprint_um = (
+    camera_scan_footprint_um = (
         config["acq_config"]["camera_roi"]["crop_y"]
         * demo_core.getPixelSizeUm()
-        * 0.5
+        * np.cos(np.deg2rad(config["OPM"]["angle_deg"]))
     )
-    effective_overlap_um = requested_overlap_um + camera_axial_footprint_um
-    assert [
+    raw_overlaps_um = np.asarray([
         end - next_start
         for end, next_start in zip(ends_um[:-1], starts_um[1:])
-    ] == pytest.approx(
-        [effective_overlap_um, effective_overlap_um],
+    ])
+    assert raw_overlaps_um == pytest.approx(
+        np.full(len(raw_overlaps_um), requested_overlap_um + camera_scan_footprint_um),
+        abs=0.002,
+    )
+    assert raw_overlaps_um - camera_scan_footprint_um == pytest.approx(
+        np.full(len(raw_overlaps_um), requested_overlap_um),
         abs=0.002,
     )
     assert handler.index_sizes["p"] == 3

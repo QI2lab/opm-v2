@@ -43,10 +43,6 @@ def _unsupported_expectation(
         return ValueError, "requires ROI regions"
     if mode == "stage" and strategy_name.startswith("stage_explorer_multiple_"):
         return ValueError, "supports exactly one"
-    if mode == "timelapse" and strategy_name == "native_grid":
-        return IndexError, "list index out of range"
-    if mode == "timelapse" and strategy_name.startswith("stage_explorer_"):
-        return TypeError, "float"
     return None
 
 
@@ -95,6 +91,9 @@ def test_every_mode_spatial_plan_combination(
         axis_order=_AXIS_ORDERS[mode],
         include_time=mode == "timelapse",
     )
+    # Exercise the same native useq/Pydantic round trip used by the MDA widget's
+    # JSON save/load controls before any OPM translation occurs.
+    sequence = type(sequence).model_validate_json(sequence.model_dump_json())
     config = opm_config_factory(
         mode=mode,
         active_channels=(0,),
@@ -127,6 +126,22 @@ def test_every_mode_spatial_plan_combination(
         assert sorted({event.index["p"] for event in image_events}) == list(
             range(handler.index_sizes["p"])
         )
+        spatial_summary = handler.acquisition_metadata["resolved_spatial_plan"]
+        assert spatial_summary["resolved_stage_positions"]["count"] == (
+            handler.index_sizes["p"]
+        )
+        if strategy.kind == "stage_explorer":
+            expected_source = (
+                "stage_explorer_metadata"
+                if strategy.with_coverslip
+                else "flat_parent_z"
+            )
+            assert spatial_summary["coverslip_source"] == expected_source
+            if strategy.with_coverslip:
+                assert all(
+                    region["coverslip_plane"] is not None
+                    for region in spatial_summary["regions"]
+                )
 
         if strategy.kind == "literal":
             assert handler.index_sizes["p"] == strategy.position_count

@@ -53,6 +53,7 @@ from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 from opm_v2.utils.position_tools import (
+    ao_grid_positions,
     apply_oblique_scan_correction,
     compose_stage_positions,
     expand_stage_positions_for_depth,
@@ -497,6 +498,167 @@ def stage_positions_from_position_plan(
     return stage_positions
 
 
+def _coordinate_range(
+    positions: list[dict[str, float]], key: str
+) -> list[float] | None:
+    """Return the finite minimum and maximum for one planned coordinate.
+
+    Returns
+    -------
+    list[float] or None
+        Inclusive coordinate range, or ``None`` when no finite values exist.
+    """
+    values = [
+        float(position[key])
+        for position in positions
+        if key in position and np.isfinite(position[key])
+    ]
+    return [min(values), max(values)] if values else None
+
+
+def resolved_spatial_plan_summary(
+    *,
+    mda_positions_plan: list[dict] | tuple[dict, ...] | None,
+    stage_positions: list[dict[str, float]],
+    coverslip_slope_x: float,
+    coverslip_slope_y: float,
+    ao_mode: str,
+    config: dict,
+) -> dict:
+    """Describe the persisted input plane and the resolved acquisition positions.
+
+    The summary is built from the same parsed useq positions and AO grid helper
+    used by acquisition execution.  It is suitable for both console preflight
+    diagnostics and OME-Zarr global metadata.
+
+    Returns
+    -------
+    dict
+        JSON-compatible source-plane and resolved-position summary.
+    """
+    spatial_items = (
+        parse_mda_position_plan(mda_positions_plan) if mda_positions_plan else []
+    )
+    regions = [
+        item for item in spatial_items if isinstance(item, StageExplorerRegion)
+    ]
+    fallback_is_sloped = bool(coverslip_slope_x or coverslip_slope_y)
+    region_summaries: list[dict] = []
+    sources: set[str] = set()
+
+    for region in regions:
+        plane = region.coverslip_plane
+        if plane is not None:
+            source = "stage_explorer_metadata"
+            corner_z = [
+                plane.z_at(x_um, y_um)
+                for x_um in (region.x_min, region.x_max)
+                for y_um in (region.y_min, region.y_max)
+            ]
+            plane_metadata = plane.to_metadata()
+            predicted_z_range = [min(corner_z), max(corner_z)]
+        elif fallback_is_sloped:
+            source = "opm_settings_fallback"
+            plane_metadata = None
+            predicted_z_range = None
+        else:
+            source = "flat_parent_z"
+            plane_metadata = None
+            predicted_z_range = [region.z, region.z]
+        sources.add(source)
+        region_summaries.append({
+            "name": region.name,
+            "bounds_um": {
+                "x": [region.x_min, region.x_max],
+                "y": [region.y_min, region.y_max],
+            },
+            "parent_z_um": region.z,
+            "source": source,
+            "coverslip_plane": plane_metadata,
+            "predicted_coverslip_z_range_um": predicted_z_range,
+        })
+
+    if not sources:
+        sources.add(
+            "opm_settings_fallback" if fallback_is_sloped else "flat_parent_z"
+        )
+    source = next(iter(sources)) if len(sources) == 1 else "mixed"
+    resolved = {
+        "count": len(stage_positions),
+        "x_range_um": _coordinate_range(stage_positions, "x"),
+        "y_range_um": _coordinate_range(stage_positions, "y"),
+        "z_range_um": _coordinate_range(stage_positions, "z"),
+    }
+
+    summary = {
+        "schema_version": 1,
+        "coverslip_source": source,
+        "legacy_opm_slopes": {
+            "slope_x": float(coverslip_slope_x),
+            "slope_y": float(coverslip_slope_y),
+        },
+        "regions": region_summaries,
+        "resolved_stage_positions": resolved,
+    }
+
+    ao_summary = None
+    if "grid" in ao_mode and stage_positions:
+        ao_config = config["acq_config"]["AO"]
+        n_scan = int(ao_config["num_scan_positions"])
+        n_tile = int(ao_config["num_tile_positions"])
+        ao_targets: list[dict[str, float]] = []
+        for indices in stage_position_z_groups(stage_positions):
+            ao_targets.extend(
+                ao_grid_positions(
+                    [stage_positions[index] for index in indices],
+                    num_scan_positions=n_scan,
+                    num_tile_positions=n_tile,
+                )
+            )
+        ao_summary = {
+            "count": len(ao_targets),
+            "x_range_um": _coordinate_range(ao_targets, "x"),
+            "y_range_um": _coordinate_range(ao_targets, "y"),
+            "z_range_um": _coordinate_range(ao_targets, "z"),
+        }
+        summary["resolved_ao_grid_positions"] = ao_summary
+
+    diagnostic_lines: list[object] = [
+        f"source: {source}",
+        f"legacy OPM slope X/Y: {coverslip_slope_x:.6f} / "
+        f"{coverslip_slope_y:.6f}",
+    ]
+    for index, region in enumerate(region_summaries):
+        plane_metadata = region["coverslip_plane"]
+        if plane_metadata is None:
+            diagnostic_lines.append(
+                f"ROI {index} ({region['name']}): {region['source']}; "
+                f"parent Z={region['parent_z_um']:.2f} um"
+            )
+        else:
+            diagnostic_lines.extend((
+                f"ROI {index} ({region['name']}): slope X/Y="
+                f"{plane_metadata['slope_x']:.6f} / "
+                f"{plane_metadata['slope_y']:.6f}",
+                f"ROI {index} fit RMS={plane_metadata['rms_error_um']:.3f} um; "
+                f"points={len(plane_metadata['fit_points_um'])}; "
+                f"predicted Z range="
+                f"{region['predicted_coverslip_z_range_um'][0]:.2f} to "
+                f"{region['predicted_coverslip_z_range_um'][1]:.2f} um",
+            ))
+    diagnostic_lines.append(
+        f"resolved experiment positions: {resolved['count']}; "
+        f"Z range={resolved['z_range_um']}"
+    )
+    if ao_summary is not None:
+        diagnostic_lines.append(
+            f"resolved AO grid positions: {ao_summary['count']}; "
+            f"Z range={ao_summary['z_range_um']}"
+        )
+    info("COVERSLIP PLAN", *diagnostic_lines)
+    return summary
+
+
 def populate_opm_metadata(
     daq_mode: str,
     channel_states: list,
@@ -727,10 +889,10 @@ def apply_opm_sample_depth_plan(
     )
     debug(
         "OPM SAMPLE DEPTH PLAN",
-        f"requested start/end: {depth_start_um}/{depth_end_um} um",
+        f"requested coverage start/end: {depth_start_um}/{depth_end_um} um",
         f"axial slab footprint: {axial_footprint_um:.3f} um",
         f"z overlap: {positions_config['z_axis_overlap']}",
-        f"sample depths: {sample_depths_um.tolist()}",
+        f"slab origins: {sample_depths_um.tolist()}",
         f"camera/sample-depth Z orientation: {zstage_orientation}",
         f"base/expanded positions: {len(stage_positions)}/{len(expanded)}",
     )
@@ -901,6 +1063,7 @@ def create_zarr_handler(
     acquisition_order: tuple[str, ...] | None = None,
     events: list[MDAEvent] | None = None,
     config: dict | None = None,
+    spatial_plan: dict | None = None,
 ) -> OpmDataHandler:
     """Create the OPM Zarr handler after validating its output path.
 
@@ -916,6 +1079,8 @@ def create_zarr_handler(
         Prepared events supplying OPM semantic metadata.
     config : dict or None
         Complete GUI acquisition configuration stored as global metadata.
+    spatial_plan : dict or None
+        Resolved spatial-plan summary stored alongside the configuration.
 
     Returns
     -------
@@ -929,13 +1094,16 @@ def create_zarr_handler(
     """
     output = Path(output)
     if output.name.endswith((".zarr", ".ome.zarr")):
+        acquisition_metadata = dict(config or {})
+        if spatial_plan is not None:
+            acquisition_metadata["resolved_spatial_plan"] = spatial_plan
         handler = OpmDataHandler(
             path=output,
             index_sizes=indice_sizes,
             acquisition_order=acquisition_order,
             delete_existing=True,
             events=events,
-            acquisition_metadata=config,
+            acquisition_metadata=acquisition_metadata,
         )
         info("QI2LAB HANDLER", f"indices: {indice_sizes}")
         return handler
@@ -1648,8 +1816,8 @@ def setup_timelapse(
 
     Raises
     ------
-    Exception
-        If required MDA position or time plans are missing.
+    ValueError
+        If the required MDA time or spatial plan is missing or invalid.
     """
     debug("SETUP TIMELAPSE", "Setting up a timelapse acquisition.")
 
@@ -1663,6 +1831,7 @@ def setup_timelapse(
     # Get the acquisition modes
     acq_config = config["acq_config"]
     daq_config = acq_config["DAQ"]
+    positions_config = acq_config["Positions"]
     ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
     o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
 
@@ -1725,11 +1894,22 @@ def setup_timelapse(
 
     # Split apart sequence dictionary
     sequence_plans = get_sequence_plans(sequence)
+    mda_grid_plan = sequence_plans["grid"]
     mda_positions_plan = sequence_plans["positions"]
     mda_time_plan = sequence_plans["time"]
+    mda_z_plan = sequence_plans["z"]
 
-    if (mda_positions_plan is None) or (mda_time_plan is None):
-        raise Exception("Must select MDA Positions AND Time plan")
+    if mda_time_plan is None:
+        raise ValueError("Timelapse mode requires an MDA Time plan")
+    if mda_grid_plan is None and mda_positions_plan is None:
+        raise ValueError(
+            "Timelapse mode requires an MDA grid or positions plan"
+        )
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
     # ----------------------------------------------------------------#
     # Create custom events
@@ -1796,15 +1976,58 @@ def setup_timelapse(
         update_ao_mirror_mid_loop = False
 
     # ----------------------------------------------------------------#
-    # Get xyz stage position
-    stage_positions = []
-    for stage_pos in mda_positions_plan:
-        stage_positions.append({
-            "x": float(stage_pos["x"]),
-            "y": float(stage_pos["y"]),
-            "z": float(stage_pos["z"]),
-        })
+    # Resolve the native useq spatial plan with the same physical-coordinate
+    # translation used by mirror acquisitions.  A timelapse holds the image
+    # mirror at each scan plane, so its stage tiling footprint is mirror-like.
+    coverslip_slope_x = float(positions_config["coverslip_slope_x"])
+    coverslip_slope_y = float(positions_config["coverslip_slope_y"])
+    tile_axis_overlap = float(positions_config["tile_axis_overlap"])
+    scan_axis_overlap = float(
+        positions_config.get("scan_axis_overlap", tile_axis_overlap)
+    )
+    z_axis_overlap = float(positions_config["z_axis_overlap"])
+    position_kwargs = {
+        "mda_z_plan": mda_z_plan,
+        "opm_mode": "mirror",
+        "camera_crop_x": camera_crop_x,
+        "camera_crop_y": camera_crop_y,
+        "scan_range_um": float(scan_range_um),
+        "scan_axis_overlap": scan_axis_overlap,
+        "tile_axis_overlap": tile_axis_overlap,
+        "z_axis_overlap": z_axis_overlap,
+        "angle_deg": float(config["OPM"]["angle_deg"]),
+        "coverslip_slope_x": coverslip_slope_x,
+        "coverslip_slope_y": coverslip_slope_y,
+        "mmc": mmc,
+    }
+    if mda_grid_plan is not None:
+        stage_positions = stage_positions_from_grid(
+            mda_grid_plan=mda_grid_plan,
+            **position_kwargs,
+        )
+    else:
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            **position_kwargs,
+        )
+    stage_positions, _sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+        mda_z_plan=mda_z_plan,
+    )
+    if not stage_positions:
+        raise ValueError("Timelapse spatial planning produced no stage positions")
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # ----------------------------------------------------------------#
     # Create MDA event structure
@@ -1943,6 +2166,7 @@ def setup_timelapse(
         acquisition_order=("p", "z", "t", "c"),
         events=opm_events,
         config=config,
+        spatial_plan=spatial_plan,
     )
 
 
@@ -2084,6 +2308,14 @@ def setup_projection(
         mda_z_plan=mda_z_plan,
     )
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # ----------------------------------------------------------------#
     # Define the time indexing, check for fluidics
@@ -2383,7 +2615,11 @@ def setup_projection(
         "c": int(np.maximum(1, n_active_channels)),
     }
     return opm_events, create_zarr_handler(
-        output, indice_sizes, events=opm_events, config=config
+        output,
+        indice_sizes,
+        events=opm_events,
+        config=config,
+        spatial_plan=spatial_plan,
     )
 
 
@@ -2625,6 +2861,14 @@ def setup_mirrorscan(
         mda_z_plan=mda_z_plan,
     )
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
@@ -2876,6 +3120,7 @@ def setup_mirrorscan(
         acquisition_order=camera_acquisition_order,
         events=opm_events,
         config=config,
+        spatial_plan=spatial_plan,
     )
 
 
@@ -3183,14 +3428,14 @@ def setup_stagescan(
     # --------------------------------------------------------------------#
     # Calculate scan axis tile locations, units: mm and s
 
-    # Split the requested laboratory-X range using the hardware-tested
-    # main-branch rule: the camera axial footprint plus the configured extra
-    # overlap separates adjacent scan end/start pairs.
+    # Deskewing spreads every camera plane along laboratory X.  Preserve the
+    # requested fully sampled overlap by adding that scan-direction camera
+    # footprint to the raw trajectory overlap.
     (
         scan_axis_start_pos_um,
         scan_axis_end_pos_um,
         scan_tile_overlap_um,
-        camera_z_overlap_um,
+        camera_scan_overlap_um,
     ) = split_stage_scan_bounds(
         min_x_pos,
         max_x_pos,
@@ -3258,7 +3503,7 @@ def setup_stagescan(
         f"number scan tiles: {n_scan_positions}",
         f"tile length um: {scan_tile_length_um}",
         f"configured extra overlap um: {configured_scan_overlap_um}",
-        f"camera axial footprint um: {camera_z_overlap_um}",
+        f"camera scan-direction footprint um: {camera_scan_overlap_um}",
         f"effective trajectory overlap um: {scan_tile_overlap_um}",
         f"tile length mm: {scan_tile_length_mm}",
         f"tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
@@ -3351,6 +3596,14 @@ def setup_stagescan(
         mda_z_plan=sequence_plans["z"],
     )
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=float(positions_config["coverslip_slope_x"]),
+        coverslip_slope_y=float(positions_config["coverslip_slope_y"]),
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
@@ -3581,6 +3834,7 @@ def setup_stagescan(
         acquisition_order=("t", "p", "z", "c"),
         events=opm_events,
         config=config,
+        spatial_plan=spatial_plan,
     )
 
 

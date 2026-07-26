@@ -20,6 +20,7 @@ from ome_writers import (
 )
 
 from opm_v2.engine.debug_printing import info
+from opm_v2.engine.opm_custom_events import TILE_RETRY_ATTEMPT_METADATA_KEY
 
 if TYPE_CHECKING:
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
@@ -101,6 +102,10 @@ class OpmDataHandler:
         self._is_finalized = False
         self._was_canceled = False
         self._finish_reason_getter: Callable[[], object] | None = None
+        self._tile_retry_range: tuple[int, int] | None = None
+        self._tile_retry_metadata_slots: dict[
+            tuple[int, tuple[int, ...]], int
+        ] = {}
 
     @property
     def indice_sizes(self) -> dict[str, int]:
@@ -112,6 +117,11 @@ class OpmDataHandler:
             Copy of the acquisition axis sizes.
         """
         return dict(self.index_sizes)
+
+    @property
+    def acquisition_metadata(self) -> dict[str, Any]:
+        """A copy of the metadata that will be stored at the Zarr root."""
+        return dict(self._acquisition_metadata)
 
     @property
     def is_finalized(self) -> bool:
@@ -164,6 +174,8 @@ class OpmDataHandler:
         self._next_frame = 0
         self._latest_event_index = {}
         self._view = None
+        self._tile_retry_range = None
+        self._tile_retry_metadata_slots = {}
         info(
             "OPM IMAGE ACQUISITION STARTED",
             f"Expected frames: {self._frame_count}",
@@ -204,10 +216,26 @@ class OpmDataHandler:
             raise IndexError(
                 f"Event index {dict(event.index)} exceeds configured frame count"
             )
+        retry_attempt = int(
+            event.metadata.get(TILE_RETRY_ATTEMPT_METADATA_KEY, 0)
+        )
         if target_frame < self._next_frame:
-            raise ValueError(
-                f"Event index {dict(event.index)} arrived after its output position"
+            if retry_attempt <= 0 or not self._is_tile_retry_frame(target_frame):
+                raise ValueError(
+                    f"Event index {dict(event.index)} arrived after its output position"
+                )
+            self._rewrite_frame(
+                image,
+                event,
+                self._frame_metadata(event, meta),
+                target_frame,
             )
+            self._latest_event_index = {
+                ("p" if str(axis) == "g" else str(axis)): int(index)
+                for axis, index in event.index.items()
+            }
+            self._finish_tile_retry_if_last(target_frame)
+            return
         if target_frame > self._next_frame:
             self._stream.skip(frames=target_frame - self._next_frame)
 
@@ -217,6 +245,191 @@ class OpmDataHandler:
             ("p" if str(axis) == "g" else str(axis)): int(index)
             for axis, index in event.index.items()
         }
+        self._finish_tile_retry_if_last(target_frame)
+
+    def prepare_tile_retry(self, events: Sequence[MDAEvent], attempt: int) -> None:
+        """Prepare the current OME-Zarr tile for complete in-place replacement.
+
+        Frames already appended for a failed tile are flushed before the retry
+        begins.  Retried frames then overwrite their original pixels and
+        metadata at the same OME-Zarr coordinates; frames that were never
+        received by the failed attempt continue through the normal append path.
+
+        Parameters
+        ----------
+        events : Sequence[MDAEvent]
+            Every camera event in the hardware-triggered tile being restarted.
+        attempt : int
+            One-based retry attempt number.
+
+        Raises
+        ------
+        RuntimeError
+            If the active writer cannot safely perform indexed replacement.
+        ValueError
+            If the tile does not occupy one contiguous acquisition-order range.
+        """
+        if not events:
+            raise ValueError("Cannot retry an empty camera tile")
+
+        flat_indices = [self._flat_event_index(event) for event in events]
+        first = min(flat_indices)
+        last = max(flat_indices)
+        if sorted(flat_indices) != list(range(first, last + 1)):
+            raise ValueError(
+                "Retried camera tile must be contiguous in acquisition order"
+            )
+
+        self._tile_retry_range = (first, last)
+        self._tile_retry_metadata_slots = {}
+        if self._stream is None:
+            if self._next_frame > first:  # pragma: no cover - invalid lifecycle
+                raise RuntimeError(
+                    "OME stream is unavailable after frames were already saved"
+                )
+            info(
+                "OPM TILE STORAGE REWRITE",
+                f"Retry attempt: {attempt}",
+                f"Frame range: {first}-{last}",
+                "No failed-pass frames reached storage; retry will append all frames",
+            )
+            return
+
+        backend = self._stream._backend
+        futures = getattr(backend, "_futures", None)
+        if futures is None:
+            raise RuntimeError(
+                "Tile replacement requires the TensorStore OME-Zarr backend"
+            )
+        # Complete every write from the failed attempt before issuing
+        # replacement writes to the same array coordinates.
+        while futures:
+            futures.pop(0).result()
+
+        chunk_buffers = getattr(backend, "_chunk_buffers", None)
+        if chunk_buffers:
+            raise RuntimeError(
+                "Tile replacement requires one-frame index chunks"
+            )
+
+        metadata_slots: dict[tuple[int, tuple[int, ...]], int] = {}
+        retry_positions = {
+            self._storage_route(event)[0] for event in events
+        }
+        for position_index in retry_positions:
+            group_path = backend._image_group_paths[position_index]
+            mirror = backend._meta_mirrors[group_path]
+            for slot, frame_metadata in enumerate(mirror._frame_metadata):
+                storage_index = tuple(
+                    int(index) for index in frame_metadata["storage_index"]
+                )
+                metadata_slots[(position_index, storage_index)] = slot
+
+        self._tile_retry_metadata_slots = metadata_slots
+        info(
+            "OPM TILE STORAGE REWRITE",
+            f"Retry attempt: {attempt}",
+            f"Frame range: {first}-{last}",
+            "Every previously saved frame in this tile will be replaced",
+        )
+
+    def _is_tile_retry_frame(self, target_frame: int) -> bool:
+        """Return whether a repeated frame belongs to the active tile retry.
+
+        Returns
+        -------
+        bool
+            Whether the frame lies inside the active replacement range.
+        """
+        if self._tile_retry_range is None:
+            return False
+        first, last = self._tile_retry_range
+        return first <= target_frame <= last
+
+    def _finish_tile_retry_if_last(self, target_frame: int) -> None:
+        """Release rewrite bookkeeping after the tile's final frame is stored."""
+        if (
+            self._tile_retry_range is not None
+            and target_frame == self._tile_retry_range[1]
+        ):
+            self._tile_retry_range = None
+            self._tile_retry_metadata_slots = {}
+
+    def _storage_route(self, event: MDAEvent) -> tuple[int, tuple[int, ...]]:
+        """Map an event index to the active backend's position and storage index.
+
+        Returns
+        -------
+        tuple
+            Position-array index and storage-order array index.
+
+        Raises
+        ------
+        RuntimeError
+            If no OME stream is active.
+        """
+        if self._stream is None:  # pragma: no cover - guarded by caller
+            raise RuntimeError("OME stream is not active")
+        settings = self._stream._settings
+        dimensions = settings.dimensions[:-2]
+        position_axis = settings.position_dimension_index
+        acquisition_indices = [
+            int(event.index.get(dimension.name, 0))
+            for axis, dimension in enumerate(dimensions)
+            if axis != position_axis
+        ]
+        permutation = settings.storage_index_permutation
+        if permutation is not None:
+            acquisition_indices = [
+                acquisition_indices[index] for index in permutation
+            ]
+        position_index = (
+            int(event.index.get(dimensions[position_axis].name, 0))
+            if position_axis is not None
+            else 0
+        )
+        return position_index, tuple(acquisition_indices)
+
+    def _rewrite_frame(
+        self,
+        image: np.ndarray,
+        event: MDAEvent,
+        frame_metadata: dict[str, Any],
+        target_frame: int,
+    ) -> None:
+        """Replace one frame and its metadata without advancing stream order.
+
+        Raises
+        ------
+        RuntimeError
+            If the stream is inactive or no original metadata slot exists.
+        """
+        if self._stream is None:  # pragma: no cover - guarded by frameReady
+            raise RuntimeError("OME stream is not active")
+        position_index, storage_index = self._storage_route(event)
+        backend = self._stream._backend
+        slot_key = (position_index, storage_index)
+        try:
+            metadata_slot = self._tile_retry_metadata_slots[slot_key]
+        except KeyError as exc:
+            raise RuntimeError(
+                "No original metadata slot exists for retried frame "
+                f"{target_frame} at position {position_index}, "
+                f"storage index {storage_index}"
+            ) from exc
+
+        backend.write(
+            position_index,
+            storage_index,
+            image,
+            frame_metadata=None,
+        )
+        group_path = backend._image_group_paths[position_index]
+        mirror = backend._meta_mirrors[group_path]
+        replacement = {**frame_metadata, "storage_index": storage_index}
+        with mirror._lock:
+            mirror._frame_metadata[metadata_slot] = replacement
+            mirror._dirty = True
 
     def sequenceFinished(self, _sequence: MDASequence) -> None:
         """Close the writer after successful sequence completion.

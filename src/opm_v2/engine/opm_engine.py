@@ -11,7 +11,7 @@ Change Log:
 
 import json
 import logging
-from collections.abc import Callable, Iterable, Mapping
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from math import ceil
@@ -21,6 +21,7 @@ from time import monotonic, sleep
 
 import numpy as np
 from numpy.typing import NDArray
+from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, SkipEvent
 from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
 from useq import CustomAction, MDAEvent, MDASequence
@@ -43,6 +44,7 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_O2O3_AUTOFOCUS,
     ACTION_STAGE_MOVE,
     STAGE_MOVE_SPEED_METADATA_KEY,
+    TILE_RETRY_ATTEMPT_METADATA_KEY,
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -57,6 +59,7 @@ POWER_STR = " - PowerSetpoint (%)"
 LARGE_STAGE_MOVE_TIMEOUT_MS = 120_000
 STAGE_MOVE_TIMEOUT_MARGIN_S = 2.0
 LARGE_STAGE_MOVE_SPEED_MULTIPLIER = 4.0
+MAX_TILE_RETRY_ATTEMPTS = 1
 
 
 def debug(header: str, *lines: object) -> None:
@@ -148,6 +151,10 @@ class OPMEngineV2(MDAEngine):
         self._is_stage_explorer_preview = False
         self._stage_move_count = 0
         self._safe_stop_requested = ThreadEvent()
+        self._tile_setup_events: dict[str, MDAEvent] = {}
+        self._tile_retry_prepare: (
+            Callable[[Sequence[MDAEvent], int], None] | None
+        ) = None
 
     def update_config(self):
         """Load configuration from disk for standalone engine construction."""
@@ -179,6 +186,20 @@ class OPMEngineV2(MDAEngine):
     def clear_safe_stop(self) -> None:
         """Clear any outstanding cooperative stop request."""
         self._safe_stop_requested.clear()
+
+    def set_tile_retry_prepare(
+        self,
+        callback: Callable[[Sequence[MDAEvent], int], None] | None,
+    ) -> None:
+        """Set the storage callback used before a hardware tile is restarted.
+
+        Parameters
+        ----------
+        callback : callable or None
+            Function that flushes the failed attempt and prepares all previously
+            written tile frames for indexed replacement.
+        """
+        self._tile_retry_prepare = callback
 
     def configure_camera(self, data_dict: dict, setting: str = None):
         """Set the camera ROI and exposure.
@@ -368,6 +389,7 @@ class OPMEngineV2(MDAEngine):
             Summary metadata returned by the base engine.
         """
         self._stage_move_count = 0
+        self._tile_setup_events = {}
         self._capture_stage_speeds()
         metadata = getattr(sequence, "metadata", {})
         is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in metadata
@@ -925,6 +947,7 @@ class OPMEngineV2(MDAEngine):
                     if previous_scan_state != "Idle":
                         self.simulated_asi_transitions.append("Idle")
                     self.start_asi_scan_after_camera_sequence = True
+                    self._remember_tile_setup_event(event)
                     return
                 # --------------------------------------------------------#
                 # Setup PLC controller for TTL output to stage sync signal
@@ -1160,8 +1183,30 @@ class OPMEngineV2(MDAEngine):
                 )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
+            self._remember_tile_setup_event(event)
         else:
             super().setup_event(event)
+
+    def _remember_tile_setup_event(self, event: MDAEvent) -> None:
+        """Retain the successful software setup needed to restart one tile."""
+        if not hasattr(self, "_tile_setup_events"):
+            # Supports narrowly constructed engine instances used by hardware
+            # adapter tests without weakening normal __init__ state.
+            self._tile_setup_events = {}
+        action = event.action
+        if not isinstance(action, CustomAction):
+            return
+        if action.name == ACTION_STAGE_MOVE:
+            self._tile_setup_events = {
+                ACTION_STAGE_MOVE: event.model_copy(deep=True)
+            }
+        elif action.name == ACTION_DAQ:
+            self._tile_setup_events[ACTION_DAQ] = event.model_copy(deep=True)
+            self._tile_setup_events.pop(ACTION_ASI_SETUP_SCAN, None)
+        elif action.name == ACTION_ASI_SETUP_SCAN:
+            self._tile_setup_events[ACTION_ASI_SETUP_SCAN] = event.model_copy(
+                deep=True
+            )
 
     def post_sequence_started(self, event):
         """Start configured ASI hardware after the camera sequence is ready.
@@ -1313,7 +1358,142 @@ class OPMEngineV2(MDAEngine):
                         "No coefficients or positions sent.",
                     )
             return ()
+        if (
+            isinstance(event, SequencedEvent)
+            and getattr(self, "_tile_retry_prepare", None) is not None
+            and ACTION_STAGE_MOVE in self._tile_setup_events
+            and ACTION_DAQ in self._tile_setup_events
+        ):
+            return self._exec_tile_with_retry(event)
         return super().exec_event(event) or ()
+
+    def _exec_tile_with_retry(
+        self, event: SequencedEvent
+    ) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
+        """Execute one hardware-triggered tile and restart it once on timeout.
+
+        Yields
+        ------
+        tuple
+            Camera image, source event, and frame metadata payloads.
+
+        Raises
+        ------
+        TimeoutError
+            If the restarted tile also times out.
+        """
+        attempt = 0
+        while True:
+            try:
+                yield from super().exec_event(event) or ()
+                return
+            except TimeoutError:
+                if attempt >= MAX_TILE_RETRY_ATTEMPTS:
+                    warning(
+                        "OPM TILE RETRY FAILED",
+                        f"Tile: {dict(event.events[0].index)}",
+                        f"Attempts: {attempt}",
+                        "Propagating the repeated camera timeout",
+                    )
+                    raise
+                attempt += 1
+                warning(
+                    "OPM TILE ACQUISITION TIMEOUT",
+                    f"Tile: {dict(event.events[0].index)}",
+                    f"Restarting complete tile: attempt {attempt}",
+                )
+                self._restart_hardware_tile(event, attempt)
+
+    def _restart_hardware_tile(
+        self, event: SequencedEvent, attempt: int
+    ) -> None:
+        """Quiesce, recover, and completely re-arm a failed camera tile.
+
+        Raises
+        ------
+        RuntimeError
+            If no transactional storage rewrite callback is configured.
+        """
+        # The upstream timeout handler has already stopped the camera.  Stop
+        # every remaining trigger source before touching storage or moving back
+        # to the tile origin.
+        self.opmDAQ.stop_waveform_playback()
+        self.opmDAQ.clear_tasks()
+        self.opmDAQ.reset()
+        self._prepare_xy_for_point_move()
+
+        if self._tile_retry_prepare is None:  # pragma: no cover - guarded above
+            raise RuntimeError("No OPM tile-rewrite callback is configured")
+        self._tile_retry_prepare(event.events, attempt)
+
+        self._snap_camera_for_retry()
+        self.mmcore.clearCircularBuffer()
+
+        for sub_event in event.events:
+            sub_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = attempt
+        event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = attempt
+
+        # Replay the same successful setup order used by the original tile:
+        # point move, DAQ waveform programming/start, optional ASI scan setup,
+        # and finally pymmcore-plus camera-sequence loading.
+        replay_order = (
+            ACTION_STAGE_MOVE,
+            ACTION_DAQ,
+            ACTION_ASI_SETUP_SCAN,
+        )
+        replay_events = [
+            self._tile_setup_events[action_name].model_copy(deep=True)
+            for action_name in replay_order
+            if action_name in self._tile_setup_events
+        ]
+        for setup_event in replay_events:
+            self.setup_event(setup_event)
+            tuple(self.exec_event(setup_event) or ())
+        super().setup_event(event)
+
+        info(
+            "OPM TILE REARMED",
+            f"Tile: {dict(event.events[0].index)}",
+            f"Retry attempt: {attempt}",
+            "DAQ, camera, stage position, and hardware sequence restored",
+        )
+
+    def _snap_camera_for_retry(self) -> None:
+        """Acquire one internal-trigger snap to recover and verify the camera.
+
+        Exceptions from Micro-Manager are allowed to propagate so a failed
+        recovery cannot silently continue into hardware-triggered acquisition.
+        """
+        core = self.mmcore
+        camera = str(self._config["Camera"]["camera_id"])
+        if core.isSequenceRunning():
+            core.stopSequenceAcquisition()
+
+        recovery_properties = (
+            ("Trigger", "NORMAL"),
+            ("TriggerPolarity", "POSITIVE"),
+            ("TRIGGER SOURCE", "INTERNAL"),
+        )
+        for property_name, value in recovery_properties:
+            if not core.hasProperty(camera, property_name):
+                continue
+            allowed = tuple(core.getAllowedPropertyValues(camera, property_name))
+            if allowed and value not in allowed:
+                continue
+            core.setProperty(camera, property_name, value)
+            core.waitForDevice(camera)
+
+        core.clearCircularBuffer()
+        try:
+            core.snapImage()
+            core.getImage()
+        finally:
+            core.clearCircularBuffer()
+        info(
+            "OPM CAMERA RECOVERED",
+            "Direct internal-trigger snap received",
+            "Circular buffer cleared without starting GUI Live mode",
+        )
 
     def teardown_event(self, event):
         """Release per-event state after execution.
@@ -1407,4 +1587,6 @@ class OPMEngineV2(MDAEngine):
         finally:
             self._restore_stage_speeds()
             self._is_stage_explorer_preview = False
+            self._tile_setup_events = {}
+            self._tile_retry_prepare = None
             self.clear_safe_stop()

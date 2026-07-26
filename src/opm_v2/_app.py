@@ -10,6 +10,7 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
+from weakref import WeakKeyDictionary
 
 import numpy as np
 import useq
@@ -38,6 +39,7 @@ from opm_v2.engine.setup_events import (
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.hardware.mock_nidaq import MockOPMNIDAQ
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
 from opm_v2.utils.coverslip import (
@@ -288,6 +290,34 @@ def _stage_explorer_controller(stage_explorer):
     )
 
 
+def _coverslip_planes_by_roi(
+    stage_explorer,
+) -> WeakKeyDictionary[object, CoverslipPlane]:
+    """Return Explorer-owned calibration state keyed by upstream ROI identity.
+
+    Returns
+    -------
+    WeakKeyDictionary
+        Coverslip planes associated with live upstream ROI objects.
+    """
+    planes = getattr(stage_explorer, "_opm_coverslip_planes_by_roi", None)
+    if planes is None:
+        planes = WeakKeyDictionary()
+        stage_explorer._opm_coverslip_planes_by_roi = planes
+    return planes
+
+
+def _coverslip_plane_for_roi(stage_explorer, roi) -> CoverslipPlane | None:
+    """Return the plane calibrated for one Stage Explorer ROI.
+
+    Returns
+    -------
+    CoverslipPlane or None
+        Plane associated with the ROI, when it has been calibrated.
+    """
+    return _coverslip_planes_by_roi(stage_explorer).get(roi)
+
+
 def _update_coverslip_point_visual(stage_explorer) -> None:
     """Show the active coverslip focus points on the Explorer canvas."""
     points = stage_explorer._opm_coverslip_points
@@ -422,7 +452,7 @@ def _fit_coverslip_calibration(stage_explorer) -> None:
     except ValueError as exc:
         controller.warning("COVERSLIP PLANE", str(exc))
         return
-    roi._opm_coverslip_plane = plane
+    _coverslip_planes_by_roi(stage_explorer)[roi] = plane
     left, top, right, bottom = roi.bbox()
     corner_z = [
         plane.z_at(x_um, y_um)
@@ -445,9 +475,9 @@ def _clear_coverslip_calibration(stage_explorer) -> None:
     targets = stage_explorer.roi_manager.selected_rois()
     if not targets and stage_explorer._opm_coverslip_target_roi is not None:
         targets = [stage_explorer._opm_coverslip_target_roi]
+    planes_by_roi = _coverslip_planes_by_roi(stage_explorer)
     for roi in targets:
-        if hasattr(roi, "_opm_coverslip_plane"):
-            del roi._opm_coverslip_plane
+        planes_by_roi.pop(roi, None)
     stage_explorer._opm_coverslip_target_roi = None
     stage_explorer._opm_coverslip_points = []
     _update_coverslip_point_visual(stage_explorer)
@@ -458,6 +488,7 @@ def _clear_coverslip_calibration(stage_explorer) -> None:
 
 def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
     """Add coverslip-plane calibration actions to one Explorer toolbar."""
+    _coverslip_planes_by_roi(stage_explorer)
     if hasattr(stage_explorer, "_opm_coverslip_points"):
         return
     stage_explorer._opm_coverslip_points = []
@@ -555,7 +586,7 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
         overlap=overlap,
         mode=mode,
     )
-    plane = getattr(roi, "_opm_coverslip_plane", None)
+    plane = _coverslip_plane_for_roi(stage_explorer, roi)
     if position.sequence and position.sequence.grid_plan:
         return _position_with_coverslip_plane(position, plane)
 
@@ -627,12 +658,6 @@ def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
             accelerated[event_key] = 4.0 * point_move_speed
 
     return accelerated
-
-
-def _stage_explorer_mouse_double_click(stage_explorer, event) -> None:
-    """Equalize XY point-move speeds, then delegate move-and-snap upstream."""
-    _equalize_stage_explorer_xy_speed(stage_explorer._mmc)
-    stage_explorer._opm_original_on_mouse_double_click(event)
 
 
 def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
@@ -798,7 +823,7 @@ def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
     roi_model = stage_explorer.roi_manager.roi_model
     for row in range(roi_model.rowCount()):
         roi = roi_model.index(row).internalPointer()
-        plane = getattr(roi, "_opm_coverslip_plane", None)
+        plane = _coverslip_plane_for_roi(stage_explorer, roi)
         position = roi.create_useq_position(
             fov_w,
             fov_h,
@@ -878,6 +903,16 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     if stage_explorer is None or mda_widget is None:
         return
     stage_explorer._opm_controller = getattr(stage_explorer.window(), "opm_controller", None)
+    try:
+        _equalize_stage_explorer_xy_speed(stage_explorer._mmc)
+    except Exception as exc:
+        controller = stage_explorer._opm_controller
+        if controller is not None:
+            controller.warning(
+                "STAGE EXPLORER MOVE SPEED",
+                f"Could not set X point-move speed equal to Y: {exc}",
+                "Upstream double-click movement remains available.",
+            )
     _install_stage_explorer_coverslip_controls(stage_explorer)
 
     def _on_send_to_mda(positions: list, clear: bool) -> None:
@@ -958,7 +993,6 @@ def _install_stage_explorer_export_compatibility() -> None:
     method_patches = {
         "_fov_w_h": _stage_explorer_world_fov_w_h,
         "_on_frame_ready": _stage_explorer_on_frame_ready,
-        "_on_mouse_double_click": _stage_explorer_mouse_double_click,
         "_on_pixel_size_affine_changed": _refresh_stage_explorer_pixel_affine,
         "_on_pixel_size_changed": _refresh_stage_explorer_pixel_size,
         "_on_roi_changed": _update_stage_explorer_transformed_fov,
@@ -1383,7 +1417,8 @@ class OPMAppController:
         # NIDAQ
         # ------------------------------------------------------------------------------#
 
-        self.opm_nidaq = OPMNIDAQ(
+        daq_type = MockOPMNIDAQ if self.simulate_hardware else OPMNIDAQ
+        self.opm_nidaq = daq_type(
             name=str(self.config["NIDAQ"]["name"]),
             scan_type=str(self.config["NIDAQ"]["scan_type"]),
             exposure_ms=float(self.config["Camera"]["exposure_ms"]),
@@ -1404,7 +1439,6 @@ class OPMAppController:
                 str(self.config["NIDAQ"]["image_mirror_step_um"])
             ),
             verbose=bool(self.config["NIDAQ"]["verbose"]),
-            simulate=self.simulate_hardware,
         )
         self.opm_nidaq.reset()
 
@@ -2106,6 +2140,9 @@ class OPMAppController:
             handler.set_finish_reason_getter(
                 lambda: self.mmc.mda.status.finish_reason
             )
+            self.opm_engine.set_tile_retry_prepare(handler.prepare_tile_retry)
+        else:
+            self.opm_engine.set_tile_retry_prepare(None)
 
         if opm_events is None:
             self.warning("ACQUISITION NOT STARTED", "OPM events are empty")

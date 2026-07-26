@@ -12,6 +12,7 @@ from opm_v2.utils.position_tools import (
     covering_tile_origins,
     expand_stage_positions_for_depth,
     lab2cam,
+    nearest_ao_grid_indices,
     oblique_camera_extents_um,
     sample_depth_levels_um,
     split_stage_scan_bounds,
@@ -53,6 +54,62 @@ def test_single_position_ao_grid_does_not_invent_an_xy_offset() -> None:
     )
 
     assert targets == [{"x": 100.0, "y": 200.0, "z": 50.0}]
+
+
+@pytest.mark.parametrize(
+    ("z_slope_x", "z_slope_y"),
+    (
+        (0.0, 0.0),
+        (0.01, 0.0),
+        (0.0, -0.02),
+        (0.03, -0.02),
+    ),
+    ids=("flat", "x-tilt", "y-tilt", "xy-tilt"),
+)
+def test_nearest_ao_grid_indices_partition_positions_in_xy(
+    z_slope_x: float,
+    z_slope_y: float,
+) -> None:
+    """Assign the same lateral AO regions regardless of surface Z geometry."""
+    stage_positions = [
+        {
+            "x": x,
+            "y": y,
+            "z": 45.0 + z_slope_x * x + z_slope_y * y,
+        }
+        for x in (100.0, 150.0, 200.0)
+        for y in (300.0, 400.0, 500.0)
+    ]
+    ao_positions = ao_grid_positions(
+        stage_positions,
+        num_scan_positions=3,
+        num_tile_positions=3,
+    )
+
+    assignments = nearest_ao_grid_indices(stage_positions, ao_positions)
+
+    np.testing.assert_array_equal(
+        assignments,
+        [0, 3, 6, 1, 4, 7, 2, 5, 8],
+    )
+
+
+@pytest.mark.parametrize(
+    ("stage_positions", "ao_positions", "message"),
+    (
+        ([], [{"x": 0.0, "y": 0.0, "z": 0.0}], "acquisition"),
+        ([{"x": 0.0, "y": 0.0, "z": 0.0}], [], "AO-grid"),
+    ),
+    ids=("no-acquisition-positions", "no-ao-positions"),
+)
+def test_nearest_ao_grid_indices_require_both_position_sets(
+    stage_positions: list[dict[str, float]],
+    ao_positions: list[dict[str, float]],
+    message: str,
+) -> None:
+    """Reject undefined AO-region assignments before numerical work."""
+    with pytest.raises(ValueError, match=message):
+        nearest_ao_grid_indices(stage_positions, ao_positions)
 
 
 def test_lab_camera_transforms_match_processing_axis_convention() -> None:
@@ -111,40 +168,91 @@ def test_mirror_tiling_uses_scan_plane_footprint() -> None:
     )
 
 
-def test_stage_split_matches_main_overlap_rule() -> None:
-    """Add the camera axial footprint to the configured extra overlap."""
-    configured_overlap_um = 30.0
-    starts, ends, effective_overlap_um, camera_z_extent_um = (
+@pytest.mark.parametrize(
+    ("camera_crop_y", "pixel_size_um", "angle_deg", "configured_overlap_um"),
+    (
+        (386, 0.115, 30.0, 30.0),
+        (512, 0.115, 30.0, 20.0),
+        (256, 0.2, 45.0, 12.0),
+    ),
+    ids=("standard-roi", "large-roi", "forty-five-degrees"),
+)
+def test_stage_split_preserves_fully_sampled_scan_overlap(
+    camera_crop_y: int,
+    pixel_size_um: float,
+    angle_deg: float,
+    configured_overlap_um: float,
+) -> None:
+    """Leave the configured overlap after accounting for the deskew footprint."""
+    starts, ends, effective_overlap_um, camera_scan_extent_um = (
         split_stage_scan_bounds(
-        0.0,
-        250.0,
-        100.0,
-        configured_overlap_um,
-        386,
-        0.115,
-        30.0,
+            0.0,
+            250.0,
+            100.0,
+            configured_overlap_um,
+            camera_crop_y,
+            pixel_size_um,
+            angle_deg,
         )
     )
 
     assert starts[0] == pytest.approx(0.0)
     assert ends[-1] == pytest.approx(250.0)
-    assert camera_z_extent_um == pytest.approx(386 * 0.115 * np.sin(np.pi / 6))
+    assert camera_scan_extent_um == pytest.approx(
+        camera_crop_y * pixel_size_um * np.cos(np.deg2rad(angle_deg))
+    )
     assert effective_overlap_um == pytest.approx(
-        camera_z_extent_um + configured_overlap_um
+        camera_scan_extent_um + configured_overlap_um
     )
     assert np.diff(starts) == pytest.approx(np.diff(ends))
     assert len(starts) == int(np.ceil(250.0 / 100.0))
-    assert ends[:-1] - starts[1:] == pytest.approx(
-        [effective_overlap_um, effective_overlap_um]
+    raw_overlaps_um = ends[:-1] - starts[1:]
+    assert raw_overlaps_um == pytest.approx(
+        np.full(len(starts) - 1, effective_overlap_um)
+    )
+    assert raw_overlaps_um - camera_scan_extent_um == pytest.approx(
+        np.full(len(starts) - 1, configured_overlap_um)
     )
 
 
-def test_sample_depth_levels_cover_requested_thickness() -> None:
-    """Insert enough slab centers to maintain the requested axial overlap."""
-    levels = sample_depth_levels_um(0.0, 40.0, 22.195, 0.2)
+@pytest.mark.parametrize(
+    ("start_um", "end_um", "footprint_um", "overlap_fraction", "count"),
+    (
+        (0.0, 50.0, 512 * 0.115 * 0.5, 0.15, 2),
+        (0.0, 40.0, 22.195, 0.2, 3),
+        (10.0, 20.0, 22.195, 0.2, 1),
+        (5.0, 5.0, 22.195, 0.2, 1),
+    ),
+    ids=("fifty-micron-volume", "multiple-slabs", "one-slab", "single-level"),
+)
+def test_sample_depth_levels_cover_requested_bounds(
+    start_um: float,
+    end_um: float,
+    footprint_um: float,
+    overlap_fraction: float,
+    count: int,
+) -> None:
+    """Cover the bounded thickness without adding a slab at the deep edge."""
+    levels = sample_depth_levels_um(
+        start_um,
+        end_um,
+        footprint_um,
+        overlap_fraction,
+    )
 
-    assert levels == pytest.approx([0.0, 40 / 3, 80 / 3, 40.0])
-    assert float(np.max(np.diff(levels))) <= 22.195 * 0.8 + 1e-12
+    assert len(levels) == count
+    assert levels[0] == pytest.approx(start_um)
+    if end_um - start_um > footprint_um:
+        assert levels[-1] + footprint_um == pytest.approx(end_um)
+        assert float(np.max(np.diff(levels))) <= (
+            footprint_um * (1.0 - overlap_fraction) + 1e-12
+        )
+
+
+def test_sample_depth_bounds_must_increase_into_sample() -> None:
+    """Reject reversed biological-depth bounds instead of silently overscanning."""
+    with pytest.raises(ValueError, match="end must be greater"):
+        sample_depth_levels_um(50.0, 0.0, 22.195, 0.2)
 
 
 def test_sample_depth_expansion_is_depth_major_and_orientation_aware() -> None:

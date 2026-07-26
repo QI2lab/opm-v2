@@ -171,7 +171,7 @@
             "readout_ms": 4.868,
             "metric_precision": 6,
             "modes_to_optimize": "spherical first",
-            "metric_acceptance": "zero",
+            "metric_acceptance": "optimal",
             "num_averaged_frames": 1,
             "mode_accept": "zero",
             "time_interval": 6,
@@ -187,8 +187,8 @@
                 false
             ],
             "channel_powers": [
-                30.0,
-                30.0,
+                20.0,
+                20.0,
                 30.0,
                 30.0,
                 0

@@ -9,6 +9,7 @@ from typing import Any
 import numpy as np
 
 COVERSLIP_METADATA_KEY = "opm_coverslip_plane"
+COVERSLIP_METADATA_VERSION = 1
 
 
 @dataclass(frozen=True)
@@ -46,6 +47,7 @@ class CoverslipPlane:
             Plane parameters and original fit points.
         """
         return {
+            "schema_version": COVERSLIP_METADATA_VERSION,
             "type": "plane",
             "origin_um": {
                 "x": self.origin_x_um,
@@ -72,6 +74,17 @@ class CoverslipPlane:
         ValueError
             If required plane fields are absent or invalid.
         """
+        try:
+            schema_version = int(
+                value.get("schema_version", COVERSLIP_METADATA_VERSION)
+            )
+        except (TypeError, ValueError) as exc:
+            raise ValueError("Invalid coverslip plane schema version") from exc
+        if schema_version != COVERSLIP_METADATA_VERSION:
+            raise ValueError(
+                "Unsupported coverslip plane schema version "
+                f"{schema_version}; expected {COVERSLIP_METADATA_VERSION}"
+            )
         if value.get("type", "plane") != "plane":
             raise ValueError("Only planar coverslip calibration is supported")
         origin = value.get("origin_um")

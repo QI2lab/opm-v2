@@ -18,7 +18,7 @@ from scipy.fft import dct
 from scipy.ndimage import center_of_mass, laplace
 from scipy.optimize import curve_fit
 
-from opm_v2.utils.position_tools import ao_grid_positions
+from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
 
 try:
     from opm_v2.hardware.AOMirror import AOMirror
@@ -2271,10 +2271,6 @@ def run_ao_grid_mapping(
             "AO grid position indices must match the number of stage positions"
         )
 
-    stage_positions_array = np.asarray(
-        [(pos["z"], pos["y"], pos["x"]) for pos in stage_positions],
-        dtype=float,
-    )
     ao_stage_positions = ao_grid_positions(
         stage_positions,
         num_scan_positions=num_scan_positions,
@@ -2378,43 +2374,11 @@ def run_ao_grid_mapping(
     # Map ao_grid_wfc_coeffs to experiment stage positions.
     position_wfc_coeffs = AOMirror_local.positions_modal_array.copy()
     position_wfc_positions = AOMirror_local.positions_voltage_array.copy()
-    ao_stage_positions_array = np.array([
-        (pos["z"], pos["y"], pos["x"]) for pos in ao_stage_positions
-    ])
-    stage_positions_array = np.array([
-        (pos["z"], pos["y"], pos["x"]) for pos in stage_positions
-    ])
-
-    for local_pos_idx, (stage_z, stage_y, stage_x) in enumerate(
-        stage_positions_array
-    ):
-        # Get matching target ao positions
-        target_z = ao_stage_positions_array[:, 0][
-            int(np.argmin(np.abs(stage_z - ao_stage_positions_array[:, 0])))
-        ]
-        target_y = ao_stage_positions_array[:, 1][
-            int(np.argmin(np.abs(stage_y - ao_stage_positions_array[:, 1])))
-        ]
-        target_x = ao_stage_positions_array[:, 2][
-            int(np.argmin(np.abs(stage_x - ao_stage_positions_array[:, 2])))
-        ]
-
-        # Find AO positions with matching z and y
-        candidates = ao_stage_positions_array[
-            (ao_stage_positions_array[:, 0] == target_z)
-            & (ao_stage_positions_array[:, 1] == target_y)
-            & (ao_stage_positions_array[:, 2] >= target_x)  # AO x must be >= stage x
-        ]
-
-        # Compute distances
-        distances = np.linalg.norm(candidates - [target_z, stage_y, stage_x], axis=1)
-        best_candidate_idx = np.argmin(distances)
-        ao_grid_idx = np.where(
-            (ao_stage_positions_array[:, 0] == candidates[best_candidate_idx][0])
-            & (ao_stage_positions_array[:, 1] == candidates[best_candidate_idx][1])
-            & (ao_stage_positions_array[:, 2] == candidates[best_candidate_idx][2])
-        )[0][0]
-
+    ao_grid_indices = nearest_ao_grid_indices(
+        stage_positions,
+        ao_stage_positions,
+    )
+    for local_pos_idx, ao_grid_idx in enumerate(ao_grid_indices):
         # Assign AO data
         pos_idx = int(position_indices[local_pos_idx])
         position_wfc_positions[pos_idx] = ao_grid_wfc_positions[ao_grid_idx]

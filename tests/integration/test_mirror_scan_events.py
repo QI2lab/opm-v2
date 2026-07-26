@@ -120,13 +120,16 @@ def test_mirror_retiles_stage_explorer_region_in_physical_stage_axes(
     )
     image_events, _ = split_events(events)
 
-    # Match main: the 4 um mirror sweep and 15% overlap determine that three
-    # positions are needed, then the requested 8 um interval is divided evenly.
     x_positions = sorted({event.x_pos for event in image_events})
-    assert x_positions == pytest.approx([100.0, 102.67, 105.34])
-    assert [right - left for left, right in zip(x_positions, x_positions[1:])] == (
-        pytest.approx([2.67, 2.67])
-    )
+    scan_footprint_um = config["acq_config"]["DAQ"]["scan_range_um"]
+    overlap_fraction = config["acq_config"]["Positions"]["scan_axis_overlap"]
+    maximum_stride_um = scan_footprint_um * (1.0 - overlap_fraction)
+    strides_um = np.diff(x_positions)
+    assert x_positions[0] == pytest.approx(100.0)
+    assert x_positions[-1] <= 108.0
+    assert x_positions[-1] + scan_footprint_um >= 108.0
+    assert np.all(strides_um > 0)
+    assert np.max(strides_um) <= maximum_stride_um + 0.01
     assert {event.y_pos for event in image_events} == {200.0}
     assert {event.z_pos for event in image_events} == {9.0}
     assert handler.index_sizes == {"t": 1, "p": 3, "c": 1, "z": 2}

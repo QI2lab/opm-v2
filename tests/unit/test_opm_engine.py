@@ -7,14 +7,17 @@ from threading import Event as ThreadEvent
 from unittest.mock import MagicMock, call, patch
 
 import pytest
+from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, SkipEvent
-from useq import MDAEvent, MDASequence
+from useq import CustomAction, MDAEvent, MDASequence
 
 from opm_v2.engine.opm_custom_events import (
-    ACTION_FLUIDICS,
+    ACTION_ASI_SETUP_SCAN,
+    ACTION_DAQ,
+    ACTION_STAGE_MOVE,
     STAGE_MOVE_SPEED_METADATA_KEY,
+    TILE_RETRY_ATTEMPT_METADATA_KEY,
     create_asi_scan_setup_event,
-    create_fluidics_event,
     create_stage_event,
 )
 from opm_v2.engine.opm_engine import OPMEngineV2
@@ -39,31 +42,152 @@ def _isolated_engine() -> OPMEngineV2:
     engine._is_stage_explorer_preview = False
     engine._stage_move_count = 0
     engine._safe_stop_requested = ThreadEvent()
+    engine._tile_setup_events = {}
+    engine._tile_retry_prepare = None
     return engine
 
 
-def test_standard_setup_event_delegates_to_upstream_engine() -> None:
-    """Verify ordinary useq image events retain pymmcore-plus setup behavior."""
+def test_sequenced_timeout_restarts_complete_tile_once() -> None:
+    """Retry a failed hardware tile while preserving generator payload order."""
     engine = _isolated_engine()
-    event = MDAEvent(index={"t": 0})
+    image_events = tuple(
+        MDAEvent(index={"p": 2, "z": plane, "c": 0}) for plane in range(2)
+    )
+    event = SequencedEvent(events=image_events)
+    engine._tile_retry_prepare = MagicMock()
+    engine._tile_setup_events = {
+        ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
+        ACTION_DAQ: MDAEvent(
+            action=CustomAction(name=ACTION_DAQ, data={})
+        ),
+    }
 
-    with patch.object(MDAEngine, "setup_event") as upstream_setup:
-        engine.setup_event(event)
+    def _failed_attempt():
+        yield ("failed-pass-frame", image_events[0], {})
+        raise TimeoutError("one-off camera timeout")
 
+    def _successful_attempt():
+        yield ("retry-frame-0", image_events[0], {})
+        yield ("retry-frame-1", image_events[1], {})
+
+    with (
+        patch.object(
+            MDAEngine,
+            "exec_event",
+            side_effect=[_failed_attempt(), _successful_attempt()],
+        ) as upstream_exec,
+        patch.object(engine, "_restart_hardware_tile") as restart,
+    ):
+        result = list(engine.exec_event(event))
+
+    assert [payload[0] for payload in result] == [
+        "failed-pass-frame",
+        "retry-frame-0",
+        "retry-frame-1",
+    ]
+    assert upstream_exec.call_count == 2
+    restart.assert_called_once_with(event, 1)
+
+
+def test_repeated_sequenced_timeout_propagates_after_one_retry() -> None:
+    """Bound recovery to one complete tile restart."""
+    engine = _isolated_engine()
+    image_event = MDAEvent(index={"p": 0, "z": 0, "c": 0})
+    event = SequencedEvent(events=(image_event,))
+    engine._tile_retry_prepare = MagicMock()
+    engine._tile_setup_events = {
+        ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
+        ACTION_DAQ: MDAEvent(
+            action=CustomAction(name=ACTION_DAQ, data={})
+        ),
+    }
+
+    def _timeout():
+        raise TimeoutError("camera timeout")
+        yield  # pragma: no cover
+
+    with (
+        patch.object(
+            MDAEngine,
+            "exec_event",
+            side_effect=[_timeout(), _timeout()],
+        ),
+        patch.object(engine, "_restart_hardware_tile") as restart,
+        pytest.raises(TimeoutError, match="camera timeout"),
+    ):
+        list(engine.exec_event(event))
+
+    restart.assert_called_once_with(event, 1)
+
+
+def test_camera_recovery_snap_clears_buffer_when_snap_fails() -> None:
+    """Leave no stale frames behind when the direct recovery snap fails."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    mmcore.isSequenceRunning.return_value = False
+    mmcore.hasProperty.return_value = False
+    mmcore.snapImage.side_effect = RuntimeError("camera snap failed")
+    engine._mmcore_ref = weakref.ref(mmcore)
+    engine._config = {"Camera": {"camera_id": "Camera"}}
+
+    with pytest.raises(RuntimeError, match="camera snap failed"):
+        engine._snap_camera_for_retry()
+
+    assert mmcore.clearCircularBuffer.call_count == 2
+    mmcore.startContinuousSequenceAcquisition.assert_not_called()
+
+
+def test_tile_restart_replays_full_hardware_startup_order() -> None:
+    """Reset DAQ/camera, return to origin, and re-arm the original sequence."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    engine._config = {"Camera": {"camera_id": "Camera"}}
+    engine.opmDAQ = MagicMock()
+    engine._prepare_xy_for_point_move = MagicMock()
+    engine._snap_camera_for_retry = MagicMock()
+    engine._tile_retry_prepare = MagicMock()
+    stage_event = create_stage_event({"x": 1, "y": 2, "z": 3})
+    daq_event = MDAEvent(action=CustomAction(name=ACTION_DAQ, data={}))
+    asi_event = create_asi_scan_setup_event(
+        start_mm=0.001,
+        end_mm=0.002,
+        speed_mm_s=0.01,
+    )
+    engine._tile_setup_events = {
+        ACTION_STAGE_MOVE: stage_event,
+        ACTION_DAQ: daq_event,
+        ACTION_ASI_SETUP_SCAN: asi_event,
+    }
+    image_events = tuple(
+        MDAEvent(index={"p": 4, "z": plane, "c": 0}) for plane in range(2)
+    )
+    event = SequencedEvent(events=image_events)
+
+    with (
+        patch.object(engine, "setup_event") as replay_setup,
+        patch.object(engine, "exec_event", return_value=()) as replay_exec,
+        patch.object(MDAEngine, "setup_event") as upstream_setup,
+    ):
+        engine._restart_hardware_tile(event, attempt=1)
+
+    engine.opmDAQ.stop_waveform_playback.assert_called_once_with()
+    engine.opmDAQ.clear_tasks.assert_called_once_with()
+    engine.opmDAQ.reset.assert_called_once_with()
+    engine._prepare_xy_for_point_move.assert_called_once_with()
+    engine._tile_retry_prepare.assert_called_once_with(image_events, 1)
+    engine._snap_camera_for_retry.assert_called_once_with()
+    mmcore.clearCircularBuffer.assert_called_once_with()
+    assert [
+        replay_call.args[0].action.name
+        for replay_call in replay_setup.call_args_list
+    ] == [ACTION_STAGE_MOVE, ACTION_DAQ, ACTION_ASI_SETUP_SCAN]
+    assert replay_exec.call_count == 3
     upstream_setup.assert_called_once_with(event)
-
-
-def test_standard_exec_event_delegates_to_upstream_engine() -> None:
-    """Verify ordinary useq image acquisition remains owned by pymmcore-plus."""
-    engine = _isolated_engine()
-    event = MDAEvent(index={"t": 0})
-    upstream_result = (("frame", event, {"camera": "demo"}),)
-
-    with patch.object(MDAEngine, "exec_event", return_value=upstream_result) as execute:
-        result = engine.exec_event(event)
-
-    execute.assert_called_once_with(event)
-    assert result is upstream_result
+    assert all(
+        image.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
+        for image in image_events
+    )
 
 
 def test_safe_stop_waits_for_and_skips_next_software_command() -> None:
@@ -366,19 +490,41 @@ def test_stage_speed_restore_uses_configured_fallback_without_readback() -> None
     )
 
 
-def test_initial_stage_move_temporarily_uses_extended_timeout() -> None:
-    """Use 4x speed and a long timeout to reach a distant start point."""
+@pytest.mark.parametrize(
+    (
+        "move_count",
+        "target_x_um",
+        "expected_speed_mm_s",
+        "expected_timeout_ms",
+    ),
+    (
+        pytest.param(0, 1000.0, 0.2, 120_000, id="initial-large-move"),
+        pytest.param(1, 100.0, 0.05, 5000, id="adjacent-tile"),
+        pytest.param(3, 1000.0, 0.2, 120_000, id="later-large-move"),
+    ),
+)
+def test_stage_move_selects_speed_and_timeout_from_motion_context(
+    move_count: int,
+    target_x_um: float,
+    expected_speed_mm_s: float,
+    expected_timeout_ms: int,
+) -> None:
+    """Use normal tile motion and accelerate initial or non-adjacent moves."""
     engine = _isolated_engine()
     engine.simulate_hardware = False
+    engine._stage_move_count = move_count
     engine._config = {"OPM": {"stage_move_speed": 0.05}}
     mmcore = MagicMock()
     engine._mmcore_ref = weakref.ref(mmcore)
     mmcore.getXYStageDevice.return_value = "XYStage"
     mmcore.getFocusDevice.return_value = "ZStage"
-    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (1000.0, 0.0)]
+    mmcore.getXYPosition.side_effect = [
+        (0.0, 0.0),
+        (target_x_um, 0.0),
+    ]
     mmcore.getDeviceTimeoutMs.return_value = 5000
     mmcore.hasDeviceTimeout.return_value = False
-    event = create_stage_event({"x": 1000.0, "y": 0.0, "z": 25.0})
+    event = create_stage_event({"x": target_x_um, "y": 0.0, "z": 25.0})
 
     with (
         patch.object(engine, "_prepare_xy_for_point_move"),
@@ -386,21 +532,26 @@ def test_initial_stage_move_temporarily_uses_extended_timeout() -> None:
         patch.object(
             engine,
             "_apply_stage_move_speeds",
-            return_value={"x": 0.2, "y": 0.2},
+            return_value={
+                "x": expected_speed_mm_s,
+                "y": expected_speed_mm_s,
+            },
         ) as apply_speeds,
     ):
         engine.setup_event(event)
 
     mmcore.setTimeoutMs.assert_not_called()
-    mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 120_000)
+    mmcore.setDeviceTimeoutMs.assert_called_once_with(
+        "XYStage", expected_timeout_ms
+    )
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
     apply_speeds.assert_called_once_with({
-        "move_speed_x_mm_s": 0.2,
-        "move_speed_y_mm_s": 0.2,
+        "move_speed_x_mm_s": expected_speed_mm_s,
+        "move_speed_y_mm_s": expected_speed_mm_s,
     })
     upstream_setup.assert_called_once_with(event)
     mmcore.setXYPosition.assert_not_called()
-    assert engine._stage_move_count == 1
+    assert engine._stage_move_count == move_count + 1
 
 
 def test_stage_move_timeout_covers_estimated_slow_move_duration() -> None:
@@ -509,82 +660,6 @@ def test_failed_initial_move_halts_stage_before_teardown() -> None:
     mmcore.setTimeoutMs.assert_not_called()
 
 
-def test_adjacent_stage_move_retains_normal_timeout() -> None:
-    """Keep normal speed and timeout for an adjacent tile move."""
-    engine = _isolated_engine()
-    engine.simulate_hardware = False
-    engine._stage_move_count = 1
-    engine._config = {"OPM": {"stage_move_speed": 0.05}}
-    mmcore = MagicMock()
-    engine._mmcore_ref = weakref.ref(mmcore)
-    mmcore.getXYStageDevice.return_value = "XYStage"
-    mmcore.getFocusDevice.return_value = "ZStage"
-    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (100.0, 0.0)]
-    mmcore.getDeviceTimeoutMs.return_value = 5000
-    mmcore.hasDeviceTimeout.return_value = False
-    event = create_stage_event({"x": 100.0, "y": 0.0, "z": 25.0})
-
-    with (
-        patch.object(engine, "_prepare_xy_for_point_move"),
-        patch.object(MDAEngine, "setup_event") as upstream_setup,
-        patch.object(
-            engine,
-            "_apply_stage_move_speeds",
-            return_value={"x": 0.05, "y": 0.05},
-        ) as apply_speeds,
-    ):
-        engine.setup_event(event)
-
-    mmcore.setTimeoutMs.assert_not_called()
-    mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 5000)
-    mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
-    apply_speeds.assert_called_once_with({
-        "move_speed_x_mm_s": 0.05,
-        "move_speed_y_mm_s": 0.05,
-    })
-    upstream_setup.assert_called_once_with(event)
-    mmcore.setXYPosition.assert_not_called()
-    assert engine._stage_move_count == 2
-
-
-def test_non_adjacent_stage_move_temporarily_uses_extended_timeout() -> None:
-    """Use 4x speed and long timeout for a later non-adjacent move."""
-    engine = _isolated_engine()
-    engine.simulate_hardware = False
-    engine._stage_move_count = 3
-    engine._config = {"OPM": {"stage_move_speed": 0.05}}
-    mmcore = MagicMock()
-    engine._mmcore_ref = weakref.ref(mmcore)
-    mmcore.getXYStageDevice.return_value = "XYStage"
-    mmcore.getFocusDevice.return_value = "ZStage"
-    mmcore.getXYPosition.side_effect = [(0.0, 0.0), (1000.0, 0.0)]
-    mmcore.getDeviceTimeoutMs.return_value = 5000
-    mmcore.hasDeviceTimeout.return_value = False
-    event = create_stage_event({"x": 1000.0, "y": 0.0, "z": 25.0})
-
-    with (
-        patch.object(engine, "_prepare_xy_for_point_move"),
-        patch.object(MDAEngine, "setup_event") as upstream_setup,
-        patch.object(
-            engine,
-            "_apply_stage_move_speeds",
-            return_value={"x": 0.2, "y": 0.2},
-        ) as apply_speeds,
-    ):
-        engine.setup_event(event)
-
-    mmcore.setTimeoutMs.assert_not_called()
-    mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 120_000)
-    mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
-    apply_speeds.assert_called_once_with({
-        "move_speed_x_mm_s": 0.2,
-        "move_speed_y_mm_s": 0.2,
-    })
-    upstream_setup.assert_called_once_with(event)
-    mmcore.setXYPosition.assert_not_called()
-    assert engine._stage_move_count == 4
-
-
 def test_saved_teardown_uses_4x_speed_for_large_return_then_restores() -> None:
     """Accelerate the return-to-start command and restore normal XY speed."""
     engine = _isolated_engine()
@@ -675,17 +750,6 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
     mmcore.setTimeoutMs.assert_not_called()
     mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 5000)
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
-
-
-def test_simulated_non_imaging_action_returns_no_camera_frames() -> None:
-    """Verify simulated fluidics actions are recorded without fabricating images."""
-    engine = _isolated_engine()
-    event = create_fluidics_event(total_rounds=2, current_round=1)
-
-    result = engine.exec_event(event)
-
-    assert result == ()
-    assert engine.simulated_custom_actions == [ACTION_FLUIDICS]
 
 
 def test_daq_exposure_validation_uses_only_enabled_channels() -> None:

@@ -25,6 +25,7 @@ from useq import AbsolutePosition, CustomAction, GridFromEdges, MDAEvent, MDASeq
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.APump import APump
 from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.hardware.mock_nidaq import MockOPMNIDAQ
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
 from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
@@ -250,12 +251,12 @@ class SimulatedAcquisitionHardware:
     ----------
     mirror : AOMirror
         Singleton-backed simulated adaptive-optics mirror.
-    daq : OPMNIDAQ
+    daq : MockOPMNIDAQ
         Singleton-backed simulated waveform controller.
     """
 
     mirror: AOMirror
-    daq: OPMNIDAQ
+    daq: MockOPMNIDAQ
 
 
 @dataclass(frozen=True)
@@ -806,7 +807,7 @@ def simulated_acquisition_hardware() -> SimulatedAcquisitionHardware:
     """
     hardware = SimulatedAcquisitionHardware(
         mirror=AOMirror(simulate=True),
-        daq=OPMNIDAQ(simulate=True),
+        daq=MockOPMNIDAQ(),
     )
     assert AOMirror.instance() is hardware.mirror
     assert OPMNIDAQ.instance() is hardware.daq

@@ -44,7 +44,9 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
             "acq_config": {
                 "Positions": {
                     "sample_depth_start_um": 0.0,
-                    "sample_depth_end_um": 1.0,
+                    # This bound is slightly thicker than one simulated
+                    # camera footprint in every parameterized OPM mode.
+                    "sample_depth_end_um": 17.0,
                 }
             }
         },
@@ -86,11 +88,16 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
             surface_event.metadata["Stage"]["x_pos"]
         )
         assert depth_event.y_pos == pytest.approx(surface_event.y_pos)
+        depth_origin_um = depth_event.metadata["Stage"]["sample_depth_um"]
+        assert 0.0 < depth_origin_um < 17.0
         # On this microscope, increasing physical Z moves into the sample.
-        assert depth_event.z_pos == pytest.approx(surface_event.z_pos + 1.0)
+        assert depth_event.z_pos == pytest.approx(
+            surface_event.z_pos + depth_origin_um
+        )
         assert surface_event.metadata["Stage"]["sample_depth_um"] == 0.0
-        assert depth_event.metadata["Stage"]["sample_depth_um"] == 1.0
-        assert depth_event.metadata["Stage"]["stage_depth_offset_um"] == 1.0
+        assert depth_event.metadata["Stage"]["stage_depth_offset_um"] == pytest.approx(
+            depth_origin_um
+        )
 
 
 @pytest.mark.parametrize(
@@ -123,7 +130,9 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
                 "AO": {"ao_mode": "grid at start"},
                 "Positions": {
                     "sample_depth_start_um": 0.0,
-                    "sample_depth_end_um": 1.0,
+                    # This bound is slightly thicker than one simulated
+                    # camera footprint in every parameterized OPM mode.
+                    "sample_depth_end_um": 17.0,
                 },
             }
         },
@@ -175,8 +184,10 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
         (position.get("lab_scan_um", position["x"]), position["y"])
         for position in second_positions
     ]
+    depth_step_um = second_positions[0]["z"] - first_positions[0]["z"]
+    assert 0.0 < depth_step_um < 17.0
     assert [position["z"] for position in second_positions] == pytest.approx(
-        [position["z"] + 1.0 for position in first_positions]
+        [position["z"] + depth_step_um for position in first_positions]
     )
 
     image_event_indices_by_position: dict[int, list[int]] = {}

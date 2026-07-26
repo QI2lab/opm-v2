@@ -11,12 +11,18 @@ from useq import AbsolutePosition, GridFromEdges, MDASequence
 
 from opm_v2._app import (
     _add_coverslip_focus_point,
+    _coverslip_plane_for_roi,
     _fit_coverslip_calibration,
     _position_with_coverslip_plane,
     _start_coverslip_calibration,
 )
 from opm_v2.engine.setup_events import StageExplorerRegion, parse_mda_position_plan
-from opm_v2.utils.coverslip import CoverslipPlane, fit_coverslip_plane
+from opm_v2.utils.coverslip import (
+    COVERSLIP_METADATA_KEY,
+    COVERSLIP_METADATA_VERSION,
+    CoverslipPlane,
+    fit_coverslip_plane,
+)
 
 
 def test_coverslip_plane_fit_and_metadata_round_trip() -> None:
@@ -72,7 +78,8 @@ def test_stage_explorer_calibration_uses_standard_live_mode_and_restores() -> No
         call("OPM-live-mode", "Projection"),
     ]
     assert mmc.waitForConfig.call_args_list == mmc.setConfig.call_args_list
-    plane = roi._opm_coverslip_plane
+    plane = _coverslip_plane_for_roi(explorer, roi)
+    assert plane is not None
     assert plane.slope_x == pytest.approx(0.01)
     assert plane.slope_y == pytest.approx(-0.02)
     assert plane.z_at(50.0, 50.0) == pytest.approx(9.5)
@@ -105,8 +112,35 @@ def test_coverslip_plane_survives_nested_mda_position_serialization() -> None:
         plane,
     )
 
-    parsed = parse_mda_position_plan([position.model_dump(mode="json")])
+    restored_position = AbsolutePosition.model_validate_json(
+        position.model_dump_json()
+    )
+    metadata = restored_position.sequence.metadata
+    assert metadata[COVERSLIP_METADATA_KEY]["schema_version"] == (
+        COVERSLIP_METADATA_VERSION
+    )
+    parsed = parse_mda_position_plan([
+        restored_position.model_dump(mode="json")
+    ])
 
     assert len(parsed) == 1
     assert isinstance(parsed[0], StageExplorerRegion)
     assert parsed[0].coverslip_plane == plane
+
+
+def test_unversioned_coverslip_metadata_remains_readable() -> None:
+    """Load position files written before the plane schema was versioned."""
+    plane = CoverslipPlane(10.0, 20.0, 30.0, 0.01, -0.02)
+    payload = plane.to_metadata()
+    payload.pop("schema_version")
+
+    assert CoverslipPlane.from_metadata(payload) == plane
+
+
+def test_unknown_coverslip_metadata_version_is_rejected() -> None:
+    """Reject plane payloads that cannot be interpreted safely."""
+    payload = CoverslipPlane(10.0, 20.0, 30.0, 0.01, -0.02).to_metadata()
+    payload["schema_version"] = COVERSLIP_METADATA_VERSION + 1
+
+    with pytest.raises(ValueError, match="Unsupported coverslip plane schema"):
+        CoverslipPlane.from_metadata(payload)

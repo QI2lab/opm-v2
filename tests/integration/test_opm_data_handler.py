@@ -10,6 +10,7 @@ import numpy as np
 import pytest
 from useq import MDAEvent, MDASequence
 
+from opm_v2.engine.opm_custom_events import TILE_RETRY_ATTEMPT_METADATA_KEY
 from opm_v2.handlers.opm_data_handler import OpmDataHandler
 
 
@@ -282,3 +283,122 @@ def test_opm_data_handler_validates_order_and_sequence_lifecycle(
     canceled.sequenceFinished(sequence)
     assert canceled.was_canceled
     assert not canceled.is_finalized
+
+
+def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Replace the complete failed tile while retaining append stream order."""
+    output = workspace_tmp_path / "tile-retry.ome.zarr"
+    sequence = MDASequence()
+    events = tuple(
+        MDAEvent(
+            index={"t": 0, "p": 0, "z": plane, "c": 0},
+            exposure=5.0,
+            metadata={"DAQ": {"mode": "stage"}},
+        )
+        for plane in range(3)
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 1, "p": 1, "z": 3, "c": 1},
+        delete_existing=True,
+        acquisition_order=("t", "p", "z", "c"),
+        events=events,
+    )
+    handler.sequenceStarted(
+        sequence,
+        {
+            "image_infos": [
+                {
+                    "width": 2,
+                    "height": 2,
+                    "dtype": "uint16",
+                    "pixel_size_um": 1.0,
+                }
+            ]
+        },
+    )
+
+    # The failed pass saved the first two planes.
+    for plane, value in enumerate((1, 2)):
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            events[plane],
+            {"runner_time_ms": float(value), "exposure_ms": 5.0},
+        )
+
+    handler.prepare_tile_retry(events, attempt=1)
+
+    # The restarted hardware tile produces all three frames again.  Planes 0
+    # and 1 overwrite; plane 2 advances the append-only stream normally.
+    for plane, value in enumerate((10, 20, 30)):
+        retry_event = events[plane].model_copy(deep=True)
+        retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            retry_event,
+            {"runner_time_ms": float(value), "exposure_ms": 5.0},
+        )
+
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert array.shape == (1, 1, 3, 2, 2)
+    for plane, value in enumerate((10, 20, 30)):
+        assert np.all(array[0, 0, plane] == value)
+
+    metadata = json.loads((output / "zarr.json").read_text())
+    frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
+    assert len(frame_metadata) == 3
+    assert [item["delta_t"] for item in frame_metadata] == [0.01, 0.02, 0.03]
+    assert all(
+        item["event_metadata"][TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
+        for item in frame_metadata
+    )
+
+
+def test_tile_retry_before_first_frame_starts_stream_normally(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Retry a tile even when the failed pass produced no writable frame."""
+    output = workspace_tmp_path / "empty-first-pass.ome.zarr"
+    sequence = MDASequence()
+    event = MDAEvent(
+        index={"t": 0, "p": 0, "z": 0, "c": 0},
+        metadata={"DAQ": {"mode": "stage"}},
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 1, "p": 1, "z": 1, "c": 1},
+        delete_existing=True,
+        acquisition_order=("t", "p", "z", "c"),
+        events=(event,),
+    )
+    handler.sequenceStarted(
+        sequence,
+        {
+            "image_infos": [
+                {
+                    "width": 2,
+                    "height": 2,
+                    "dtype": "uint16",
+                    "pixel_size_um": 1.0,
+                }
+            ]
+        },
+    )
+    handler.prepare_tile_retry((event,), attempt=1)
+    retry_event = event.model_copy(deep=True)
+    retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+    handler.frameReady(
+        np.full((2, 2), 42, dtype=np.uint16),
+        retry_event,
+        {"runner_time_ms": 42.0, "exposure_ms": 5.0},
+    )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert np.all(array[0, 0, 0] == 42)
