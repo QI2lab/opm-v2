@@ -87,12 +87,14 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
         assert depth_event.metadata["Stage"]["x_pos"] == pytest.approx(
             surface_event.metadata["Stage"]["x_pos"]
         )
-        assert depth_event.y_pos == pytest.approx(surface_event.y_pos)
+        assert depth_event.metadata["Stage"]["y_pos"] == pytest.approx(
+            surface_event.metadata["Stage"]["y_pos"]
+        )
         depth_origin_um = depth_event.metadata["Stage"]["sample_depth_um"]
         assert 0.0 < depth_origin_um < 17.0
         # On this microscope, increasing physical Z moves into the sample.
-        assert depth_event.z_pos == pytest.approx(
-            surface_event.z_pos + depth_origin_um
+        assert depth_event.metadata["Stage"]["z_pos"] == pytest.approx(
+            surface_event.metadata["Stage"]["z_pos"] + depth_origin_um
         )
         assert surface_event.metadata["Stage"]["sample_depth_um"] == 0.0
         assert depth_event.metadata["Stage"]["stage_depth_offset_um"] == pytest.approx(

@@ -14,13 +14,18 @@ from useq import CustomAction, MDAEvent, MDASequence
 from opm_v2.engine.opm_custom_events import (
     ACTION_ASI_SETUP_SCAN,
     ACTION_DAQ,
+    ACTION_O2O3_AUTOFOCUS,
     ACTION_STAGE_MOVE,
     STAGE_MOVE_SPEED_METADATA_KEY,
     TILE_RETRY_ATTEMPT_METADATA_KEY,
     create_asi_scan_setup_event,
+    create_o2o3_autofocus_event,
     create_stage_event,
 )
-from opm_v2.engine.opm_engine import OPMEngineV2
+from opm_v2.engine.opm_engine import (
+    IncompleteHardwareSequenceError,
+    OPMEngineV2,
+)
 
 
 def _isolated_engine() -> OPMEngineV2:
@@ -45,6 +50,25 @@ def _isolated_engine() -> OPMEngineV2:
     engine._tile_setup_events = {}
     engine._tile_retry_prepare = None
     return engine
+
+
+def test_autofocus_setup_delegates_standard_fields_to_mda_engine() -> None:
+    """Let MDAEngine apply autofocus camera fields before custom execution."""
+    engine = _isolated_engine()
+    engine.opmDAQ = MagicMock()
+    event = create_o2o3_autofocus_event(
+        exposure_ms=10,
+        camera_center=(100, 200),
+        camera_crop=(40, 60),
+        camera_id="Camera",
+    )
+
+    with patch.object(MDAEngine, "setup_event") as upstream_setup:
+        engine.setup_event(event)
+
+    upstream_setup.assert_called_once_with(event)
+    engine.opmDAQ.reset_ao_channels.assert_called_once_with()
+    assert event.action.name == ACTION_O2O3_AUTOFOCUS
 
 
 def test_sequenced_timeout_restarts_complete_tile_once() -> None:
@@ -118,6 +142,101 @@ def test_repeated_sequenced_timeout_propagates_after_one_retry() -> None:
         list(engine.exec_event(event))
 
     restart.assert_called_once_with(event, 1)
+
+
+def test_missing_frame_sentinel_triggers_complete_tile_retry() -> None:
+    """Treat upstream missing-frame placeholders as a failed atomic tile."""
+    engine = _isolated_engine()
+    image_events = tuple(
+        MDAEvent(index={"p": 3, "z": plane, "c": 0}) for plane in range(2)
+    )
+    event = SequencedEvent(events=image_events)
+    engine._tile_retry_prepare = MagicMock()
+    engine._tile_setup_events = {
+        ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
+        ACTION_DAQ: MDAEvent(action=CustomAction(name=ACTION_DAQ, data={})),
+    }
+
+    def _incomplete_attempt():
+        yield ("failed-pass-frame", image_events[0], {})
+        yield None
+
+    def _successful_attempt():
+        yield ("retry-frame-0", image_events[0], {})
+        yield ("retry-frame-1", image_events[1], {})
+
+    with (
+        patch.object(
+            MDAEngine,
+            "exec_event",
+            side_effect=[_incomplete_attempt(), _successful_attempt()],
+        ),
+        patch.object(engine, "_restart_hardware_tile") as restart,
+    ):
+        result = list(engine.exec_event(event))
+
+    assert [payload[0] for payload in result] == [
+        "failed-pass-frame",
+        "retry-frame-0",
+        "retry-frame-1",
+    ]
+    restart.assert_called_once_with(event, 1)
+
+
+def test_repeated_incomplete_hardware_tile_aborts_after_retry() -> None:
+    """Propagate a repeated short tile instead of advancing the MDA."""
+    engine = _isolated_engine()
+    image_events = tuple(
+        MDAEvent(index={"p": 3, "z": plane, "c": 0}) for plane in range(2)
+    )
+    event = SequencedEvent(events=image_events)
+    engine._tile_retry_prepare = MagicMock()
+    engine._tile_setup_events = {
+        ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
+        ACTION_DAQ: MDAEvent(action=CustomAction(name=ACTION_DAQ, data={})),
+    }
+
+    def _incomplete_attempt():
+        yield ("partial-frame", image_events[0], {})
+        yield None
+
+    with (
+        patch.object(
+            MDAEngine,
+            "exec_event",
+            side_effect=[_incomplete_attempt(), _incomplete_attempt()],
+        ),
+        patch.object(engine, "_restart_hardware_tile") as restart,
+        pytest.raises(
+            IncompleteHardwareSequenceError,
+            match="expected 2 frames, received 1",
+        ),
+    ):
+        list(engine.exec_event(event))
+
+    restart.assert_called_once_with(event, 1)
+
+
+def test_incomplete_sequence_without_retry_propagates_immediately() -> None:
+    """Never let an incomplete sequence return normally without retry support."""
+    engine = _isolated_engine()
+    image_events = tuple(
+        MDAEvent(index={"p": 4, "z": plane, "c": 0}) for plane in range(2)
+    )
+    event = SequencedEvent(events=image_events)
+
+    def _incomplete_attempt():
+        yield ("only-frame", image_events[0], {})
+        yield None
+
+    with (
+        patch.object(MDAEngine, "exec_event", return_value=_incomplete_attempt()),
+        pytest.raises(
+            IncompleteHardwareSequenceError,
+            match="expected 2 frames, received 1",
+        ),
+    ):
+        list(engine.exec_event(event))
 
 
 def test_camera_recovery_snap_clears_buffer_when_snap_fails() -> None:
@@ -220,13 +339,13 @@ def test_stage_move_uses_standard_mda_position_fields() -> None:
     """Expose XYZ to pymmcore-plus while retaining the OPM action marker."""
     event = create_stage_event({"x": 10.123, "y": 20.456, "z": 30.789})
 
-    assert event.x_pos == pytest.approx(10.12)
-    assert event.y_pos == pytest.approx(20.46)
-    assert event.z_pos == pytest.approx(30.79)
+    assert event.x_pos == pytest.approx(10.123)
+    assert event.y_pos == pytest.approx(20.456)
+    assert event.z_pos == pytest.approx(30.789)
     assert event.action.data["Stage"] == {
-        "x_pos": 10.12,
-        "y_pos": 20.46,
-        "z_pos": 30.79,
+        "x_pos": 10.123,
+        "y_pos": 20.456,
+        "z_pos": 30.789,
     }
 
 
@@ -306,6 +425,7 @@ def test_preview_stage_move_speed_override_is_restored() -> None:
     }
     mmcore.getXYStageDevice.return_value = "XYStage"
     mmcore.hasProperty.return_value = True
+    mmcore.isPropertyReadOnly.return_value = False
     property_values = {
         "MotorSpeedX-S(mm/s)": "0.05",
         "MotorSpeedY-S(mm/s)": "0.08",
@@ -365,6 +485,7 @@ def test_saved_acquisition_restores_pre_sequence_manual_speeds() -> None:
     }
     mmcore.getXYStageDevice.return_value = "XYStage"
     mmcore.hasProperty.return_value = True
+    mmcore.isPropertyReadOnly.return_value = False
     property_values = {
         "MotorSpeedX-S(mm/s)": "1.5",
         "MotorSpeedY-S(mm/s)": "1.2",
@@ -393,6 +514,56 @@ def test_saved_acquisition_restores_pre_sequence_manual_speeds() -> None:
         "MotorSpeedY-S(mm/s)": "1.2",
     }
     assert engine._stage_speeds_before_sequence == {}
+
+
+def test_stage_move_speed_is_clamped_to_adapter_limits() -> None:
+    """Never send an accelerated speed above the device property's limit."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.hasProperty.return_value = True
+    mmcore.isPropertyReadOnly.return_value = False
+    mmcore.hasPropertyLimits.return_value = True
+    mmcore.getPropertyLowerLimit.return_value = 0.001
+    mmcore.getPropertyUpperLimit.return_value = 1.2864
+    mmcore.getAllowedPropertyValues.return_value = ()
+    mmcore.getProperty.return_value = "1.2864"
+
+    applied = engine._apply_stage_move_speeds(
+        {
+            "move_speed_x_mm_s": 5.1456,
+            "move_speed_y_mm_s": 5.1456,
+        }
+    )
+
+    assert applied == pytest.approx({"x": 1.2864, "y": 1.2864})
+    assert call("XYStage", "MotorSpeedX-S(mm/s)", 1.2864) in (
+        mmcore.setProperty.call_args_list
+    )
+    assert call("XYStage", "MotorSpeedY-S(mm/s)", 1.2864) in (
+        mmcore.setProperty.call_args_list
+    )
+
+
+def test_rejected_stage_speed_keeps_current_adapter_value() -> None:
+    """Treat an optional speed override rejection as non-fatal."""
+    engine = _isolated_engine()
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.hasProperty.return_value = True
+    mmcore.isPropertyReadOnly.return_value = False
+    mmcore.hasPropertyLimits.return_value = False
+    mmcore.getAllowedPropertyValues.return_value = ()
+    mmcore.getProperty.return_value = "1.2864"
+    mmcore.setProperty.side_effect = RuntimeError("speed rejected")
+
+    applied = engine._apply_stage_move_speeds(
+        {"move_speed_x_mm_s": 5.1456}
+    )
+
+    assert applied == pytest.approx({"x": 1.2864})
 
 
 def test_explorer_teardown_returns_xy_before_restoring_normal_speed() -> None:
@@ -689,6 +860,7 @@ def test_saved_teardown_uses_4x_speed_for_large_return_then_restores() -> None:
     mmcore.hasProperty.side_effect = (
         lambda _device, prop: prop in speed_properties
     )
+    mmcore.isPropertyReadOnly.return_value = False
     order: list[str] = []
 
     def _set_property(_device: str, prop: str, value: object) -> None:

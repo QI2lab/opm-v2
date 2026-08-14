@@ -115,11 +115,11 @@ def test_projection_retiles_stage_explorer_region_in_physical_stage_axes(
     )
     image_events, custom_actions = split_events(events)
 
-    assert [event.x_pos for event in image_events] == pytest.approx(
+    assert [event.metadata["Stage"]["x_pos"] for event in image_events] == pytest.approx(
         [100.0, 102.67, 105.34]
     )
-    assert {event.y_pos for event in image_events} == {200.0}
-    assert {event.z_pos for event in image_events} == {7.0}
+    assert {event.metadata["Stage"]["y_pos"] for event in image_events} == {200.0}
+    assert {event.metadata["Stage"]["z_pos"] for event in image_events} == {7.0}
     assert custom_actions.count(ACTION_DAQ) == 3
     assert handler.index_sizes == {"t": 1, "p": 3, "c": 1}
 
@@ -163,4 +163,6 @@ def test_projection_applies_exported_coverslip_plane(
     )
     image_events, _custom_actions = split_events(events)
 
-    assert [event.z_pos for event in image_events] == pytest.approx([7.0, 7.27, 7.53])
+    assert [event.metadata["Stage"]["z_pos"] for event in image_events] == pytest.approx(
+        [7.0, 7.27, 7.53]
+    )

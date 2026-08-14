@@ -5,6 +5,8 @@ Sensorless adaptive optics and tools.
 2025/09/05 SJS: updates to synchronize with opm_custom_events and opm_config
 """
 
+from __future__ import annotations
+
 import time
 from collections.abc import Sequence
 from pathlib import Path
@@ -18,6 +20,7 @@ from scipy.fft import dct
 from scipy.ndimage import center_of_mass, laplace
 from scipy.optimize import curve_fit
 
+from opm_v2.engine.debug_printing import info, warning
 from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
 
 try:
@@ -233,10 +236,130 @@ def get_metric(
     return metric
 
 
+def _prepare_camera_for_ao_snap(mmc: CMMCorePlus) -> str:
+    """Put the active camera in internal-trigger mode for software AO snaps.
+
+    Returns
+    -------
+    str
+        Active Micro-Manager camera label.
+
+    Raises
+    ------
+    RuntimeError
+        If Micro-Manager has no active camera.
+    """
+    camera_label = mmc.getCameraDevice()
+    if not camera_label:
+        raise RuntimeError("No active camera is configured for adaptive optics")
+    camera = str(camera_label)
+    if mmc.isSequenceRunning():
+        mmc.stopSequenceAcquisition()
+
+    recovery_properties = (
+        ("Trigger", "NORMAL"),
+        ("TriggerPolarity", "POSITIVE"),
+        ("TRIGGER SOURCE", "INTERNAL"),
+    )
+    for property_name, value in recovery_properties:
+        if not mmc.hasProperty(camera, property_name):
+            continue
+        allowed = tuple(mmc.getAllowedPropertyValues(camera, property_name))
+        if allowed and value not in allowed:
+            continue
+        mmc.setProperty(camera, property_name, value)
+        mmc.waitForDevice(camera)
+
+    mmc.clearCircularBuffer()
+    return camera
+
+
+def _recover_ao_camera_snap(
+    mmc: CMMCorePlus,
+    opm_nidaq: OPMNIDAQ,
+    camera_error: Exception,
+) -> None:
+    """Reset camera snap state and re-arm the unchanged AO DAQ waveform.
+
+    Raises
+    ------
+    RuntimeError
+        If the retained DAQ waveform cannot be reprogrammed or restarted.
+    """
+    scan_type = opm_nidaq.scan_type
+    warning(
+        "AO CAMERA SNAP FAILED",
+        f"DAQ mode: {scan_type}",
+        f"Camera error: {camera_error}",
+        "Resetting internal trigger state and retrying once",
+    )
+    opm_nidaq.stop_waveform_playback()
+    _prepare_camera_for_ao_snap(mmc)
+
+    # Stopping and restarting valid tasks preserves every acquisition
+    # parameter, including the two-galvo projection waveform.  If the tasks
+    # were invalidated, rebuild them from the parameters already held by the
+    # DAQ object rather than falling back to a different scan type.
+    if not opm_nidaq.programmed():
+        opm_nidaq.clear_tasks()
+        opm_nidaq.generate_waveforms()
+        opm_nidaq.program_daq_waveforms()
+    if not opm_nidaq.programmed():
+        raise RuntimeError(
+            f"Could not reprogram the {scan_type!r} AO waveform after camera error"
+        )
+
+    opm_nidaq.start_waveform_playback()
+    if not opm_nidaq.running():
+        raise RuntimeError(
+            f"Could not restart the {scan_type!r} AO waveform after camera error"
+        )
+
+
+def _snap_ao_image(
+    mmc: CMMCorePlus,
+    opm_nidaq: OPMNIDAQ | None,
+) -> NDArray:
+    """Snap one AO image, recovering the camera once on a device failure.
+
+    Returns
+    -------
+    numpy.ndarray
+        Camera image from the initial snap or its single retry.
+
+    Raises
+    ------
+    RuntimeError
+        If recovery fails or the camera's retry also fails.
+    TimeoutError
+        If no DAQ recovery controller was supplied and the initial snap times out.
+    """
+    try:
+        return mmc.snap()
+    except (RuntimeError, TimeoutError) as first_error:
+        if opm_nidaq is None:
+            raise
+        _recover_ao_camera_snap(mmc, opm_nidaq, first_error)
+    try:
+        image = mmc.snap()
+    except (RuntimeError, TimeoutError) as retry_error:
+        raise RuntimeError(
+            "AO camera snap failed after one recovery attempt"
+        ) from retry_error
+
+    info(
+        "AO CAMERA RECOVERED",
+        f"DAQ mode: {opm_nidaq.scan_type}",
+        "Internal-trigger snap received after one retry",
+    )
+    return image
+
+
 def acquire_metric_image(
     mmc: CMMCorePlus,
     metric_to_use: str,
     num_averaged_frames: int = 1,
+    opm_nidaq: OPMNIDAQ | None = None,
 ) -> tuple[NDArray, float]:
     """Acquire images and calculate a consistent adaptive-optics metric.
 
@@ -248,6 +371,9 @@ def acquire_metric_image(
         Name of the image metric to compute.
     num_averaged_frames : int
         Number of camera frames to average.
+    opm_nidaq : OPMNIDAQ or None
+        Active AO DAQ controller. When supplied, one camera-device failure is
+        recovered without changing the configured scan mode.
 
     Returns
     -------
@@ -255,12 +381,14 @@ def acquire_metric_image(
         Averaged camera image and its metric value.
     """
     if num_averaged_frames > 1:
-        images = [mmc.snap() for _ in range(num_averaged_frames)]
+        images = [
+            _snap_ao_image(mmc, opm_nidaq) for _ in range(num_averaged_frames)
+        ]
         image_stack = np.stack(images, axis=0).astype(np.float32)
         image = np.mean(image_stack, axis=0)
         metric = float(np.mean([get_metric(im, metric_to_use) for im in images]))
     else:
-        image = mmc.snap()
+        image = _snap_ao_image(mmc, opm_nidaq)
         metric = get_metric(image, metric_to_use)
 
     return image, metric
@@ -403,9 +531,11 @@ def run_ao_optimization(
 
     mmc = CMMCorePlus.instance()
 
-    # Enforce camera exposure
-    mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
-    mmc.waitForDevice("OrcaFusionBT")
+    # This routine executes the feedback loop behind the AO custom event.  Use
+    # the active camera and the Core exposure API; only adapter-specific
+    # trigger properties require direct property access.
+    _prepare_camera_for_ao_snap(mmc)
+    mmc.setExposure(float(exposure_ms))
 
     # TODO: Setup Camera for linescanning
 
@@ -547,7 +677,10 @@ def run_ao_optimization(
     # Aqcuire starting image and metric
     try:
         starting_image, starting_metric = acquire_metric_image(
-            mmc, metric_to_use, num_averaged_frames
+            mmc,
+            metric_to_use,
+            num_averaged_frames,
+            opm_nidaq=opmNIDAQ_local,
         )
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
 
@@ -563,12 +696,10 @@ def run_ao_optimization(
             opmNIDAQ_local.stop_waveform_playback()
 
             # Run the auto-focus optimization
-            mmc.setProperty("OrcaFusionBT", "Exposure", float(10))
-            mmc.waitForDevice("OrcaFusionBT")
-            manage_O3_focus("MCL NanoDrive Z Stage", verbose=True)
+            mmc.setExposure(10.0)
+            manage_O3_focus("MCL NanoDrive Z Stage", verbose=True, mmc=mmc)
             # Enforce camera exposure
-            mmc.setProperty("OrcaFusionBT", "Exposure", float(exposure_ms))
-            mmc.waitForDevice("OrcaFusionBT")
+            mmc.setExposure(float(exposure_ms))
 
             opmNIDAQ_local.start_waveform_playback()
 
@@ -616,7 +747,10 @@ def run_ao_optimization(
                         raise ConnectionError("DAQ is not running, check for errors")
                     try:
                         image, metric = acquire_metric_image(
-                            mmc, metric_to_use, num_averaged_frames
+                            mmc,
+                            metric_to_use,
+                            num_averaged_frames,
+                            opm_nidaq=opmNIDAQ_local,
                         )
                     except Exception as e:
                         raise RuntimeError("Exception in acquiring image") from e
@@ -718,7 +852,10 @@ def run_ao_optimization(
                     raise ConnectionError("DAQ is not running, check for errors")
                 try:
                     optimal_image, optimal_metric = acquire_metric_image(
-                        mmc, metric_to_use, num_averaged_frames
+                        mmc,
+                        metric_to_use,
+                        num_averaged_frames,
+                        opm_nidaq=opmNIDAQ_local,
                     )
                 except Exception as e:
                     raise RuntimeError("Exception in acquiring optimal image") from e
@@ -1806,7 +1943,7 @@ def localize_2d_img(
         fit_filtered_images=False,
         verbose=True,
     )
-    save_dir_path = Path(r"E:\optimize_now")
+    save_dir_path = Path(r"F:\optimize_now")
     if save_dir_path:
         plot_2d_localization_fit_summary(r, img, coords_2d, save_dir_path, showfig)
 
@@ -2300,7 +2437,7 @@ def run_ao_grid_mapping(
         )
 
     if save_dir_path is None:
-        save_dir_path = Path(r"E:\optimize_now\grid_ao_optimizeNOW")
+        save_dir_path = Path(r"F:\optimize_now\grid_ao_optimizeNOW")
         save_dir_path.mkdir(exist_ok=True)
 
     print(

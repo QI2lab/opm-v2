@@ -9,7 +9,7 @@ wfc_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 wfc_correction_file_path = Path(
-    r"E:\Alignment\20260708\wfc_files\20260708_straight_interaction_matrix.aoc"
+    r"F:\Alignment\20260708\wfc_files\20260708_straight_interaction_matrix.aoc"
 )
 haso_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
@@ -21,7 +21,7 @@ mirror_state_output_path = Path(
 # WFC positions file path
 # wfc_flat_file_path = None # Use None for flat (zero) positions
 wfc_flat_file_path = Path(
-    r"E:\Alignment\20260708\before_weird_behavior\20260708_straight_curvature_no_tilt_closed_loop_output.wcs"
+    r"F:\Alignment\20260708\before_weird_behavior\20260708_straight_curvature_no_tilt_closed_loop_output.wcs"
 )
 
 # Load ao_mirror controller using the given positions file

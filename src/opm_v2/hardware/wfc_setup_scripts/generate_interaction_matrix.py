@@ -23,7 +23,7 @@ wfc_config_file_path = Path(
 )
 # Set the output path
 output_prefix = "20260708_straight"
-root_path = Path(r"E:\Alignment\20260708\wfc_files")
+root_path = Path(r"F:\Alignment\20260708\wfc_files")
 output_image_path = root_path / Path(output_prefix + r"_interaction_images.tiff")
 output_file_path = root_path / Path(output_prefix + "_interaction_matrix.aoc")
 

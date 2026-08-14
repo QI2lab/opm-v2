@@ -48,6 +48,7 @@ from opm_v2.engine.opm_custom_events import (
     create_o2o3_autofocus_event,
     create_stage_event,
 )
+from opm_v2.handlers.live_acquisition import build_live_acquisition_manifest
 from opm_v2.handlers.opm_data_handler import OpmDataHandler
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
@@ -1064,6 +1065,9 @@ def create_zarr_handler(
     events: list[MDAEvent] | None = None,
     config: dict | None = None,
     spatial_plan: dict | None = None,
+    max_time_chunk_size: int = 1,
+    time_chunk_concurrency: int | None = None,
+    pixel_size_um: float | None = None,
 ) -> OpmDataHandler:
     """Create the OPM Zarr handler after validating its output path.
 
@@ -1081,6 +1085,14 @@ def create_zarr_handler(
         Complete GUI acquisition configuration stored as global metadata.
     spatial_plan : dict or None
         Resolved spatial-plan summary stored alongside the configuration.
+    max_time_chunk_size : int
+        Maximum temporal Zarr chunk length. Values above one batch adjacent
+        timelapse frames into fewer, larger writes.
+    time_chunk_concurrency : int or None
+        Number of temporal chunks that can be active at once for memory-budget
+        calculations.
+    pixel_size_um : float or None
+        Physical camera pixel size published in the acquisition manifest.
 
     Returns
     -------
@@ -1089,6 +1101,8 @@ def create_zarr_handler(
 
     Raises
     ------
+    ValueError
+        If planned events, configuration, or pixel size are unavailable.
     Exception
         If the output does not use a supported Zarr suffix.
     """
@@ -1097,6 +1111,27 @@ def create_zarr_handler(
         acquisition_metadata = dict(config or {})
         if spatial_plan is not None:
             acquisition_metadata["resolved_spatial_plan"] = spatial_plan
+        if events is None or config is None:
+            raise ValueError(
+                "Live acquisition publication requires planned events and config"
+            )
+        resolved_order = list(acquisition_order or indice_sizes)
+        resolved_order.extend(
+            axis for axis in ("t", "p", "c", "z") if axis not in resolved_order
+        )
+        resolved_pixel_size_um = float(
+            pixel_size_um
+            if pixel_size_um is not None
+            else config.get("OPM", {}).get("pixel_size_um")
+        )
+        live_manifest = build_live_acquisition_manifest(
+            data_path=output,
+            index_sizes=indice_sizes,
+            acquisition_order=tuple(resolved_order),
+            events=events,
+            config=config,
+            pixel_size_um=resolved_pixel_size_um,
+        )
         handler = OpmDataHandler(
             path=output,
             index_sizes=indice_sizes,
@@ -1104,6 +1139,9 @@ def create_zarr_handler(
             delete_existing=True,
             events=events,
             acquisition_metadata=acquisition_metadata,
+            max_time_chunk_size=max_time_chunk_size,
+            time_chunk_concurrency=time_chunk_concurrency,
+            live_manifest=live_manifest,
         )
         info("QI2LAB HANDLER", f"indices: {indice_sizes}")
         return handler
@@ -1561,9 +1599,6 @@ def create_opm_image_event(
     """
     return MDAEvent(
         index=mappingproxy(index),
-        x_pos=float(stage_position["x"]),
-        y_pos=float(stage_position["y"]),
-        z_pos=float(stage_position["z"]),
         exposure=float(exposure_ms),
         metadata=populate_opm_metadata(
             daq_mode=daq_mode,
@@ -1663,9 +1698,6 @@ def create_stage_scan_image_event(
     """
     return MDAEvent(
         index=mappingproxy(index),
-        x_pos=float(stage_position["x"]),
-        y_pos=float(stage_position["y"]),
-        z_pos=float(stage_position["z"]),
         exposure=float(exposure_ms),
         metadata={
             "DAQ": {
@@ -1763,6 +1795,7 @@ def setup_optimizenow(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[roi_center_x, roi_center_y],
             camera_crop=[camera_crop_x, camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
         opm_events.append(o2o3_event)
 
@@ -1901,10 +1934,6 @@ def setup_timelapse(
 
     if mda_time_plan is None:
         raise ValueError("Timelapse mode requires an MDA Time plan")
-    if mda_grid_plan is None and mda_positions_plan is None:
-        raise ValueError(
-            "Timelapse mode requires an MDA grid or positions plan"
-        )
     if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
         raise ValueError(
             "A top-level MDA grid cannot be combined with Stage Explorer ROI "
@@ -1936,6 +1965,7 @@ def setup_timelapse(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
     # ----------------------------------------------------------------#
@@ -2000,16 +2030,26 @@ def setup_timelapse(
         "coverslip_slope_y": coverslip_slope_y,
         "mmc": mmc,
     }
+    has_explicit_spatial_plan = mda_grid_plan is not None or bool(mda_positions_plan)
+    current_stage_position: dict[str, float] | None = None
     if mda_grid_plan is not None:
         stage_positions = stage_positions_from_grid(
             mda_grid_plan=mda_grid_plan,
             **position_kwargs,
         )
-    else:
+    elif mda_positions_plan:
         stage_positions = stage_positions_from_position_plan(
             mda_positions_plan,
             **position_kwargs,
         )
+    else:
+        current_x, current_y = mmc.getXYPosition()
+        current_stage_position = {
+            "x": float(current_x),
+            "y": float(current_y),
+            "z": float(mmc.getZPosition()),
+        }
+        stage_positions = [dict(current_stage_position)]
     stage_positions, _sample_depths_um = apply_opm_sample_depth_plan(
         stage_positions,
         config=config,
@@ -2035,8 +2075,15 @@ def setup_timelapse(
 
     opm_events: list[MDAEvent] = []
 
-    # move stage to starting position
-    opm_events.append(create_stage_event(stage_positions[0]))
+    # An implicit position means "acquire exactly where the stage is now".
+    # Do not round and re-command that position. If an active sample-depth plan
+    # changed the implicit anchor, however, the derived target is a real move.
+    initial_position_changed = current_stage_position is not None and any(
+        float(stage_positions[0][axis]) != current_stage_position[axis]
+        for axis in ("x", "y", "z")
+    )
+    if has_explicit_spatial_plan or initial_position_changed:
+        opm_events.append(create_stage_event(stage_positions[0]))
 
     # ----------------------------------------------------------------#
     # Check for optimization at start
@@ -2167,6 +2214,8 @@ def setup_timelapse(
         events=opm_events,
         config=config,
         spatial_plan=spatial_plan,
+        max_time_chunk_size=16,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
     )
 
 
@@ -2389,6 +2438,7 @@ def setup_projection(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
     # --------------------------------------------------------------------#
@@ -2620,6 +2670,7 @@ def setup_projection(
         events=opm_events,
         config=config,
         spatial_plan=spatial_plan,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
     )
 
 
@@ -2778,6 +2829,7 @@ def setup_mirrorscan(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
     # ----------------------------------------------------------------#
@@ -3114,6 +3166,11 @@ def setup_mirrorscan(
     camera_acquisition_order = (
         ("t", "p", "z", "c") if interleaved_acq else ("t", "p", "c", "z")
     )
+    use_temporal_chunks = (
+        n_time_steps > 100
+        and n_active_channels == 1
+        and 5 <= n_scan_steps <= 10
+    )
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,
@@ -3121,6 +3178,13 @@ def setup_mirrorscan(
         events=opm_events,
         config=config,
         spatial_plan=spatial_plan,
+        max_time_chunk_size=16 if use_temporal_chunks else 1,
+        time_chunk_concurrency=(
+            n_stage_positions * n_active_channels * n_scan_steps
+            if use_temporal_chunks
+            else None
+        ),
+        pixel_size_um=float(mmc.getPixelSizeUm()),
     )
 
 
@@ -3286,6 +3350,7 @@ def setup_stagescan(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
     # ----------------------------------------------------------------#
@@ -3835,6 +3900,7 @@ def setup_stagescan(
         events=opm_events,
         config=config,
         spatial_plan=spatial_plan,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
     )
 
 

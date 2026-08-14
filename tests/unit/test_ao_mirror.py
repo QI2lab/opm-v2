@@ -1,6 +1,6 @@
 """Test adaptive-optics mirror behavior with its in-memory backend."""
 
-from __future__ import annotations
+from unittest.mock import MagicMock
 
 import numpy as np
 
@@ -26,3 +26,17 @@ def test_simulated_ao_mirror_preserves_position_corrections() -> None:
     assert mirror.apply_positions_array(1) is True
     np.testing.assert_allclose(mirror.current_coeffs, correction)
     np.testing.assert_allclose(mirror.current_voltage, saved_voltage)
+
+
+def test_physical_ao_mirror_disconnect_is_idempotent() -> None:
+    """Release the WaveKit connection only once during layered teardown."""
+    mirror = object.__new__(AOMirror)
+    mirror.simulate = False
+    mirror._wfc_connected = True
+    mirror.wfc = MagicMock()
+
+    mirror.disconnect()
+    mirror.disconnect()
+
+    mirror.wfc.disconnect.assert_called_once_with()
+    assert not mirror._wfc_connected

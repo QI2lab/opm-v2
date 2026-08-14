@@ -17,7 +17,7 @@ import useq
 from ome_writers import AcquisitionSettings
 from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
 from pymmcore_gui._qt.QtAds import DockWidgetArea
-from pymmcore_gui._qt.QtCore import QTimer
+from pymmcore_gui._qt.QtCore import QEvent, QObject, Qt, QTimer
 from pymmcore_gui._qt.QtWidgets import (
     QApplication,
     QMenu,
@@ -28,6 +28,7 @@ from pymmcore_gui._qt.QtWidgets import (
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
 from pymmcore_gui.actions import widget_actions as pymmcore_widget_actions
 from pymmcore_plus import CMMCorePlus
+from pymmcore_plus.core import DeviceProperty
 
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.debug_printing import debug, info, warning
@@ -54,9 +55,11 @@ MIN_PROJECTION_EXPOSURE = 50  # ms
 DEFUALT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
 OPM_PREVIEW_INTERVAL_MS = 250
+LIVE_DISPLAY_INTERVAL_MS = 33
 _STAGE_EXPLORER_REQUIRED_METHODS = (
     "_fov_w_h",
     "_on_frame_ready",
+    "_on_image_snapped",
     "_on_mouse_double_click",
     "_on_pixel_size_affine_changed",
     "_on_pixel_size_changed",
@@ -96,6 +99,7 @@ def _initialize_snap_action_safely(action: QCoreAction) -> None:
 def _initialize_live_action_safely(action: QCoreAction) -> None:
     """Initialize the upstream Live action with deletion-safe cleanup."""
     mmc = action.mmc
+    action.setAutoRepeat(False)
 
     def _on_load() -> None:
         action.setEnabled(bool(mmc.getCameraDevice()))
@@ -563,6 +567,90 @@ def _stage_explorer_on_frame_ready(stage_explorer, image, event) -> None:
     stage_explorer._opm_original_on_frame_ready(image, event)
 
 
+def _stage_explorer_on_image_snapped(stage_explorer) -> None:
+    """Keep continuous-live camera frames out of the Explorer mosaic."""
+    if stage_explorer._mmc.isSequenceRunning():
+        return
+    stage_explorer._opm_original_on_image_snapped()
+
+
+def _stage_explorer_mouse_double_click(stage_explorer, event) -> None:
+    """Arm the requested OPM preview mode, then use the normal move/snap path.
+
+    Stage Explorer normally asks ``QStageMoveAccumulator`` to call
+    ``mmc.snapImage()`` directly after motion.  Unlike Live, that direct snap
+    emits no continuous-acquisition-starting signal, so the OPM projection DAQ
+    waveform is never prepared.  Arm it before motion, leave the accumulator's
+    snap timing intact, and clear the DAQ tasks after its snap has completed.
+    """
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    stage_controller = stage_explorer._stage_controller
+    if (
+        controller is None
+        or not stage_explorer._snap_on_double_click
+        or stage_explorer._mmc.isSequenceRunning()
+        or not stage_explorer._mmc.getXYStageDevice()
+        or stage_controller is None
+        or stage_explorer.roi_manager.mode == "create-poly"
+    ):
+        stage_explorer._opm_original_on_mouse_double_click(event)
+        return
+
+    x, y, _, _ = stage_explorer._stage_viewer.view.camera.transform.imap(
+        event.pos
+    )
+
+    previous_callback = getattr(stage_explorer, "_opm_projection_cleanup", None)
+    if previous_callback is not None:
+        try:
+            stage_controller.moveFinished.disconnect(previous_callback)
+        except (RuntimeError, TypeError):
+            pass
+
+    try:
+        controller.prepare_stage_explorer_preview()
+    except Exception as exc:
+        controller.warning(
+            "STAGE EXPLORER SNAP",
+            f"Could not prepare the active OPM preview mode: {exc}",
+        )
+        stage_controller.snap_on_finish = False
+        stage_controller.move_absolute((x, y))
+        stage_explorer._stage_pos_label.setText(
+            f"X: {x:.2f} µm  Y: {y:.2f} µm"
+        )
+        return
+
+    def _cleanup_after_snap() -> None:
+        try:
+            stage_controller.moveFinished.disconnect(_cleanup_after_snap)
+        except (RuntimeError, TypeError):
+            pass
+        stage_explorer._opm_projection_cleanup = None
+        try:
+            controller.opm_nidaq.clear_tasks()
+        except Exception as exc:
+            controller.warning(
+                "STAGE EXPLORER SNAP",
+                f"DAQ cleanup failed: {exc}",
+            )
+
+    stage_explorer._opm_projection_cleanup = _cleanup_after_snap
+    stage_controller.moveFinished.connect(_cleanup_after_snap)
+    stage_controller.snap_on_finish = True
+    stage_controller.move_absolute((x, y))
+    stage_explorer._stage_pos_label.setText(f"X: {x:.2f} µm  Y: {y:.2f} µm")
+
+
+def _configure_live_preview(preview_dock) -> None:
+    """Prevent nested Qt event processing during live-frame display."""
+    preview = preview_dock.widget() if preview_dock is not None else None
+    if preview is not None and hasattr(preview, "process_events_on_update"):
+        preview.process_events_on_update = False
+
+
 def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
     """Return one selected ROI as a physical Stage Explorer region.
 
@@ -655,7 +743,26 @@ def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
     accelerated: dict[str, float] = {}
     for property_name, event_key in speed_keys.items():
         if mmc.hasProperty(xy_stage, property_name):
-            accelerated[event_key] = 4.0 * point_move_speed
+            speed_property = DeviceProperty(
+                xy_stage,
+                property_name,
+                mmc,
+            )
+            speed = 4.0 * point_move_speed
+            has_limits = speed_property.hasLimits()
+            if type(has_limits) is bool and has_limits:
+                lower, upper = speed_property.range()
+                speed = min(max(speed, float(lower)), float(upper))
+            numeric_allowed = []
+            for value in speed_property.allowedValues():
+                try:
+                    numeric_allowed.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            if numeric_allowed:
+                at_or_below = [value for value in numeric_allowed if value <= speed]
+                speed = max(at_or_below) if at_or_below else min(numeric_allowed)
+            accelerated[event_key] = speed
 
     return accelerated
 
@@ -903,6 +1010,16 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     if stage_explorer is None or mda_widget is None:
         return
     stage_explorer._opm_controller = getattr(stage_explorer.window(), "opm_controller", None)
+    controller = stage_explorer._opm_controller
+    if (
+        controller is not None
+        and stage_explorer._mmc.isSequenceRunning() is True
+    ):
+        was_polling = bool(stage_explorer.poll_stage_position)
+        if controller._stage_explorer_polling_was_enabled is None:
+            controller._stage_explorer_polling_was_enabled = was_polling
+        if was_polling:
+            stage_explorer.poll_stage_position = False
     try:
         _equalize_stage_explorer_xy_speed(stage_explorer._mmc)
     except Exception as exc:
@@ -990,9 +1107,15 @@ def _install_stage_explorer_export_compatibility() -> None:
     explorer_class = _validate_stage_explorer_compatibility(
         pymmcore_widget_actions
     )
+    # Vispy stores bound callbacks by ``__name__`` and resolves that name on
+    # the widget when emitting.  Keep this replacement's callback identity
+    # equal to the attribute under which it is installed.
+    _stage_explorer_mouse_double_click.__name__ = "_on_mouse_double_click"
     method_patches = {
         "_fov_w_h": _stage_explorer_world_fov_w_h,
         "_on_frame_ready": _stage_explorer_on_frame_ready,
+        "_on_image_snapped": _stage_explorer_on_image_snapped,
+        "_on_mouse_double_click": _stage_explorer_mouse_double_click,
         "_on_pixel_size_affine_changed": _refresh_stage_explorer_pixel_affine,
         "_on_pixel_size_changed": _refresh_stage_explorer_pixel_size,
         "_on_roi_changed": _update_stage_explorer_transformed_fov,
@@ -1132,6 +1255,28 @@ class ConfigStore:
         return self.data
 
 
+class _WindowCloseFilter(QObject):
+    """Run OPM teardown before Micro-Manager resets its hardware core."""
+
+    def __init__(self, controller: OPMAppController, parent: MicroManagerGUI) -> None:
+        super().__init__(parent)
+        self._controller = controller
+
+    def eventFilter(self, watched, event) -> bool:
+        """Defer a close event until any active acquisition stops safely.
+
+        Returns
+        -------
+        bool
+            Whether this filter consumed the event.
+        """
+        if event.type() == QEvent.Type.Close:
+            if not self._controller.request_shutdown():
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
+
+
 class OPMAppController:
     """Manage MMGUI, OPM hardware, live-state updates, and MDA execution.
 
@@ -1210,6 +1355,11 @@ class OPMAppController:
         self._live_action_was_enabled = None
         self._opm_acquisition_active = False
         self._opm_scan_footprint_active = False
+        self._window_close_filter = None
+        self._shutdown_poll_timer = None
+        self._shutdown_requested = False
+        self._shutdown_in_progress = False
+        self._shutdown_complete = False
         self.bootstrap_complete = False
 
     def run(self) -> MicroManagerGUI:
@@ -1224,6 +1374,9 @@ class OPMAppController:
         QTimer.singleShot(0, partial(self._schedule_extension_step_two))
         if self._exec_app and (app := QApplication.instance()) is not None:
             app.exec()
+            # Normal window closes are intercepted before the event loop exits.
+            # Keep this as a fallback for a programmatic QApplication.quit().
+            self.request_shutdown()
         return self.win
 
     def _schedule_extension_step_two(self) -> None:
@@ -1262,6 +1415,8 @@ class OPMAppController:
         )
         self.mmc = self.win.mmcore
         self.win.opm_controller = self
+        self._window_close_filter = _WindowCloseFilter(self, self.win)
+        self.win.installEventFilter(self._window_close_filter)
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
         self.disable_native_mda_channels()
@@ -1274,6 +1429,149 @@ class OPMAppController:
             "GUI CREATED",
             f"MM config: {mm_config}",
         )
+
+    def _acquisition_is_running(self) -> bool:
+        """Return whether an MDA runner or its application-owned thread is active.
+
+        Returns
+        -------
+        bool
+            Whether acquisition work still prevents safe resource teardown.
+        """
+        runner_active = bool(self.mmc is not None and self.mmc.mda.is_running())
+        thread_active = bool(
+            self._opm_mda_thread is not None
+            and self._opm_mda_thread.is_alive()
+        )
+        return runner_active or thread_active
+
+    def _stop_app_timers(self) -> None:
+        """Stop periodic GUI callbacks before owned resources are released."""
+        for timer in (
+            self._picard_state_timer,
+            self._mda_preview_timer,
+            self._mda_state_timer,
+        ):
+            if timer is not None:
+                timer.stop()
+
+    def request_shutdown(self) -> bool:
+        """Request safe application shutdown.
+
+        Returns
+        -------
+        bool
+            ``True`` when the window may close now. ``False`` while an active
+            acquisition is being canceled; the window will close automatically
+            after its worker thread exits.
+        """
+        if self._shutdown_complete:
+            return True
+
+        self._shutdown_requested = True
+        self._stop_app_timers()
+        if self._acquisition_is_running():
+            if self.opm_engine is not None:
+                self.opm_engine.request_safe_stop()
+            if self.mmc is not None:
+                self.mmc.mda.cancel()
+            self.info(
+                "OPM SHUTDOWN WAITING",
+                "Canceling the active acquisition at a safe event boundary.",
+                "The window will close automatically after hardware teardown.",
+            )
+            self._start_shutdown_polling()
+            return False
+
+        self.shutdown()
+        return True
+
+    def _start_shutdown_polling(self) -> None:
+        """Poll without blocking the GUI until the acquisition thread exits."""
+        if self._shutdown_poll_timer is None:
+            self._shutdown_poll_timer = QTimer(self.win)
+            self._shutdown_poll_timer.setInterval(100)
+            self._shutdown_poll_timer.timeout.connect(self._continue_shutdown)
+        if not self._shutdown_poll_timer.isActive():
+            self._shutdown_poll_timer.start()
+
+    def _continue_shutdown(self) -> None:
+        """Finish a deferred shutdown once acquisition cleanup has returned."""
+        if self._acquisition_is_running():
+            return
+        if self._shutdown_poll_timer is not None:
+            self._shutdown_poll_timer.stop()
+        self.shutdown()
+        if self.win is not None:
+            QTimer.singleShot(0, self.win.close)
+
+    def _cleanup(self, label: str, callback) -> None:
+        """Run one best-effort shutdown operation without skipping later ones."""
+        try:
+            callback()
+        except Exception as exc:
+            self.warning("OPM SHUTDOWN WARNING", f"{label}: {exc}")
+
+    def shutdown(self) -> None:
+        """Release every application-owned resource exactly once."""
+        if self._shutdown_complete or self._shutdown_in_progress:
+            return
+        if self._acquisition_is_running():
+            self.request_shutdown()
+            return
+
+        self._shutdown_in_progress = True
+        self.info("OPM SHUTDOWN", "Releasing application resources.")
+        try:
+            self._stop_app_timers()
+            if self._shutdown_poll_timer is not None:
+                self._shutdown_poll_timer.stop()
+
+            if self.mmc is not None and self.mmc.isSequenceRunning():
+                self._cleanup(
+                    "stop live camera sequence",
+                    self.mmc.stopSequenceAcquisition,
+                )
+            if self.data_handler is not None:
+                self._cleanup("close acquisition writer", self.data_handler.close)
+                self.data_handler = None
+            if self.opm_nidaq is not None:
+                self._cleanup("clear NI-DAQ tasks", self.opm_nidaq.clear_tasks)
+            if self.opm_picard_shutter is not None:
+                self._cleanup(
+                    "close Picard shutter",
+                    self.opm_picard_shutter.shutDown,
+                )
+            if (
+                self.ob1_controller is not None
+                and self.ob1_controller.board is not None
+            ):
+                self._cleanup("close OB1 controller", self.ob1_controller.close_board)
+            if self.opm_ao_mirror is not None:
+                self._cleanup("disconnect AO mirror", self.opm_ao_mirror.disconnect)
+
+            scratch_count = len(self._stage_explorer_scratch_dirs)
+            if scratch_count:
+                self.info(
+                    "OPM SHUTDOWN",
+                    f"Removing {scratch_count} Stage Explorer scratch dataset(s).",
+                )
+            while self._stage_explorer_scratch_dirs:
+                scratch_dir = self._stage_explorer_scratch_dirs.pop()
+                self._cleanup(
+                    f"remove Stage Explorer scratch data {scratch_dir.name}",
+                    scratch_dir.cleanup,
+                )
+
+            AOMirror.reset_instance()
+            OPMNIDAQ.reset_instance()
+            PicardShutter.reset_instance()
+            OB1Controller.reset_instance()
+            self._opm_mda_thread = None
+            self.info("OPM SHUTDOWN COMPLETE", "Application resources released.")
+        finally:
+            self._shutdown_in_progress = False
+            self._shutdown_complete = True
 
     def disable_native_mda_channels(self) -> None:
         """Disable native MDA channels because OPM settings own channel setup."""
@@ -1519,6 +1817,11 @@ class OPMAppController:
         )
         self._mda_state_timer.start()
 
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        if viewers_manager is not None:
+            viewers_manager.previewViewerCreated.connect(_configure_live_preview)
+            _configure_live_preview(viewers_manager._current_image_preview)
+
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
         self.update_live_state()
@@ -1532,6 +1835,15 @@ class OPMAppController:
         self.mmc.events.continuousSequenceAcquisitionStarting.connect(
             self.setup_preview_mode_callback
         )
+        self.mmc.events.continuousSequenceAcquisitionStarted.connect(
+            self._on_live_sequence_started
+        )
+        self.mmc.events.exposureChanged.connect(
+            self._schedule_live_preview_refresh_interval
+        )
+        self.mmc.events.sequenceAcquisitionStopped.connect(
+            self._on_live_sequence_stopped
+        )
 
         self.debug(
             "SIGNALS CONNECTED",
@@ -1542,6 +1854,7 @@ class OPMAppController:
             "mmc.events.configSet -> update_live_state",
             "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
+            "Live start/stop -> suspend/restore Stage Explorer polling",
         )
 
     def sync_opm_mda_preview(self, force: bool = False) -> None:
@@ -1662,6 +1975,59 @@ class OPMAppController:
         self._stage_explorer_polling_was_enabled = previous
         if previous:
             explorer.poll_stage_position = False
+
+    def _on_live_sequence_started(self) -> None:
+        """Stop Stage Explorer hardware polling while Live owns the camera loop."""
+        if not self.mmc.mda.is_running():
+            self._set_stage_explorer_position_polling(False)
+            self._schedule_live_preview_refresh_interval()
+
+    def _schedule_live_preview_refresh_interval(self, *_args) -> None:
+        """Apply throttling after upstream preview slots finish starting timers."""
+        QTimer.singleShot(0, self._set_live_preview_refresh_interval)
+
+    def _set_live_preview_refresh_interval(self, *_args) -> None:
+        """Coalesce fast camera frames into a responsive native Live display."""
+        if (
+            not self.mmc.isSequenceRunning()
+            or self.mmc.mda.is_running()
+            or self._opm_acquisition_active
+        ):
+            return
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        preview_dock = getattr(viewers_manager, "_current_image_preview", None)
+        preview = preview_dock.widget() if preview_dock is not None else None
+        if preview is None or not hasattr(preview, "_timer_id"):
+            return
+
+        exposure_ms = max(1, int(round(float(self.mmc.getExposure()))))
+        interval_ms = max(LIVE_DISPLAY_INTERVAL_MS, exposure_ms)
+        timer_id = preview._timer_id
+        if timer_id is not None:
+            preview.killTimer(timer_id)
+        preview._timer_id = preview.startTimer(
+            interval_ms,
+            Qt.TimerType.PreciseTimer,
+        )
+        preview._opm_refresh_interval_ms = interval_ms
+
+    def _on_live_sequence_stopped(self, _camera_label: str | None = None) -> None:
+        """Release Live resources and restore Explorer polling."""
+        if self.opm_nidaq is not None:
+            try:
+                if self.opm_nidaq.running():
+                    self.opm_nidaq.stop_waveform_playback()
+                self.opm_nidaq.clear_tasks()
+            except Exception as exc:
+                self.warning("LIVE STOP WARNING", f"DAQ cleanup failed: {exc}")
+        try:
+            self.mmc.clearCircularBuffer()
+        except RuntimeError as exc:
+            self.warning(
+                "LIVE STOP WARNING", f"Camera buffer cleanup failed: {exc}"
+            )
+        if not self.mmc.mda.is_running() and not self._opm_acquisition_active:
+            self._set_stage_explorer_position_polling(True)
 
     def sync_live_button_state(self) -> None:
         """Clear a stale live-button highlight after an MDA camera sequence."""
@@ -1933,6 +2299,9 @@ class OPMAppController:
 
     def setup_preview_mode_callback(self) -> None:
         """Program the OPM NIDAQ waveform before continuous preview starts."""
+        # A stopped sequence may leave frames in MMCore's circular buffer.  If
+        # retained, the GUI preview drains that backlog synchronously on restart.
+        self.mmc.clearCircularBuffer()
         if self.opm_nidaq.running():
             self.opm_nidaq.stop_waveform_playback()
 
@@ -1951,7 +2320,7 @@ class OPMAppController:
             self.opm_nidaq.start_waveform_playback()
 
     def prepare_stage_explorer_preview(self) -> None:
-        """Arm the current config-group preview waveform for an Explorer MDA.
+        """Arm the current config-group waveform for an Explorer MDA.
 
         Raises
         ------
@@ -2249,7 +2618,19 @@ class OPMAppController:
         if not output:
             return None, None
 
+        positions_selected = self.mda_widget.tab_wdg.isChecked(
+            self.mda_widget.stage_positions
+        )
+        grid_selected = self.mda_widget.tab_wdg.isChecked(
+            self.mda_widget.grid_plan
+        )
         sequence = self.mda_widget.value()
+        if "timelapse" in opm_mode and not positions_selected and not grid_selected:
+            # Core MDAWidget inserts the current XYZ as a synthetic position when
+            # its Positions tab is disabled. Preserve the user's actual spatial
+            # selection so the timelapse planner can use the current position
+            # without issuing a redundant stage command.
+            sequence = sequence.replace(stage_positions=())
         supported_modes = ("timelapse", "stage", "mirror", "projection")
         if not any(mode in opm_mode for mode in supported_modes):
             self.warning("UNKNOWN OPM ACQUISITION MODE", f"OPM mode: {opm_mode}")

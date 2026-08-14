@@ -481,9 +481,10 @@ class OPMNIDAQ:
         self._image_axis_range_volts = (
             self._image_mirror_range_um * self._image_mirror_calibration
         )
-        self._image_scan_steps = int(
-            np.rint(self._image_axis_range_volts / self._image_axis_step_volts)
-        )  # galvo steps
+        self._image_scan_steps = max(
+            1,
+            int(np.rint(self._image_axis_range_volts / self._image_axis_step_volts)),
+        )  # galvo planes
 
         # setup projection galvo mirror
         self._projection_scan_range_volts = (
@@ -610,7 +611,7 @@ class OPMNIDAQ:
             self.scan_type = scan_type
         if channel_states:
             self.channel_states = channel_states
-        if laser_blanking:
+        if laser_blanking is not None:
             self.laser_blanking = laser_blanking
         if exposure_ms:
             self.exposure_ms = exposure_ms
@@ -863,10 +864,14 @@ class OPMNIDAQ:
             # This array is written for both AO channels
             _ao_waveform = np.zeros((self.samples_per_do_ch, 2))
 
-            # Generate image scanning mirror voltage steps
-            max_volt = self._image_mirror_min_volt + self._image_axis_range_volts
-            scan_mirror_volts = np.linspace(
-                self._image_mirror_min_volt, max_volt, n_voltage_steps
+            # Generate plane centers at the requested spacing around neutral.
+            # The configured range is the total sampled footprint, so N planes
+            # of width/spacing d occupy N*d while their centers span (N-1)*d.
+            centered_plane_indices = np.arange(n_voltage_steps, dtype=float)
+            centered_plane_indices -= (n_voltage_steps - 1) / 2.0
+            scan_mirror_volts = (
+                self._ao_neutral_positions[0]
+                + centered_plane_indices * self._image_axis_step_volts
             )
 
             # Set the last time point (when exp is off) to the first mirror positions.

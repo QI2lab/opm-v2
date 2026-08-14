@@ -82,7 +82,11 @@ def _as_list(value: Any) -> list | None:
     return list(value)
 
 
-def _custom_event(name: str, data: Mapping[str, Any]) -> MDAEvent:
+def _custom_event(
+    name: str,
+    data: Mapping[str, Any],
+    **event_fields: Any,
+) -> MDAEvent:
     """Create a custom MDA event with a consistent action payload.
 
     Parameters
@@ -97,7 +101,10 @@ def _custom_event(name: str, data: Mapping[str, Any]) -> MDAEvent:
     MDAEvent
         Custom-action event.
     """
-    return MDAEvent(action=CustomAction(name=name, data=dict(data)))
+    return MDAEvent(
+        action=CustomAction(name=name, data=dict(data)),
+        **event_fields,
+    )
 
 
 def _camera_crop_from_center(
@@ -396,6 +403,7 @@ def create_o2o3_autofocus_event(
     exposure_ms: int,
     camera_center: Sequence[int],
     camera_crop: Sequence[int],
+    camera_id: str,
 ) -> MDAEvent:
     """Create an O2/O3 autofocus event.
 
@@ -407,20 +415,25 @@ def create_o2o3_autofocus_event(
         Camera ROI center.
     camera_crop : Sequence[int]
         Camera ROI width and height.
+    camera_id : str
+        Active Micro-Manager camera device label.
 
     Returns
     -------
     MDAEvent
         Autofocus event.
     """
+    roi = _camera_crop_from_center(camera_center, camera_crop)
     return _custom_event(
         ACTION_O2O3_AUTOFOCUS,
-        {
-            "Camera": {
-                "exposure_ms": int(exposure_ms),
-                "camera_crop": _camera_crop_from_center(camera_center, camera_crop),
-            }
-        },
+        {},
+        exposure=float(exposure_ms),
+        roi=roi,
+        properties=[
+            (str(camera_id), "Trigger", "NORMAL"),
+            (str(camera_id), "TriggerPolarity", "POSITIVE"),
+            (str(camera_id), "TRIGGER SOURCE", "INTERNAL"),
+        ],
     )
 
 
@@ -532,9 +545,9 @@ def create_stage_event(stage_position: Mapping[str, float]) -> MDAEvent:
     MDAEvent
         Stage-move event.
     """
-    x_pos = round(float(stage_position["x"]), 2)
-    y_pos = round(float(stage_position["y"]), 2)
-    z_pos = round(float(stage_position["z"]), 2)
+    x_pos = float(stage_position["x"])
+    y_pos = float(stage_position["y"])
+    z_pos = float(stage_position["z"])
     return MDAEvent(
         x_pos=x_pos,
         y_pos=y_pos,

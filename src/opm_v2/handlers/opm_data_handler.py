@@ -21,10 +21,14 @@ from ome_writers import (
 
 from opm_v2.engine.debug_printing import info
 from opm_v2.engine.opm_custom_events import TILE_RETRY_ATTEMPT_METADATA_KEY
+from opm_v2.handlers.live_acquisition import LiveAcquisitionPublisher
 
 if TYPE_CHECKING:
     from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
     from useq import MDAEvent, MDASequence
+
+
+TIMELAPSE_CHUNK_MEMORY_BUDGET_BYTES = 64 * 1024**2
 
 
 class OpmDataHandler:
@@ -56,6 +60,9 @@ class OpmDataHandler:
         acquisition_order: Sequence[str] | None = None,
         events: Sequence[MDAEvent] | None = None,
         acquisition_metadata: Mapping[str, Any] | None = None,
+        max_time_chunk_size: int = 1,
+        time_chunk_concurrency: int | None = None,
+        live_manifest: Mapping[str, Any] | None = None,
     ) -> None:
         """Initialize an indexed TensorStore-backed acquisition writer.
 
@@ -73,6 +80,12 @@ class OpmDataHandler:
             Prepared camera events describing semantic dimension coordinates.
         acquisition_metadata : Mapping[str, Any] or None
             Complete acquisition configuration persisted as global metadata.
+        max_time_chunk_size : int
+            Maximum number of adjacent timepoints written in one Zarr chunk.
+        time_chunk_concurrency : int or None
+            Number of temporal chunks included in the 64 MiB memory budget.
+        live_manifest : Mapping[str, Any] or None
+            Validated acquisition manifest published after event planning.
 
         Raises
         ------
@@ -92,6 +105,16 @@ class OpmDataHandler:
             raise ValueError("acquisition_order must contain every indexed axis once")
         self._events = tuple(events or ())
         self._acquisition_metadata = dict(acquisition_metadata or {})
+        self._max_time_chunk_size = max(1, int(max_time_chunk_size))
+        self._time_chunk_concurrency = max(
+            1,
+            int(
+                time_chunk_concurrency
+                if time_chunk_concurrency is not None
+                else self.index_sizes.get("c", 1)
+            ),
+        )
+        self._resolved_time_chunk_size = 1
         self.delete_existing = bool(delete_existing)
         self._stream: OMEStream | None = None
         self._view: Any | None = None
@@ -106,6 +129,11 @@ class OpmDataHandler:
         self._tile_retry_metadata_slots: dict[
             tuple[int, tuple[int, ...]], int
         ] = {}
+        self._publisher = (
+            LiveAcquisitionPublisher(self.path, live_manifest)
+            if live_manifest is not None
+            else None
+        )
 
     @property
     def indice_sizes(self) -> dict[str, int]:
@@ -145,6 +173,16 @@ class OpmDataHandler:
         """
         return self._was_canceled
 
+    @property
+    def max_time_chunk_size(self) -> int:
+        """Configured upper bound for temporal Zarr batching."""
+        return self._max_time_chunk_size
+
+    @property
+    def time_chunk_concurrency(self) -> int:
+        """Number of temporal chunk buffers included in the memory budget."""
+        return self._time_chunk_concurrency
+
     def set_finish_reason_getter(self, getter: Callable[[], object]) -> None:
         """Provide access to the active MDA runner's completion reason.
 
@@ -176,6 +214,11 @@ class OpmDataHandler:
         self._view = None
         self._tile_retry_range = None
         self._tile_retry_metadata_slots = {}
+        if self._publisher is not None:
+            self._publisher.started(
+                frames_expected=self._frame_count,
+                data_path=self.path.name,
+            )
         info(
             "OPM IMAGE ACQUISITION STARTED",
             f"Expected frames: {self._frame_count}",
@@ -183,7 +226,7 @@ class OpmDataHandler:
         )
 
     def frameReady(self, frame: np.ndarray, event: MDAEvent, meta: FrameMetaV1) -> None:
-        """Append a camera frame at its indexed output position.
+        """Append a camera frame and publish a terminal error on write failure.
 
         Parameters
         ----------
@@ -193,6 +236,23 @@ class OpmDataHandler:
             Acquisition event associated with the frame.
         meta : FrameMetaV1
             Per-frame metadata emitted by pymmcore-plus.
+
+        """
+        try:
+            self._write_frame(frame, event, meta)
+        except Exception as exc:
+            self._publish_terminal(
+                "errored",
+                frames_saved=self._next_frame,
+                frames_expected=self._frame_count,
+                error=str(exc),
+            )
+            raise
+
+    def _write_frame(
+        self, frame: np.ndarray, event: MDAEvent, meta: FrameMetaV1
+    ) -> None:
+        """Write one validated frame at its planned output position.
 
         Raises
         ------
@@ -308,9 +368,12 @@ class OpmDataHandler:
 
         chunk_buffers = getattr(backend, "_chunk_buffers", None)
         if chunk_buffers:
-            raise RuntimeError(
-                "Tile replacement requires one-frame index chunks"
-            )
+            # A camera timeout can leave part of a temporal chunk in memory.
+            # Those frames belong to the failed pass and must not later be
+            # flushed over the restarted tile.  Complete chunks are already on
+            # disk and are replaced as the retry traverses them again.
+            for chunk_buffer in chunk_buffers:
+                chunk_buffer.flush_all_partial()
 
         metadata_slots: dict[tuple[int, tuple[int, ...]], int] = {}
         retry_positions = {
@@ -439,12 +502,17 @@ class OpmDataHandler:
         _sequence : MDASequence
             Completed sequence.
 
-        Raises
-        ------
-        RuntimeError
-            If fewer camera frames arrived than the configured acquisition shape.
         """
-        self.close()
+        try:
+            self.close()
+        except Exception as exc:
+            self._publish_terminal(
+                "errored",
+                frames_saved=self._next_frame,
+                frames_expected=self._frame_count,
+                error=str(exc),
+            )
+            raise
         # pymmcore-plus emits sequenceCanceled followed by sequenceFinished.
         # A cooperative STOP intentionally leaves the planned array incomplete,
         # so cancellation owns finalization and must not trigger the missing-frame
@@ -456,8 +524,13 @@ class OpmDataHandler:
             if self._finish_reason_getter is not None
             else None
         )
-        if str(finish_reason).casefold() == "errored":
+        if str(finish_reason).casefold().endswith("errored"):
             self._is_finalized = False
+            self._publish_terminal(
+                "errored",
+                frames_saved=self._next_frame,
+                frames_expected=self._frame_count,
+            )
             info(
                 "OPM IMAGE ACQUISITION ERRORED",
                 f"Frames saved: {self._next_frame} of {self._frame_count}",
@@ -465,11 +538,23 @@ class OpmDataHandler:
             )
             return
         if self._next_frame != self._frame_count:
-            raise RuntimeError(
+            error = RuntimeError(
                 "OPM acquisition finished with "
                 f"{self._next_frame} of {self._frame_count} expected frames"
             )
+            self._publish_terminal(
+                "errored",
+                frames_saved=self._next_frame,
+                frames_expected=self._frame_count,
+                error=str(error),
+            )
+            raise error
         self._is_finalized = True
+        self._publish_terminal(
+            "completed",
+            frames_saved=self._next_frame,
+            frames_expected=self._frame_count,
+        )
         info(
             "OPM IMAGE ACQUISITION COMPLETE",
             f"Frames saved: {self._next_frame}",
@@ -484,18 +569,47 @@ class OpmDataHandler:
         _sequence : MDASequence
             Canceled sequence.
         """
-        self.close()
+        try:
+            self.close()
+        except Exception as exc:
+            self._publish_terminal(
+                "errored",
+                frames_saved=self._next_frame,
+                frames_expected=self._frame_count,
+                error=str(exc),
+            )
+            raise
         self._is_finalized = False
         self._was_canceled = True
+        self._publish_terminal(
+            "canceled",
+            frames_saved=self._next_frame,
+            frames_expected=self._frame_count,
+        )
         info(
             "OPM IMAGE ACQUISITION CANCELED",
             f"Frames saved: {self._next_frame} of {self._frame_count}",
             f"Output: {self.path}",
         )
 
+    def _publish_terminal(self, event: str, **diagnostics: Any) -> None:
+        """Publish one terminal lifecycle event when sidecars are enabled."""
+        if self._publisher is not None:
+            self._publisher.terminal(event, **diagnostics)
+
     def close(self) -> None:
         """Flush and close the active ome-writers stream."""
         if self._stream is not None:
+            backend = self._stream._backend
+            # TensorStore waits for futures before the base backend flushes
+            # partial buffered chunks.  Flush them first so cancellation and
+            # non-divisible time series cannot leave a write running after the
+            # arrays are released.
+            if getattr(backend, "_chunk_buffers", None):
+                backend._finalize_chunk_buffers()
+                futures = getattr(backend, "_futures", None)
+                while futures:
+                    futures.pop().result()
             self._stream.close()
             self._stream = None
 
@@ -540,6 +654,13 @@ class OpmDataHandler:
         }
         standard_sizes.update({"y": height, "x": width})
         dimensions = dims_from_standard_axes(standard_sizes)
+        self._resolved_time_chunk_size = self._time_chunk_size(frame)
+        dimensions = [
+            dimension.model_copy(update={"chunk_size": self._resolved_time_chunk_size})
+            if dimension.name == "t"
+            else dimension
+            for dimension in dimensions
+        ]
         scales = {
             "t": self._axis_scale("t"),
             "z": self._axis_scale("z"),
@@ -566,6 +687,11 @@ class OpmDataHandler:
             overwrite=self.delete_existing,
         )
         stream = create_stream(settings)
+        self._set_global_metadata(stream)
+        return stream
+
+    def _set_global_metadata(self, stream: OMEStream) -> None:
+        """Update acquisition-level OME-Zarr metadata on an active stream."""
         stream.set_global_metadata(
             "opm_v2",
             {
@@ -574,9 +700,32 @@ class OpmDataHandler:
                 "summary_metadata": _json_safe(self._summary_meta),
                 "configuration": _json_safe(self._acquisition_metadata),
                 "storage_backend": "tensorstore",
+                "time_chunk_size": self._resolved_time_chunk_size,
             },
         )
-        return stream
+
+    def _time_chunk_size(self, frame: np.ndarray) -> int:
+        """Resolve temporal batching without allowing large memory spikes.
+
+        Returns
+        -------
+        int
+            Number of adjacent timepoints stored in one Zarr chunk.
+        """
+        timepoints = self.index_sizes.get("t", 1)
+        bytes_per_timepoint = max(
+            1,
+            int(frame.nbytes) * self._time_chunk_concurrency,
+        )
+        memory_limited_size = max(
+            1,
+            TIMELAPSE_CHUNK_MEMORY_BUDGET_BYTES // bytes_per_timepoint,
+        )
+        return min(
+            self._max_time_chunk_size,
+            timepoints,
+            memory_limited_size,
+        )
 
     def _semantic_axis_value(self, axis: str) -> int | list[str | Position]:
         """Return semantic coordinates for one indexed axis.

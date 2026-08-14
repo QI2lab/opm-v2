@@ -37,10 +37,10 @@ wfc_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 wfc_correction_file_path = Path(
-    r"E:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
+    r"F:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
 )
 output_prefix = "20260706_straight_with_curvature_and_tilt"
-output_file_path = Path(r"E:\Alignment\20260706") / Path(
+output_file_path = Path(r"F:\Alignment\20260706") / Path(
     output_prefix + "_closed_loop_output.wcs"
 )
 

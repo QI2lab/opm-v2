@@ -34,7 +34,7 @@ WFC_CONFIG_FILE_PATH = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WaveFrontCorrector_mirao52-e_0329.dat"
 )
 INTERACTION_MATRIX_FILE_PATH = Path(
-    r"E:\Alignment\20260708\wfc_files\20260708_straight_interaction_matrix.aoc"
+    r"F:\Alignment\20260708\wfc_files\20260708_straight_interaction_matrix.aoc"
 )
 CLOSED_LOOP_UI_PATH = Path(
     r"C:\Users\qi2lab\Documents\github\wavekit_python\Examples\DEMO\Closed loop\closed_loop.ui"
@@ -95,7 +95,7 @@ if include_tilt:
 else:
     output_prefix += "_no_tilt"
 
-output_file_path = Path(r"E:\Alignment\20260708") / Path(
+output_file_path = Path(r"F:\Alignment\20260708") / Path(
     output_prefix + "_closed_loop_output.wcs"
 )
 

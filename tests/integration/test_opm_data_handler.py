@@ -193,6 +193,7 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
             "output": str(Path("configured/output")),
         },
         "storage_backend": "tensorstore",
+        "time_chunk_size": 1,
     }
 
     ome_series = json.loads((output / "OME" / "zarr.json").read_text())
@@ -294,7 +295,7 @@ def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
     sequence = MDASequence()
     events = tuple(
         MDAEvent(
-            index={"t": 0, "p": 0, "z": plane, "c": 0},
+            index={"t": plane, "p": 0, "z": 0, "c": 0},
             exposure=5.0,
             metadata={"DAQ": {"mode": "stage"}},
         )
@@ -302,10 +303,11 @@ def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
     )
     handler = OpmDataHandler(
         path=output,
-        index_sizes={"t": 1, "p": 1, "z": 3, "c": 1},
+        index_sizes={"t": 3, "p": 1, "z": 1, "c": 1},
         delete_existing=True,
-        acquisition_order=("t", "p", "z", "c"),
+        acquisition_order=("p", "z", "t", "c"),
         events=events,
+        max_time_chunk_size=3,
     )
     handler.sequenceStarted(
         sequence,
@@ -345,9 +347,18 @@ def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
     handler.sequenceFinished(sequence)
 
     array = read_tensorstore_array(output / "0")
-    assert array.shape == (1, 1, 3, 2, 2)
+    assert array.shape == (3, 1, 1, 2, 2)
     for plane, value in enumerate((10, 20, 30)):
-        assert np.all(array[0, 0, plane] == value)
+        assert np.all(array[plane, 0, 0] == value)
+
+    array_metadata = json.loads((output / "0" / "zarr.json").read_text())
+    assert array_metadata["chunk_grid"]["configuration"]["chunk_shape"] == [
+        3,
+        1,
+        1,
+        2,
+        2,
+    ]
 
     metadata = json.loads((output / "zarr.json").read_text())
     frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
@@ -357,6 +368,55 @@ def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
         item["event_metadata"][TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
         for item in frame_metadata
     )
+
+
+def test_temporal_chunks_preserve_mirror_time_and_plane_order(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Round-trip a mirror series through full and partial temporal chunks."""
+    output = workspace_tmp_path / "mirror-temporal-chunks.ome.zarr"
+    timepoints = 17
+    planes = 5
+    events = tuple(
+        MDAEvent(index={"t": time, "p": 0, "c": 0, "z": plane})
+        for time in range(timepoints)
+        for plane in range(planes)
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": timepoints, "p": 1, "c": 1, "z": planes},
+        delete_existing=True,
+        acquisition_order=("t", "p", "c", "z"),
+        events=events,
+        max_time_chunk_size=16,
+        time_chunk_concurrency=planes,
+    )
+    sequence = MDASequence()
+    handler.sequenceStarted(sequence, {})
+    for event in events:
+        value = 10 * int(event.index["t"]) + int(event.index["z"])
+        handler.frameReady(
+            np.full((2, 3), value, dtype=np.uint16),
+            event,
+            {"runner_time_ms": float(value)},
+        )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert array.shape == (timepoints, 1, planes, 2, 3)
+    for time in range(timepoints):
+        for plane in range(planes):
+            assert np.all(array[time, 0, plane] == 10 * time + plane)
+
+    array_metadata = json.loads((output / "0" / "zarr.json").read_text())
+    assert array_metadata["chunk_grid"]["configuration"]["chunk_shape"] == [
+        16,
+        1,
+        1,
+        2,
+        3,
+    ]
 
 
 def test_tile_retry_before_first_frame_starts_stream_normally(

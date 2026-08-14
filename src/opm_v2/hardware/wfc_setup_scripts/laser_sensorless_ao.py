@@ -235,7 +235,7 @@ haso_config_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\WFS_HASO4_VIS_7635.dat"
 )
 wfc_correction_file_path = Path(
-    r"E:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
+    r"F:\Alignment\20260706\20260706_straight_interaction_matrix.aoc"
 )
 wfc_flat_file_path = Path(
     r"C:\Users\qi2lab\Documents\github\opm_v2\src\opm_v2\hardware\wfc_configuration_files\20260505_straight_from_corrected_wo_curvature_curvature_tilt_closed_loop_output_allTRUE.wcs"

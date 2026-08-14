@@ -634,10 +634,7 @@ class OPMSettingsV2(QWidget):
         self.spbx_488_power = self.create_dbspinbox(
             value=channel_powers[1],
             precision=2,
-            connect_to_fn=[
-                # self.update_488_slider,
-                self.update_488_state
-            ],
+            connect_to_fn=[self.update_488_slider, self.update_488_state],
         )
         self.spbx_488_exp = self.create_dbspinbox(
             value=channel_exposures[1],
@@ -665,10 +662,7 @@ class OPMSettingsV2(QWidget):
         self.spbx_561_power = self.create_dbspinbox(
             value=channel_powers[2],
             precision=2,
-            connect_to_fn=[
-                # self.update_561_slider,
-                self.update_561_state
-            ],
+            connect_to_fn=[self.update_561_slider, self.update_561_state],
         )
         self.spbx_561_exp = self.create_dbspinbox(
             value=channel_exposures[2],
@@ -696,10 +690,7 @@ class OPMSettingsV2(QWidget):
         self.spbx_638_power = self.create_dbspinbox(
             value=channel_powers[3],
             precision=2,
-            connect_to_fn=[
-                # self.update_638_slider,
-                self.update_638_state
-            ],
+            connect_to_fn=[self.update_638_slider, self.update_638_state],
         )
         self.spbx_638_exp = self.create_dbspinbox(
             value=channel_exposures[3],
@@ -727,10 +718,7 @@ class OPMSettingsV2(QWidget):
         self.spbx_705_power = self.create_dbspinbox(
             value=channel_powers[4],
             precision=2,
-            connect_to_fn=[
-                # self.update_705_slider,
-                self.update_705_state
-            ],
+            connect_to_fn=[self.update_705_slider, self.update_705_state],
         )
         self.spbx_705_exp = self.create_dbspinbox(
             value=channel_exposures[4],
@@ -1085,10 +1073,8 @@ class OPMSettingsV2(QWidget):
         self.spbx_405_power.setValue(self.sldr_405_power.value())
 
     def update_405_slider(self):
-        """Retain the disabled 405 nm spin-box-to-slider callback."""
-        # Update the slider value when the spinbox value changes
-        # self.sldr_405_power.setValue(int(self.spbx_405_power.value()))
-        pass
+        """Copy the 405 nm laser spin-box value to its slider."""
+        self._sync_power_slider(self.spbx_405_power, self.sldr_405_power)
 
     def update_488_spbx(self):
         """Copy the 488 nm laser slider value to its spin box."""
@@ -1096,10 +1082,8 @@ class OPMSettingsV2(QWidget):
         self.spbx_488_power.setValue(self.sldr_488_power.value())
 
     def update_488_slider(self):
-        """Retain the disabled 488 nm spin-box-to-slider callback."""
-        # Update the slider value when the spinbox value changes
-        # self.sldr_488_power.setValue(int(self.spbx_488_power.value()))
-        pass
+        """Copy the 488 nm laser spin-box value to its slider."""
+        self._sync_power_slider(self.spbx_488_power, self.sldr_488_power)
 
     def update_561_spbx(self):
         """Copy the 561 nm laser slider value to its spin box."""
@@ -1107,10 +1091,8 @@ class OPMSettingsV2(QWidget):
         self.spbx_561_power.setValue(self.sldr_561_power.value())
 
     def update_561_slider(self):
-        """Retain the disabled 561 nm spin-box-to-slider callback."""
-        # Update the slider value when the spinbox value changes
-        # self.sldr_561_power.setValue(int(self.spbx_561_power.value()))
-        pass
+        """Copy the 561 nm laser spin-box value to its slider."""
+        self._sync_power_slider(self.spbx_561_power, self.sldr_561_power)
 
     def update_638_spbx(self):
         """Copy the 638 nm laser slider value to its spin box."""
@@ -1118,10 +1100,8 @@ class OPMSettingsV2(QWidget):
         self.spbx_638_power.setValue(self.sldr_638_power.value())
 
     def update_638_slider(self):
-        """Retain the disabled 638 nm spin-box-to-slider callback."""
-        # Update the slider value when the spinbox value changes
-        # self.sldr_638_power.setValue(int(self.spbx_638_power.value()))
-        pass
+        """Copy the 638 nm laser spin-box value to its slider."""
+        self._sync_power_slider(self.spbx_638_power, self.sldr_638_power)
 
     def update_705_spbx(self):
         """Copy the 705 nm laser slider value to its spin box."""
@@ -1129,10 +1109,15 @@ class OPMSettingsV2(QWidget):
         self.spbx_705_power.setValue(self.sldr_705_power.value())
 
     def update_705_slider(self):
-        """Retain the disabled 705 nm spin-box-to-slider callback."""
-        # Update the slider value when the spinbox value changes
-        # self.sldr_705_power.setValue(int(self.spbx_705_power.value()))
-        pass
+        """Copy the 705 nm laser spin-box value to its slider."""
+        self._sync_power_slider(self.spbx_705_power, self.sldr_705_power)
+
+    @staticmethod
+    def _sync_power_slider(spinbox: QDoubleSpinBox, slider: QSlider) -> None:
+        """Move an integer slider without rounding the stored laser power."""
+        blocker = QSignalBlocker(slider)
+        slider.setValue(round(spinbox.value()))
+        del blocker
 
     def update_mirror_scan_range(self, *_):
         """Copy the mirror range into projection settings and save changes."""

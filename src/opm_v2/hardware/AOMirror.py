@@ -163,6 +163,7 @@ class AOMirror:
         self._mode_indices = np.arange(1, self._n_modes + 1, dtype=np.uint32)
         self._mirror_settle_ms = int(mirror_settle_ms)
         self._wait_after_move = bool(wait_after_move)
+        self._wfc_connected = False
 
         if self.simulate:
             self.n_actuators = 52
@@ -211,6 +212,7 @@ class AOMirror:
         )
         self.wfc_set = wkpy.WavefrontCorrectorSet(wavefrontcorrector=self.wfc)
         self.wfc.connect(True)
+        self._wfc_connected = True
         self.wfc.set_temporization(self._mirror_settle_ms)
         self.n_actuators = self.wfc.nb_actuators
 
@@ -537,10 +539,19 @@ class AOMirror:
         """
         return self._deltas
 
+    def disconnect(self) -> None:
+        """Disconnect the physical mirror interface exactly once."""
+        if self.simulate or not self._wfc_connected:
+            return
+        self.wfc.disconnect()
+        self._wfc_connected = False
+
     def __del__(self):
-        """Disconnect from mirror on close."""
-        if hasattr(self, "wfc"):
-            self.wfc.disconnect()
+        """Best-effort fallback when explicit application teardown was skipped."""
+        try:
+            self.disconnect()
+        except Exception:
+            pass
 
     def _validate_voltage(self, volts: NDArray) -> bool:
         """Check mirror positions against safe voltage limits.

@@ -61,6 +61,64 @@ def test_simulated_projection_waveform_runs_through_singleton() -> None:
     assert all(task.valid and not task.running for task in daq.tasks)
 
 
+def test_mirror_planes_use_requested_step_centered_on_neutral() -> None:
+    """Center five 0.8-um planes within a 4-um footprint on neutral AO."""
+    calibration_v_per_um = 0.04
+    neutral_v = 0.25
+    daq = MockOPMNIDAQ(
+        image_mirror_calibration=calibration_v_per_um,
+        image_mirror_neutral_v=neutral_v,
+    )
+    daq.set_acquisition_params(
+        scan_type="mirror",
+        channel_states=[True, False, False, False, False],
+        image_mirror_range_um=4.0,
+        image_mirror_step_um=0.8,
+    )
+
+    daq.generate_waveforms()
+
+    plane_voltages = np.unique(daq.analog_waveform[:, 0])
+    expected_offsets_um = np.array([-1.6, -0.8, 0.0, 0.8, 1.6])
+    expected_voltages = neutral_v + expected_offsets_um * calibration_v_per_um
+    assert daq.n_scan_steps == 5
+    np.testing.assert_allclose(plane_voltages, expected_voltages)
+    np.testing.assert_allclose(
+        np.diff(plane_voltages),
+        0.8 * calibration_v_per_um,
+    )
+    assert plane_voltages[2] == pytest.approx(neutral_v)
+
+
+@pytest.mark.parametrize("laser_blanking", (False, True))
+def test_mirror_laser_blanking_controls_enabled_digital_lines(
+    laser_blanking: bool,
+) -> None:
+    """Keep enabled lasers high only when mirror-scan blanking is disabled."""
+    daq = MockOPMNIDAQ(laser_blanking=not laser_blanking)
+    channel_states = [False, True, False, True, False]
+    daq.set_acquisition_params(
+        scan_type="mirror",
+        channel_states=channel_states,
+        image_mirror_range_um=4.0,
+        image_mirror_step_um=0.8,
+        laser_blanking=laser_blanking,
+    )
+
+    daq.generate_waveforms()
+
+    waveform = daq.digital_waveform
+    active_lines = np.flatnonzero(channel_states)
+    inactive_lines = np.flatnonzero(np.logical_not(channel_states))
+    assert daq.laser_blanking is laser_blanking
+    assert np.all(waveform[:, inactive_lines] == 0)
+    if laser_blanking:
+        assert np.all(np.any(waveform[:, active_lines] == 1, axis=0))
+        assert np.all(np.any(waveform[:, active_lines] == 0, axis=0))
+    else:
+        assert np.all(waveform[:, active_lines] == 1)
+
+
 def test_mock_daq_reset_invalidates_tasks_and_blocks_routing_until_ready() -> None:
     """Model the NI reset window and reject stale task handles."""
     daq = MockOPMNIDAQ(exposure_ms=10.0)

@@ -21,6 +21,7 @@ from time import monotonic, sleep
 
 import numpy as np
 from numpy.typing import NDArray
+from pymmcore_plus.core import DeviceProperty
 from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, SkipEvent
 from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
@@ -60,6 +61,10 @@ LARGE_STAGE_MOVE_TIMEOUT_MS = 120_000
 STAGE_MOVE_TIMEOUT_MARGIN_S = 2.0
 LARGE_STAGE_MOVE_SPEED_MULTIPLIER = 4.0
 MAX_TILE_RETRY_ATTEMPTS = 1
+
+
+class IncompleteHardwareSequenceError(RuntimeError):
+    """A hardware-triggered event ended before every planned frame arrived."""
 
 
 def debug(header: str, *lines: object) -> None:
@@ -387,6 +392,7 @@ class OPMEngineV2(MDAEngine):
         -------
         SummaryMetaV1 or None
             Summary metadata returned by the base engine.
+
         """
         self._stage_move_count = 0
         self._tile_setup_events = {}
@@ -438,10 +444,50 @@ class OPMEngineV2(MDAEngine):
         for speed_key, (axis, property_name) in speed_properties.items():
             if speed_key not in speeds:
                 continue
-            speed = float(speeds[speed_key])
+            requested_speed = float(speeds[speed_key])
+            speed = requested_speed
+            if xy_stage and self.mmcore.hasProperty(xy_stage, property_name):
+                speed_property = DeviceProperty(
+                    xy_stage,
+                    property_name,
+                    self.mmcore,
+                )
+                has_limits = speed_property.hasLimits()
+                if type(has_limits) is bool and has_limits:
+                    lower, upper = speed_property.range()
+                    speed = min(max(speed, float(lower)), float(upper))
+                numeric_allowed = []
+                for value in speed_property.allowedValues():
+                    try:
+                        numeric_allowed.append(float(value))
+                    except (TypeError, ValueError):
+                        continue
+                if numeric_allowed:
+                    at_or_below = [value for value in numeric_allowed if value <= speed]
+                    speed = max(at_or_below) if at_or_below else min(numeric_allowed)
+                if speed != requested_speed:
+                    warning(
+                        "OPM STAGE SPEED LIMITED",
+                        f"{property_name}: requested {requested_speed:g} mm/s",
+                        f"Using adapter limit: {speed:g} mm/s",
+                    )
             applied[axis] = speed
             if xy_stage and self.mmcore.hasProperty(xy_stage, property_name):
-                self.mmcore.setProperty(xy_stage, property_name, speed)
+                try:
+                    speed_property.setValue(speed)
+                except RuntimeError as exc:
+                    try:
+                        applied[axis] = float(
+                            self.mmcore.getProperty(xy_stage, property_name)
+                        )
+                    except (TypeError, ValueError, RuntimeError):
+                        applied.pop(axis, None)
+                    warning(
+                        "OPM STAGE SPEED REJECTED",
+                        f"{property_name}: {speed:g} mm/s ({exc})",
+                        "Keeping the current adapter speed.",
+                    )
+                    continue
                 try:
                     applied[axis] = float(
                         self.mmcore.getProperty(xy_stage, property_name)
@@ -833,9 +879,9 @@ class OPMEngineV2(MDAEngine):
                 if self.opmDAQ.running():
                     self.opmDAQ.stop_waveform_playback()
                 self.opmDAQ.reset_ao_channels()
-
-                # Setup camera properties
-                self.configure_camera(data_dict)
+                # Standard MDA fields own camera exposure, ROI, trigger
+                # properties, and the system wait for this custom action.
+                super().setup_event(event)
 
             elif action_name == ACTION_STAGE_MOVE:
                 # The standard pymmcore-plus engine owns XYZ positioning and
@@ -855,12 +901,20 @@ class OPMEngineV2(MDAEngine):
                     )
                 target_x = float(event.x_pos)
                 target_y = float(event.y_pos)
+                target_z = float(event.z_pos)
 
                 # ScanState and physical-axis Busy are independent in the ASI
                 # adapter.  End the scan state machine, then wait for actual
                 # motion to stop before measuring distance or issuing a point move.
                 self._prepare_xy_for_point_move()
                 current_x, current_y = self.mmcore.getXYPosition()
+                current_z = float(self.mmcore.getZPosition())
+                debug(
+                    "XYZ STAGE MOVE",
+                    f"focus device: {self.mmcore.getFocusDevice()}",
+                    f"current: ({current_x:.4f}, {current_y:.4f}, {current_z:.4f}) um",
+                    f"target: ({target_x:.4f}, {target_y:.4f}, {target_z:.4f}) um",
+                )
                 normal_timeout_ms = self._xy_stage_timeout_ms()
                 normal_duration_s = self._xy_move_duration_s(
                     current_x,
@@ -1055,7 +1109,6 @@ class OPMEngineV2(MDAEngine):
                 else:
                     # Clear DAQ tasks to re-program
                     self.opmDAQ.clear_tasks()
-                    # Setup camera properties
                     self.configure_camera(data_dict)
                     # Set laser powers
                     self.configure_lasers(data_dict, setting="AO")
@@ -1072,8 +1125,6 @@ class OPMEngineV2(MDAEngine):
                 else:
                     # Clear DAQ tasks to re-program
                     self.opmDAQ.clear_tasks()
-
-                    # Setup camera properties
                     self.configure_camera(data_dict)
 
                     # Set laser powers
@@ -1261,7 +1312,9 @@ class OPMEngineV2(MDAEngine):
 
             if action_name == ACTION_O2O3_AUTOFOCUS:
                 manage_O3_focus(
-                    self._config["O2O3-autofocus"]["O3_stage_name"], verbose=DEBUGGING
+                    self._config["O2O3-autofocus"]["O3_stage_name"],
+                    verbose=DEBUGGING,
+                    mmc=self.mmcore,
                 )
 
             elif action_name == ACTION_AO_OPTIMIZE:
@@ -1358,14 +1411,65 @@ class OPMEngineV2(MDAEngine):
                         "No coefficients or positions sent.",
                     )
             return ()
-        if (
-            isinstance(event, SequencedEvent)
-            and getattr(self, "_tile_retry_prepare", None) is not None
-            and ACTION_STAGE_MOVE in self._tile_setup_events
-            and ACTION_DAQ in self._tile_setup_events
-        ):
-            return self._exec_tile_with_retry(event)
+        if isinstance(event, SequencedEvent):
+            if (
+                getattr(self, "_tile_retry_prepare", None) is not None
+                and ACTION_STAGE_MOVE in self._tile_setup_events
+                and ACTION_DAQ in self._tile_setup_events
+            ):
+                return self._exec_tile_with_retry(event)
+            return self._exec_complete_hardware_sequence(event)
         return super().exec_event(event) or ()
+
+    def _exec_complete_hardware_sequence(
+        self,
+        event: SequencedEvent,
+    ) -> Iterable[tuple[NDArray, MDAEvent, FrameMetaV1]]:
+        """Execute one sequence and fail if pymmcore-plus reports missing frames.
+
+        pymmcore-plus represents an early-ended camera sequence by yielding
+        ``None`` for every missing frame.  That is useful for generic sparse
+        acquisitions, but an OPM hardware tile is atomic: advancing to another
+        stage position after any missing frame would corrupt the acquisition.
+
+        Yields
+        ------
+        tuple
+            Complete camera payloads from the upstream MDA engine.
+
+        Raises
+        ------
+        IncompleteHardwareSequenceError
+            If the sequence ends without every planned camera frame.
+        """
+        source = iter(super().exec_event(event) or ())
+        send = getattr(source, "send", None)
+        received = 0
+        missing = 0
+        canceled = False
+        try:
+            payload = next(source)
+            while True:
+                signal = None
+                if payload is None:
+                    missing += 1
+                else:
+                    received += 1
+                    signal = yield payload
+                    canceled = canceled or signal == "cancel"
+                payload = send(signal) if send is not None else next(source)
+        except StopIteration:
+            pass
+
+        if canceled:
+            return
+        expected = len(event.events)
+        if missing or received != expected:
+            first_index = dict(event.events[0].index) if event.events else {}
+            raise IncompleteHardwareSequenceError(
+                "Incomplete OPM hardware sequence at "
+                f"{first_index}: expected {expected} frames, received {received}"
+            )
 
     def _exec_tile_with_retry(
         self, event: SequencedEvent
@@ -1381,25 +1485,28 @@ class OPMEngineV2(MDAEngine):
         ------
         TimeoutError
             If the restarted tile also times out.
+        IncompleteHardwareSequenceError
+            If the restarted tile also ends before every frame arrives.
         """
         attempt = 0
         while True:
             try:
-                yield from super().exec_event(event) or ()
+                yield from self._exec_complete_hardware_sequence(event)
                 return
-            except TimeoutError:
+            except (TimeoutError, IncompleteHardwareSequenceError) as exc:
                 if attempt >= MAX_TILE_RETRY_ATTEMPTS:
                     warning(
                         "OPM TILE RETRY FAILED",
                         f"Tile: {dict(event.events[0].index)}",
                         f"Attempts: {attempt}",
-                        "Propagating the repeated camera timeout",
+                        f"Propagating camera failure: {exc}",
                     )
                     raise
                 attempt += 1
                 warning(
-                    "OPM TILE ACQUISITION TIMEOUT",
+                    "OPM TILE ACQUISITION FAILED",
                     f"Tile: {dict(event.events[0].index)}",
+                    f"Reason: {exc}",
                     f"Restarting complete tile: attempt {attempt}",
                 )
                 self._restart_hardware_tile(event, attempt)

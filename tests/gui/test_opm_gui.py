@@ -529,6 +529,11 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
                 control.setValue(value)
                 persisted = _read_config(config_path)["acq_config"]["DAQ"]
                 assert persisted[config_key][channel_index] == control.value()
+        power.setValue(37.25)
+        persisted = _read_config(config_path)["acq_config"]["DAQ"]
+        assert slider.value() == 37
+        assert power.value() == 37.25
+        assert persisted["channel_powers"][channel_index] == 37.25
         for checked in (False, True):
             checkbox.setChecked(checked)
             persisted = _read_config(config_path)["acq_config"]["DAQ"]

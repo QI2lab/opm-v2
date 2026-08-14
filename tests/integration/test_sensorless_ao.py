@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
@@ -11,6 +12,76 @@ from pymmcore_plus import CMMCorePlus
 from opm_v2.engine.opm_custom_events import create_ao_grid_event
 from opm_v2.utils import sensorless_ao
 from opm_v2.utils.position_tools import ao_grid_positions
+
+
+def _camera_with_transient_snap_failure(image: np.ndarray) -> MagicMock:
+    mmc = MagicMock()
+    mmc.getCameraDevice.return_value = "OrcaFusionBT"
+    mmc.isSequenceRunning.return_value = True
+    mmc.hasProperty.return_value = True
+    mmc.getAllowedPropertyValues.side_effect = lambda _camera, prop: {
+        "Trigger": ("NORMAL", "START"),
+        "TriggerPolarity": ("POSITIVE", "NEGATIVE"),
+        "TRIGGER SOURCE": ("INTERNAL", "EXTERNAL"),
+    }[prop]
+    mmc.snap.side_effect = [RuntimeError("Unknown error in the device"), image]
+    return mmc
+
+
+def test_ao_snap_recovery_preserves_projection_waveform() -> None:
+    """Reset the camera and retry without replacing projection with a 2D scan."""
+    expected = np.arange(12, dtype=np.uint16).reshape(3, 4)
+    mmc = _camera_with_transient_snap_failure(expected)
+    daq = MagicMock(scan_type="projection")
+    daq.programmed.return_value = True
+    daq.running.return_value = True
+
+    image = sensorless_ao._snap_ao_image(mmc, daq)
+
+    np.testing.assert_array_equal(image, expected)
+    assert mmc.snap.call_count == 2
+    mmc.stopSequenceAcquisition.assert_called_once_with()
+    assert mmc.setProperty.call_args_list == [
+        call("OrcaFusionBT", "Trigger", "NORMAL"),
+        call("OrcaFusionBT", "TriggerPolarity", "POSITIVE"),
+        call("OrcaFusionBT", "TRIGGER SOURCE", "INTERNAL"),
+    ]
+    daq.stop_waveform_playback.assert_called_once_with()
+    daq.start_waveform_playback.assert_called_once_with()
+    daq.clear_tasks.assert_not_called()
+    daq.generate_waveforms.assert_not_called()
+    assert daq.scan_type == "projection"
+
+
+def test_ao_snap_recovery_rebuilds_invalid_projection_tasks() -> None:
+    """Rebuild invalid tasks from the DAQ's retained projection parameters."""
+    mmc = _camera_with_transient_snap_failure(np.ones((2, 2), dtype=np.uint16))
+    daq = MagicMock(scan_type="projection")
+    daq.programmed.side_effect = (False, True)
+    daq.running.return_value = True
+
+    sensorless_ao._snap_ao_image(mmc, daq)
+
+    daq.clear_tasks.assert_called_once_with()
+    daq.generate_waveforms.assert_called_once_with()
+    daq.program_daq_waveforms.assert_called_once_with()
+    daq.start_waveform_playback.assert_called_once_with()
+    assert daq.scan_type == "projection"
+
+
+def test_ao_snap_propagates_after_one_failed_recovery() -> None:
+    """Bound recovery to one retry when the camera remains unavailable."""
+    mmc = _camera_with_transient_snap_failure(np.ones((2, 2), dtype=np.uint16))
+    mmc.snap.side_effect = [RuntimeError("first"), RuntimeError("second")]
+    daq = MagicMock(scan_type="projection")
+    daq.programmed.return_value = True
+    daq.running.return_value = True
+
+    with pytest.raises(RuntimeError, match="after one recovery attempt"):
+        sensorless_ao._snap_ao_image(mmc, daq)
+
+    assert mmc.snap.call_count == 2
+    daq.start_waveform_playback.assert_called_once_with()
 
 
 def test_ao_grid_normalizes_integral_float_counts(

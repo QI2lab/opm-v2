@@ -4,24 +4,28 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 import numpy as np
 import pytest
-from pymmcore_gui import WidgetAction
+from pymmcore_gui import CoreAction, WidgetAction
 from pymmcore_gui._qt.QtCore import Qt
 from pymmcore_gui._qt.QtWidgets import QApplication
 from pymmcore_widgets.control._rois.roi_model import RectangleROI
+from useq import MDASequence
 
 from opm_v2._app import (
     _STAGE_EXPLORER_REQUIRED_METHODS,
+    LIVE_DISPLAY_INTERVAL_MS,
     OPM_WIDGET_KEY,
     OPMAppController,
     _add_coverslip_focus_point,
+    _configure_live_preview,
     _connect_stage_explorer_to_mda,
     _coverslip_planes_by_roi,
     _fit_coverslip_calibration,
     _stage_explorer_accelerated_speeds,
+    _stage_explorer_on_image_snapped,
     _stage_explorer_scratch_output,
     _start_coverslip_calibration,
     _validate_stage_explorer_compatibility,
@@ -40,6 +44,49 @@ from opm_v2.utils.coverslip import (
     COVERSLIP_METADATA_KEY,
     CoverslipPlane,
 )
+
+
+@pytest.mark.parametrize(
+    ("positions_selected", "expected_positions"),
+    [(False, ()), (True, ((100.0, 200.0, 300.0),))],
+)
+def test_timelapse_planning_preserves_positions_tab_intent(
+    workspace_tmp_path,
+    positions_selected,
+    expected_positions,
+) -> None:
+    """Remove the current-position record synthesized for an unchecked tab."""
+    controller = object.__new__(OPMAppController)
+    positions_widget = object()
+    grid_widget = object()
+    tab_widget = MagicMock()
+    tab_widget.isChecked.side_effect = lambda widget: (
+        positions_selected if widget is positions_widget else False
+    )
+    controller.mda_widget = SimpleNamespace(
+        stage_positions=positions_widget,
+        grid_plan=grid_widget,
+        tab_wdg=tab_widget,
+        value=lambda: MDASequence(
+            stage_positions=[(100.0, 200.0, 300.0)],
+            time_plan={"interval": 0, "loops": 2},
+        ),
+    )
+    controller.mmc = MagicMock()
+    controller.config = {}
+    controller.opm_ao_mirror = SimpleNamespace(output_path=None)
+    output = workspace_tmp_path / "timelapse.ome.zarr"
+
+    with patch("opm_v2._app.OPMEventBuilder") as builder:
+        builder.return_value.build.return_value = (["event"], "handler")
+        result = controller.create_opm_events(False, "timelapse", output)
+
+    planned_sequence = builder.call_args.args[2]
+    assert tuple(
+        (position.x, position.y, position.z)
+        for position in planned_sequence.stage_positions
+    ) == expected_positions
+    assert result == (["event"], "handler")
 
 
 def test_registered_extension_composes_gui_engine_and_hardware_instances(
@@ -131,6 +178,112 @@ def test_registered_extension_composes_gui_engine_and_hardware_instances(
         assert "CLOSED" in shutter_button.text()
     finally:
         window.close()
+
+
+def test_window_close_releases_application_owned_resources(
+    demo_core, workspace_tmp_path, qtbot, offline_icons, opm_config_factory
+) -> None:
+    """Close writers, scratch data, and external hardware before hiding the GUI."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(
+            mode="projection",
+            updates={
+                "OPM": {
+                    "stage_explorer_scratch_dir": str(
+                        workspace_tmp_path / "shutdown_scratch"
+                    )
+                }
+            },
+        ),
+        workspace_tmp_path / "opm_shutdown.json",
+    )
+    with pytest.warns(RuntimeWarning, match="not MMQApplication"):
+        window = launch_opm_app(
+            config_path=config_path,
+            mm_config=False,
+            mmcore=demo_core,
+            exec_app=False,
+            simulate_hardware=True,
+        )
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
+    controller = window.opm_controller
+    scratch = _stage_explorer_scratch_output(controller)
+    scratch_path = Path(scratch.root_path)
+    scratch_temp = controller._stage_explorer_scratch_dirs[-1]
+
+    daq = controller.opm_nidaq
+    shutter = controller.opm_picard_shutter
+    mirror = controller.opm_ao_mirror
+    with (
+        patch.object(daq, "clear_tasks", wraps=daq.clear_tasks) as clear_daq,
+        patch.object(shutter, "shutDown", wraps=shutter.shutDown) as close_shutter,
+        patch.object(mirror, "disconnect", wraps=mirror.disconnect) as close_mirror,
+        patch.object(
+            scratch_temp,
+            "cleanup",
+            wraps=scratch_temp.cleanup,
+        ) as cleanup_scratch,
+    ):
+        assert window.close()
+
+    assert controller._shutdown_complete
+    assert not controller._stage_explorer_scratch_dirs
+    assert scratch_path.parent.name == "shutdown_scratch"
+    cleanup_scratch.assert_called_once_with()
+    clear_daq.assert_called_once_with()
+    close_shutter.assert_called_once_with()
+    close_mirror.assert_called_once_with()
+
+    # A repeated fallback shutdown must not touch released hardware again.
+    controller.shutdown()
+    clear_daq.assert_called_once_with()
+    close_shutter.assert_called_once_with()
+    close_mirror.assert_called_once_with()
+
+
+def test_window_close_waits_for_active_mda_thread(
+    demo_core, workspace_tmp_path, qtbot, offline_icons, opm_config_factory
+) -> None:
+    """Keep the GUI open until a requested acquisition cancellation completes."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="projection"),
+        workspace_tmp_path / "opm_shutdown_wait.json",
+    )
+    with pytest.warns(RuntimeWarning, match="not MMQApplication"):
+        window = launch_opm_app(
+            config_path=config_path,
+            mm_config=False,
+            mmcore=demo_core,
+            exec_app=False,
+            simulate_hardware=True,
+        )
+    qtbot.addWidget(window)
+    qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
+    controller = window.opm_controller
+    mda_thread = MagicMock()
+    mda_thread.is_alive.return_value = True
+    controller._opm_mda_thread = mda_thread
+
+    with patch.object(
+        controller.opm_engine,
+        "request_safe_stop",
+        wraps=controller.opm_engine.request_safe_stop,
+    ) as request_stop:
+        assert not window.close()
+
+    assert controller._shutdown_requested
+    assert not controller._shutdown_complete
+    assert controller._shutdown_poll_timer.isActive()
+    request_stop.assert_called_once_with()
+
+    mda_thread.is_alive.return_value = False
+    controller._continue_shutdown()
+    QApplication.instance().processEvents()
+
+    assert controller._shutdown_complete
+    assert not controller._shutdown_poll_timer.isActive()
+    assert not window.isVisible()
 
 
 @pytest.mark.parametrize(
@@ -533,6 +686,27 @@ def test_stage_explorer_preview_uses_four_times_y_speed_for_both_axes() -> None:
     )
 
 
+def test_stage_explorer_preview_caps_speed_at_adapter_limit() -> None:
+    """Publish hardware-valid accelerated speeds in preview metadata."""
+    mmc = MagicMock()
+    mmc.getXYStageDevice.return_value = "XYStage"
+    mmc.hasProperty.return_value = True
+    mmc.getProperty.side_effect = lambda _device, prop: {
+        "MotorSpeedX-S(mm/s)": "1.2864",
+        "MotorSpeedY-S(mm/s)": "1.2864",
+    }[prop]
+    mmc.hasPropertyLimits.return_value = True
+    mmc.getPropertyLowerLimit.return_value = 0.001
+    mmc.getPropertyUpperLimit.return_value = 1.2864
+    mmc.getAllowedPropertyValues.return_value = ()
+
+    accelerated = _stage_explorer_accelerated_speeds(mmc)
+
+    assert accelerated == pytest.approx(
+        {"move_speed_x_mm_s": 1.2864, "move_speed_y_mm_s": 1.2864}
+    )
+
+
 def test_stage_explorer_speed_property_failure_does_not_disable_interaction() -> None:
     """Keep Explorer connections alive when ASI speed setup is unavailable."""
     controller = SimpleNamespace(warning=MagicMock())
@@ -585,17 +759,47 @@ def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
         explorer.show()
         qtbot.waitExposed(explorer)
+        assert explorer._on_mouse_double_click.__name__ == "_on_mouse_double_click"
+        controller = window.opm_controller
+        assert explorer._opm_controller is controller
+        assert explorer._snap_on_double_click is True
+        assert explorer.roi_manager.mode != "create-poly"
+        assert not demo_core.isSequenceRunning()
+        controller.opm_nidaq.set_acquisition_params(
+            scan_type="projection",
+            channel_states=[False, True, False, False, False],
+            image_mirror_range_um=100.0,
+            exposure_ms=300.0,
+            laser_blanking=True,
+        )
         target_xy = (25.0, 15.0)
         canvas_xy = explorer._stage_viewer.world_to_canvas(target_xy)
 
-        with qtbot.waitSignal(demo_core.events.imageSnapped, timeout=5000):
+        with (
+            patch.object(
+                controller,
+                "prepare_stage_explorer_preview",
+                wraps=controller.prepare_stage_explorer_preview,
+            ) as prepare_projection,
+            patch.object(
+                controller.opm_nidaq,
+                "start_waveform_playback",
+                wraps=controller.opm_nidaq.start_waveform_playback,
+            ) as start_projection,
+            qtbot.waitSignal(demo_core.events.imageSnapped, timeout=5000),
+        ):
             explorer._stage_viewer.canvas.events.mouse_double_click(
                 pos=canvas_xy,
                 button=1,
             )
+            prepare_projection.assert_called_once_with()
 
+        start_projection.assert_called_once_with()
+        assert controller.opm_nidaq.scan_type == "projection"
         assert demo_core.getXYPosition() == pytest.approx(target_xy, abs=0.1)
         assert explorer._stage_controller.snap_on_finish is False
+        assert not controller.opm_nidaq.running()
+        assert not controller.opm_nidaq.programmed()
     finally:
         window.close()
 
@@ -692,6 +896,7 @@ def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
 def test_user_live_request_programs_and_starts_preview_daq() -> None:
     """Drive the production preview callback through the stateful DAQ backend."""
     controller = object.__new__(OPMAppController)
+    controller.mmc = MagicMock()
     daq = MockOPMNIDAQ()
     daq.clear_tasks()
     daq.set_acquisition_params(
@@ -708,9 +913,143 @@ def test_user_live_request_programs_and_starts_preview_daq() -> None:
     controller.setup_preview_mode_callback()
 
     assert live_updates == [True]
+    controller.mmc.clearCircularBuffer.assert_called_once_with()
     assert daq.programmed()
     assert daq.running()
     assert all(task.valid and task.running for task in daq.tasks)
+
+
+def test_live_preview_avoids_reentrant_qt_event_processing() -> None:
+    """Let Qt return from each live-frame timer callback before repainting."""
+    preview = SimpleNamespace(process_events_on_update=True)
+
+    _configure_live_preview(SimpleNamespace(widget=lambda: preview))
+
+    assert preview.process_events_on_update is False
+
+
+def test_stage_explorer_ignores_snap_signal_during_live_sequence() -> None:
+    """Never add a camera image to the Explorer while Live is running."""
+    explorer = SimpleNamespace(
+        _mmc=MagicMock(),
+        _opm_original_on_image_snapped=MagicMock(),
+    )
+    explorer._mmc.isSequenceRunning.return_value = True
+
+    _stage_explorer_on_image_snapped(explorer)
+
+    explorer._opm_original_on_image_snapped.assert_not_called()
+    explorer._mmc.isSequenceRunning.return_value = False
+    _stage_explorer_on_image_snapped(explorer)
+    explorer._opm_original_on_image_snapped.assert_called_once_with()
+
+
+def test_live_sequence_suspends_and_restores_stage_explorer_polling() -> None:
+    """Avoid serial stage polling contention during continuous camera Live."""
+    controller = object.__new__(OPMAppController)
+    controller.mmc = MagicMock()
+    controller.mmc.mda.is_running.return_value = False
+    controller._opm_acquisition_active = False
+    controller.opm_nidaq = MagicMock()
+    controller.opm_nidaq.running.return_value = True
+    controller.warning = MagicMock()
+    controller._set_stage_explorer_position_polling = MagicMock()
+
+    controller._on_live_sequence_started()
+    controller._on_live_sequence_stopped()
+
+    assert controller._set_stage_explorer_position_polling.call_args_list == [
+        call(False),
+        call(True),
+    ]
+    controller.opm_nidaq.stop_waveform_playback.assert_called_once_with()
+    controller.opm_nidaq.clear_tasks.assert_called_once_with()
+    controller.mmc.clearCircularBuffer.assert_called_once_with()
+
+
+def test_fast_live_exposure_is_coalesced_to_display_rate() -> None:
+    """Acquire at camera speed without repainting the GUI at 200 Hz."""
+    controller = object.__new__(OPMAppController)
+    controller.mmc = MagicMock()
+    controller.mmc.isSequenceRunning.return_value = True
+    controller.mmc.mda.is_running.return_value = False
+    controller.mmc.getExposure.return_value = 2.0
+    controller._opm_acquisition_active = False
+    preview = SimpleNamespace(
+        _timer_id=17,
+        killTimer=MagicMock(),
+        startTimer=MagicMock(return_value=23),
+    )
+    controller.win = SimpleNamespace(
+        _viewers_manager=SimpleNamespace(
+            _current_image_preview=SimpleNamespace(widget=lambda: preview)
+        )
+    )
+
+    controller._set_live_preview_refresh_interval()
+
+    preview.killTimer.assert_called_once_with(17)
+    preview.startTimer.assert_called_once_with(
+        LIVE_DISPLAY_INTERVAL_MS,
+        Qt.TimerType.PreciseTimer,
+    )
+    assert preview._timer_id == 23
+    assert preview._opm_refresh_interval_ms == LIVE_DISPLAY_INTERVAL_MS
+
+
+def test_real_live_preview_excludes_stage_explorer_updates(
+    demo_core, workspace_tmp_path, qtbot, offline_icons, opm_config_factory
+) -> None:
+    """Keep an open Explorer idle while the native live viewer consumes frames."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="projection"),
+        workspace_tmp_path / "opm_live_explorer.json",
+    )
+    with pytest.warns(RuntimeWarning, match="not MMQApplication"):
+        window = launch_opm_app(
+            config_path=config_path,
+            mm_config=False,
+            mmcore=demo_core,
+            exec_app=False,
+            simulate_hardware=True,
+        )
+    qtbot.addWidget(window)
+
+    try:
+        qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
+        explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        polling_before_live = explorer.poll_stage_position
+        assert not window.get_action(CoreAction.TOGGLE_LIVE).autoRepeat()
+        demo_core.setExposure(2.0)
+
+        for _ in range(3):
+            demo_core.startContinuousSequenceAcquisition()
+            qtbot.waitUntil(demo_core.isSequenceRunning, timeout=5000)
+
+            assert explorer.poll_stage_position is False
+            preview_dock = window._viewers_manager._current_image_preview
+            assert preview_dock is not None
+            preview = preview_dock.widget()
+            assert preview.process_events_on_update is False
+            qtbot.waitUntil(
+                lambda: hasattr(preview, "_opm_refresh_interval_ms"),
+                timeout=5000,
+            )
+            assert preview._opm_refresh_interval_ms == LIVE_DISPLAY_INTERVAL_MS
+            qtbot.waitUntil(lambda: preview._timer_id is not None, timeout=5000)
+
+            demo_core.stopSequenceAcquisition()
+            qtbot.waitUntil(lambda: not demo_core.isSequenceRunning(), timeout=5000)
+            assert preview._timer_id is None
+            assert demo_core.getRemainingImageCount() == 0
+            assert explorer.poll_stage_position is polling_before_live
+            assert not window.opm_controller.opm_nidaq.running()
+            assert not window.opm_controller.opm_nidaq.programmed()
+    finally:
+        if demo_core.isSequenceRunning():
+            demo_core.stopSequenceAcquisition()
+        qtbot.waitUntil(lambda: not demo_core.isSequenceRunning(), timeout=5000)
+        window.close()
 
 
 def test_opm_preview_coalesces_frames_and_restores_native_follow_mode() -> None:
