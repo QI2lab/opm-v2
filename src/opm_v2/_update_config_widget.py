@@ -1013,14 +1013,23 @@ class OPMSettingsV2(QWidget):
         self.layout()
 
     def set_acquisition_running(self, running: bool) -> None:
-        """Enable only the acquisition action that is currently valid.
+        """Lock acquisition settings and enable only the valid action.
 
         Parameters
         ----------
         running : bool
             Whether an OPM acquisition is active.
         """
-        self.run_button.setEnabled(not running)
+        settings_enabled = not running
+        for group in (
+            self.group_ao_main,
+            self.group_opm_settings,
+            self.group_scan_settings,
+            self.group_channels,
+            self.group_camera_roi,
+        ):
+            group.setEnabled(settings_enabled)
+        self.run_button.setEnabled(settings_enabled)
         self.stop_button.setEnabled(running)
         self.stop_button.setText("STOP OPM Acquisition")
 

@@ -6,7 +6,6 @@ import json
 from copy import deepcopy
 from datetime import datetime
 from functools import partial
-from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import Literal
@@ -20,15 +19,13 @@ from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QEvent, QObject, Qt, QTimer
 from pymmcore_gui._qt.QtWidgets import (
     QApplication,
-    QMenu,
     QMessageBox,
     QTabBar,
-    QToolButton,
 )
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
-from pymmcore_gui.actions import widget_actions as pymmcore_widget_actions
 from pymmcore_plus import CMMCorePlus
 from pymmcore_plus.core import DeviceProperty
+from pymmcore_widgets import StageExplorerCalibrationControls
 
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.debug_printing import debug, info, warning
@@ -56,23 +53,53 @@ DEFUALT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
 OPM_PREVIEW_INTERVAL_MS = 250
 LIVE_DISPLAY_INTERVAL_MS = 33
-_STAGE_EXPLORER_REQUIRED_METHODS = (
-    "_fov_w_h",
-    "_on_frame_ready",
-    "_on_image_snapped",
-    "_on_mouse_double_click",
-    "_on_pixel_size_affine_changed",
-    "_on_pixel_size_changed",
-    "_on_roi_changed",
-    "_on_scan_action",
-    "_on_scan_options_changed",
-    "_on_send_to_mda",
-)
+MAX_LIVE_FRAMES_PER_TICK = 64
 
 
-def _disconnect_system_configuration_callback(
-    mmc: CMMCorePlus, callback
-) -> None:
+class _BoundedLivePreviewTimer(QObject):
+    """Drain a finite camera-buffer snapshot on each live-preview tick."""
+
+    def __init__(self, preview) -> None:
+        parent = preview if isinstance(preview, QObject) else None
+        super().__init__(parent)
+        self._preview = preview
+
+    def eventFilter(self, watched, event) -> bool:
+        """Replace the upstream unbounded live-buffer drain loop.
+
+        Returns
+        -------
+        bool
+            Whether this filter consumed the timer event.
+        """
+        preview = self._preview
+        if (
+            watched is not preview
+            or event.type() != QEvent.Type.Timer
+            or event.timerId() != getattr(preview, "_timer_id", None)
+        ):
+            return False
+
+        core = getattr(preview, "_mmc", None)
+        if core is None:
+            return True
+
+        try:
+            frame_count = min(
+                max(0, int(core.getRemainingImageCount())),
+                MAX_LIVE_FRAMES_PER_TICK,
+            )
+            latest = None
+            for _ in range(frame_count):
+                latest = core.popNextImage()
+            if latest is not None:
+                preview.append(latest)
+        except Exception as exc:
+            warning("LIVE PREVIEW WARNING", f"Camera buffer read failed: {exc}")
+        return True
+
+
+def _disconnect_system_configuration_callback(mmc: CMMCorePlus, callback) -> None:
     """Disconnect an action callback even if Qt has deleted the core signaler."""
     try:
         mmc.events.systemConfigurationLoaded.disconnect(callback)
@@ -121,9 +148,9 @@ def _initialize_live_action_safely(action: QCoreAction) -> None:
 def _install_safe_core_action_initializers() -> None:
     """Replace two unsafe pymmcore-gui teardown hooks before actions are created."""
     ActionInfo.for_key(CoreAction.SNAP).on_created = _initialize_snap_action_safely
-    ActionInfo.for_key(CoreAction.TOGGLE_LIVE).on_created = (
-        _initialize_live_action_safely
-    )
+    ActionInfo.for_key(
+        CoreAction.TOGGLE_LIVE
+    ).on_created = _initialize_live_action_safely
 
 
 def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
@@ -134,12 +161,7 @@ def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
     tuple[float, float]
         Axis-aligned physical stage X and Y extents in micrometers.
     """
-    image_width = float(stage_explorer._mmc.getImageWidth())
-    image_height = float(stage_explorer._mmc.getImageHeight())
-    linear = np.asarray(stage_explorer._affine_state.system_affine)[:2, :2]
-    world_width = abs(linear[0, 0]) * image_width + abs(linear[0, 1]) * image_height
-    world_height = abs(linear[1, 0]) * image_width + abs(linear[1, 1]) * image_height
-    return float(world_width), float(world_height)
+    return stage_explorer.camera_fov_size_um()
 
 
 def _stage_explorer_display_footprint_w_h(
@@ -157,7 +179,7 @@ def _stage_explorer_display_footprint_w_h(
     tuple[float, float]
         Physical stage-world X and Y footprint in micrometers.
     """
-    camera_footprint = stage_explorer._fov_w_h()
+    camera_footprint = stage_explorer.camera_fov_size_um()
     controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
         stage_explorer.window(), "opm_controller", None
     )
@@ -178,8 +200,7 @@ def _stage_explorer_display_footprint_w_h(
     camera_roi = acq_config["camera_roi"]
     crop_x = float(camera_roi["crop_x"])
     crop_y = float(camera_roi["crop_y"])
-    linear = np.asarray(stage_explorer._affine_state.system_affine)[:2, :2]
-    world_y = abs(linear[1, 0]) * crop_x + abs(linear[1, 1]) * crop_y
+    _world_x, world_y = stage_explorer.pixel_rect_size_um(crop_x, crop_y)
     if world_y <= 0:
         return camera_footprint
     return scan_range_um, float(world_y)
@@ -188,12 +209,10 @@ def _stage_explorer_display_footprint_w_h(
 def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
     """Refresh ROI cells using the active OPM acquisition footprint."""
     display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
-    stage_explorer.roi_manager.update_fovs(display_footprint)
-    _refresh_stage_explorer_position_marker_footprint(
-        stage_explorer, display_footprint
-    )
+    stage_explorer.set_display_fov_size_um(display_footprint)
 
-    overlap, mode = stage_explorer._toolbar.scan_menu.value()
+    overlap = stage_explorer.roi_manager.scan_overlap
+    mode = stage_explorer.roi_manager.scan_mode
     controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
         stage_explorer.window(), "opm_controller", None
     )
@@ -210,40 +229,7 @@ def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
             # Stage Explorer express GridFromEdges overlap in percent.
             overlap = (100.0 * scan_overlap, 100.0 * tile_overlap)
     stage_explorer.roi_manager.set_scan_options(overlap, mode)
-
-
-def _refresh_stage_explorer_position_marker_footprint(
-    stage_explorer, display_footprint: tuple[float, float]
-) -> None:
-    """Match the current-stage marker to the displayed physical footprint.
-
-    The upstream marker rectangle is defined in camera-pixel coordinates and
-    transformed into stage-world coordinates by the camera affine.  Convert the
-    desired world X/Y extents back through that affine so swapped or reversed
-    camera axes produce the same size and shape as the active ROI cells.
-    """
-    marker = stage_explorer._stage_pos_marker
-    if marker is None:
-        return
-
-    linear = np.abs(
-        np.asarray(stage_explorer._affine_state.system_affine, dtype=float)[:2, :2]
-    )
-    try:
-        local_size = np.linalg.solve(linear, np.asarray(display_footprint, dtype=float))
-    except np.linalg.LinAlgError:
-        # Some rotated affines have a singular absolute-value matrix. Preserve
-        # upstream camera-marker behavior rather than drawing invalid geometry.
-        local_size = np.asarray(
-            (
-                stage_explorer._mmc.getImageWidth(),
-                stage_explorer._mmc.getImageHeight(),
-            ),
-            dtype=float,
-        )
-    if not np.all(np.isfinite(local_size)) or np.any(local_size <= 0):
-        return
-    marker.set_rect_size(float(local_size[0]), float(local_size[1]))
+    stage_explorer.set_blending_overlap(overlap)
 
 
 def _position_with_coverslip_plane(
@@ -324,26 +310,9 @@ def _coverslip_plane_for_roi(stage_explorer, roi) -> CoverslipPlane | None:
 
 def _update_coverslip_point_visual(stage_explorer) -> None:
     """Show the active coverslip focus points on the Explorer canvas."""
-    points = stage_explorer._opm_coverslip_points
-    visual = stage_explorer._opm_coverslip_points_visual
-    if visual is None:
-        from vispy.scene.visuals import Markers
-
-        visual = Markers(
-            parent=stage_explorer._stage_viewer.view.scene,
-            symbol="cross",
-            face_color="#00ffff",
-            edge_color="#003333",
-            size=12,
-            edge_width=2,
-            scaling=False,
-        )
-        stage_explorer._opm_coverslip_points_visual = visual
-    if points:
-        visual.set_data(pos=np.asarray([(x, y) for x, y, _z in points]))
-        visual.visible = True
-    else:
-        visual.visible = False
+    controls = getattr(stage_explorer, "_opm_calibration_controls", None)
+    if controls is not None:
+        controls.set_points(stage_explorer._opm_coverslip_points)
 
 
 def _restore_coverslip_live_mode(stage_explorer) -> None:
@@ -352,7 +321,10 @@ def _restore_coverslip_live_mode(stage_explorer) -> None:
     stage_explorer._opm_coverslip_previous_live_preset = None
     if not previous:
         return
-    mmc = stage_explorer._mmc
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        return
+    mmc = controller.mmc
     presets = set(mmc.getAvailableConfigs("OPM-live-mode"))
     if previous in presets and mmc.getCurrentConfig("OPM-live-mode") != previous:
         mmc.setConfig("OPM-live-mode", previous)
@@ -364,7 +336,7 @@ def _start_coverslip_calibration(stage_explorer) -> None:
     controller = _stage_explorer_controller(stage_explorer)
     if controller is None:
         return
-    if stage_explorer._mmc.mda.is_running():
+    if controller.mmc.mda.is_running():
         controller.warning(
             "COVERSLIP PLANE", "Cannot calibrate during an active acquisition"
         )
@@ -382,7 +354,7 @@ def _start_coverslip_calibration(stage_explorer) -> None:
         )
         return
 
-    mmc = stage_explorer._mmc
+    mmc = controller.mmc
     if "OPM-live-mode" not in set(mmc.getAvailableConfigGroups()):
         controller.warning(
             "COVERSLIP PLANE",
@@ -419,12 +391,10 @@ def _add_coverslip_focus_point(stage_explorer) -> None:
     roi = stage_explorer._opm_coverslip_target_roi
     if controller is None or roi is None:
         if controller is not None:
-            controller.warning(
-                "COVERSLIP PLANE", "Start a coverslip calibration first"
-            )
+            controller.warning("COVERSLIP PLANE", "Start a coverslip calibration first")
         return
-    x_um, y_um = stage_explorer._mmc.getXYPosition()
-    z_um = stage_explorer._mmc.getZPosition()
+    x_um, y_um = controller.mmc.getXYPosition()
+    z_um = controller.mmc.getZPosition()
     point = (float(x_um), float(y_um), float(z_um))
     if not roi.contains(point[:2]):
         controller.warning(
@@ -447,9 +417,7 @@ def _fit_coverslip_calibration(stage_explorer) -> None:
     roi = stage_explorer._opm_coverslip_target_roi
     if controller is None or roi is None:
         if controller is not None:
-            controller.warning(
-                "COVERSLIP PLANE", "Start a coverslip calibration first"
-            )
+            controller.warning("COVERSLIP PLANE", "Start a coverslip calibration first")
         return
     try:
         plane = fit_coverslip_plane(stage_explorer._opm_coverslip_points)
@@ -459,9 +427,7 @@ def _fit_coverslip_calibration(stage_explorer) -> None:
     _coverslip_planes_by_roi(stage_explorer)[roi] = plane
     left, top, right, bottom = roi.bbox()
     corner_z = [
-        plane.z_at(x_um, y_um)
-        for x_um in (left, right)
-        for y_um in (top, bottom)
+        plane.z_at(x_um, y_um) for x_um in (left, right) for y_um in (top, bottom)
     ]
     stage_explorer._opm_coverslip_target_roi = None
     _restore_coverslip_live_mode(stage_explorer)
@@ -493,162 +459,38 @@ def _clear_coverslip_calibration(stage_explorer) -> None:
 def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
     """Add coverslip-plane calibration actions to one Explorer toolbar."""
     _coverslip_planes_by_roi(stage_explorer)
-    if hasattr(stage_explorer, "_opm_coverslip_points"):
+    if hasattr(stage_explorer, "_opm_calibration_controls"):
         return
     stage_explorer._opm_coverslip_points = []
-    stage_explorer._opm_coverslip_points_visual = None
     stage_explorer._opm_coverslip_target_roi = None
     stage_explorer._opm_coverslip_previous_live_preset = None
-
-    action = stage_explorer._toolbar.addAction("Coverslip")
-    button = stage_explorer._toolbar.widgetForAction(action)
-    if not isinstance(button, QToolButton):
-        return
-    menu = QMenu(button)
-    menu.addAction("Start calibration (Standard live mode)").triggered.connect(
+    controls = StageExplorerCalibrationControls(stage_explorer)
+    controls.startRequested.connect(
         lambda: _start_coverslip_calibration(stage_explorer)
     )
-    menu.addAction("Add current XYZ focus point").triggered.connect(
+    controls.addPointRequested.connect(
         lambda: _add_coverslip_focus_point(stage_explorer)
     )
-    menu.addAction("Fit plane and apply to selected ROI").triggered.connect(
-        lambda: _fit_coverslip_calibration(stage_explorer)
-    )
-    menu.addSeparator()
-    menu.addAction("Clear selected ROI plane").triggered.connect(
+    controls.fitRequested.connect(lambda: _fit_coverslip_calibration(stage_explorer))
+    controls.clearRequested.connect(
         lambda: _clear_coverslip_calibration(stage_explorer)
     )
-    button.setMenu(menu)
-    button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
-
-
-def _update_stage_explorer_transformed_fov(stage_explorer) -> None:
-    """Update ROI tiling after the upstream camera/ROI bookkeeping runs."""
-    stage_explorer._opm_original_on_roi_changed()
-    _refresh_stage_explorer_display_footprint(stage_explorer)
-
-
-def _refresh_stage_explorer_pixel_size(stage_explorer, value: float) -> None:
-    """Refresh the Explorer affine and its physical FOV after a scale change."""
-    stage_explorer._opm_original_on_pixel_size_changed(value)
-    stage_explorer._on_roi_changed()
-
-
-def _refresh_stage_explorer_pixel_affine(stage_explorer) -> None:
-    """Refresh the Explorer affine and its physical FOV after an axis change."""
-    stage_explorer._opm_original_on_pixel_size_affine_changed()
-    stage_explorer._on_roi_changed()
-
-
-def _refresh_stage_explorer_scan_options(stage_explorer, value) -> None:
-    """Keep active mirror ROI visuals on OPM overlaps after toolbar interaction."""
-    stage_explorer._opm_original_on_scan_options_changed(value)
-    _refresh_stage_explorer_display_footprint(stage_explorer)
-
-
-def _stage_explorer_on_frame_ready(stage_explorer, image, event) -> None:
-    """Add frames only when they belong to an Explorer-owned acquisition.
-
-    The upstream Stage Explorer listens to every MDA ``frameReady`` signal and
-    creates one VisPy image visual per frame.  That is useful for its own tiled
-    projection scan, but a hardware-triggered OPM mirror or stage event can emit
-    thousands of planes at one position.  Those planes belong in the NDV MDA
-    viewer, not in the Explorer mosaic.
-    """
-    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
-        stage_explorer.window(), "opm_controller", None
-    )
-    if (
-        controller is not None
-        and controller._opm_acquisition_active
-        and not stage_explorer._our_mda_running
-    ):
-        return
-    stage_explorer._opm_original_on_frame_ready(image, event)
-
-
-def _stage_explorer_on_image_snapped(stage_explorer) -> None:
-    """Keep continuous-live camera frames out of the Explorer mosaic."""
-    if stage_explorer._mmc.isSequenceRunning():
-        return
-    stage_explorer._opm_original_on_image_snapped()
-
-
-def _stage_explorer_mouse_double_click(stage_explorer, event) -> None:
-    """Arm the requested OPM preview mode, then use the normal move/snap path.
-
-    Stage Explorer normally asks ``QStageMoveAccumulator`` to call
-    ``mmc.snapImage()`` directly after motion.  Unlike Live, that direct snap
-    emits no continuous-acquisition-starting signal, so the OPM projection DAQ
-    waveform is never prepared.  Arm it before motion, leave the accumulator's
-    snap timing intact, and clear the DAQ tasks after its snap has completed.
-    """
-    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
-        stage_explorer.window(), "opm_controller", None
-    )
-    stage_controller = stage_explorer._stage_controller
-    if (
-        controller is None
-        or not stage_explorer._snap_on_double_click
-        or stage_explorer._mmc.isSequenceRunning()
-        or not stage_explorer._mmc.getXYStageDevice()
-        or stage_controller is None
-        or stage_explorer.roi_manager.mode == "create-poly"
-    ):
-        stage_explorer._opm_original_on_mouse_double_click(event)
-        return
-
-    x, y, _, _ = stage_explorer._stage_viewer.view.camera.transform.imap(
-        event.pos
-    )
-
-    previous_callback = getattr(stage_explorer, "_opm_projection_cleanup", None)
-    if previous_callback is not None:
-        try:
-            stage_controller.moveFinished.disconnect(previous_callback)
-        except (RuntimeError, TypeError):
-            pass
-
-    try:
-        controller.prepare_stage_explorer_preview()
-    except Exception as exc:
-        controller.warning(
-            "STAGE EXPLORER SNAP",
-            f"Could not prepare the active OPM preview mode: {exc}",
-        )
-        stage_controller.snap_on_finish = False
-        stage_controller.move_absolute((x, y))
-        stage_explorer._stage_pos_label.setText(
-            f"X: {x:.2f} µm  Y: {y:.2f} µm"
-        )
-        return
-
-    def _cleanup_after_snap() -> None:
-        try:
-            stage_controller.moveFinished.disconnect(_cleanup_after_snap)
-        except (RuntimeError, TypeError):
-            pass
-        stage_explorer._opm_projection_cleanup = None
-        try:
-            controller.opm_nidaq.clear_tasks()
-        except Exception as exc:
-            controller.warning(
-                "STAGE EXPLORER SNAP",
-                f"DAQ cleanup failed: {exc}",
-            )
-
-    stage_explorer._opm_projection_cleanup = _cleanup_after_snap
-    stage_controller.moveFinished.connect(_cleanup_after_snap)
-    stage_controller.snap_on_finish = True
-    stage_controller.move_absolute((x, y))
-    stage_explorer._stage_pos_label.setText(f"X: {x:.2f} µm  Y: {y:.2f} µm")
+    stage_explorer._opm_calibration_controls = controls
 
 
 def _configure_live_preview(preview_dock) -> None:
-    """Prevent nested Qt event processing during live-frame display."""
+    """Keep live-frame display non-reentrant and bounded per timer tick."""
     preview = preview_dock.widget() if preview_dock is not None else None
     if preview is not None and hasattr(preview, "process_events_on_update"):
         preview.process_events_on_update = False
+    if (
+        preview is not None
+        and hasattr(preview, "installEventFilter")
+        and not hasattr(preview, "_opm_bounded_timer_filter")
+    ):
+        timer_filter = _BoundedLivePreviewTimer(preview)
+        preview.installEventFilter(timer_filter)
+        preview._opm_bounded_timer_filter = timer_filter
 
 
 def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
@@ -664,36 +506,38 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
     ValueError
         If a single-FOV ROI is not rectangular.
     """
-    overlap, mode = stage_explorer._toolbar.scan_menu.value()
-    fov_width, fov_height = stage_explorer._fov_w_h()
-    z_position = stage_explorer._mmc.getZPosition()
-    position = roi.create_useq_position(
-        fov_width,
-        fov_height,
+    if type(roi).__name__ != "RectangleROI":
+        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
+    controller = _stage_explorer_controller(stage_explorer)
+    z_position = controller.mmc.getZPosition() if controller is not None else None
+    positions = stage_explorer.positions_from_rois(
+        [roi],
+        preserve_regions=True,
         z_pos=z_position,
-        overlap=overlap,
-        mode=mode,
+        transform=partial(
+            _transform_stage_explorer_position,
+            stage_explorer=stage_explorer,
+        ),
     )
+    if not positions:
+        raise ValueError("The selected Stage Explorer ROI produced no positions.")
+    return positions[0]
+
+
+def _transform_stage_explorer_position(
+    position: useq.AbsolutePosition, roi, *, stage_explorer
+) -> useq.AbsolutePosition:
+    """Apply an ROI's OPM coverslip model to a generic widget position.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position with the selected ROI's coverslip model applied.
+    """
     plane = _coverslip_plane_for_roi(stage_explorer, roi)
     if position.sequence and position.sequence.grid_plan:
         return _position_with_coverslip_plane(position, plane)
-
-    left, top, right, bottom = roi.bbox()
-    if type(roi).__name__ != "RectangleROI":
-        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
-    grid_plan = useq.GridFromEdges(
-        top=top,
-        bottom=bottom,
-        left=left,
-        right=right,
-        fov_width=fov_width,
-        fov_height=fov_height,
-        overlap=(overlap, overlap),
-        mode=mode,
-    )
-    return _position_with_coverslip_plane(
-        position.replace(sequence=useq.MDASequence(grid_plan=grid_plan)), plane
-    )
+    return _position_on_coverslip_plane(position, plane)
 
 
 def _equalize_stage_explorer_xy_speed(mmc: CMMCorePlus) -> float | None:
@@ -805,6 +649,68 @@ def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
     return channel_group, channel_preset
 
 
+def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
+    """Return settings that must remain compatible within one preview mosaic.
+
+    Returns
+    -------
+    tuple
+        Hashable projection, channel, camera, and calibration settings.
+
+    Raises
+    ------
+    RuntimeError
+        If the explorer is not connected to an OPM controller.
+    """
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        raise RuntimeError("Stage Explorer has no OPM controller")
+
+    mmc = controller.mmc
+    channel_group, channel_preset = _stage_explorer_channel_preset(mmc)
+    daq = controller.opm_nidaq
+    return (
+        "opm-stage-explorer",
+        str(daq.scan_type),
+        tuple(bool(state) for state in daq.channel_states),
+        None if daq.exposure_ms is None else float(daq.exposure_ms),
+        (
+            None
+            if daq.image_mirror_range_um is None
+            else float(daq.image_mirror_range_um)
+        ),
+        channel_group,
+        channel_preset,
+        mmc.getCameraDevice(),
+        tuple(mmc.getROI()),
+        int(mmc.getImageWidth()),
+        int(mmc.getImageHeight()),
+        float(mmc.getPixelSizeUm()),
+        tuple(float(value) for value in mmc.getPixelSizeAffine()),
+        tuple(
+            float(value)
+            for value in _stage_explorer_display_footprint_w_h(stage_explorer)
+        ),
+    )
+
+
+def _prepare_stage_explorer_blended_preview(stage_explorer) -> None:
+    """Arm the active preview and select a compatible blending session.
+
+    Raises
+    ------
+    RuntimeError
+        If the explorer is not connected to an OPM controller.
+    """
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        raise RuntimeError("Stage Explorer has no OPM controller")
+    controller.prepare_stage_explorer_preview()
+    stage_explorer.begin_blending_session(
+        _stage_explorer_blending_session_key(stage_explorer)
+    )
+
+
 def _stage_explorer_scratch_output(controller) -> AcquisitionSettings:
     """Create an application-owned disk-backed Stage Explorer output.
 
@@ -865,26 +771,21 @@ def _scan_stage_explorer_roi(stage_explorer) -> None:
         stage_explorer.window(), "opm_controller", None
     )
     if controller is None:
-        stage_explorer._opm_original_on_scan_action()
         return
-    if stage_explorer._mmc.mda.is_running():
+    if controller.mmc.mda.is_running():
         return
     selected_rois = stage_explorer.roi_manager.selected_rois()
     if not selected_rois:
         return
 
     try:
-        position = _stage_explorer_region_position(
-            stage_explorer, selected_rois[0]
-        )
+        position = _stage_explorer_region_position(stage_explorer, selected_rois[0])
     except ValueError as exc:
         controller.warning("STAGE EXPLORER PREVIEW", str(exc))
         return
 
     try:
-        channel_group, channel_preset = _stage_explorer_channel_preset(
-            controller.mmc
-        )
+        channel_group, channel_preset = _stage_explorer_channel_preset(controller.mmc)
 
         accelerated = _stage_explorer_accelerated_speeds(controller.mmc)
         metadata = {STAGE_MOVE_SPEED_METADATA_KEY: accelerated}
@@ -900,8 +801,8 @@ def _scan_stage_explorer_roi(stage_explorer) -> None:
         )
         controller.data_handler = None
         controller.suspend_live_preview_for_mda()
-        controller.prepare_stage_explorer_preview()
-        stage_explorer._our_mda_running = True
+        _prepare_stage_explorer_blended_preview(stage_explorer)
+        stage_explorer.set_mda_capture_active(True)
         scratch_output = _stage_explorer_scratch_output(controller)
         controller.info(
             "STAGE EXPLORER STORAGE",
@@ -913,132 +814,59 @@ def _scan_stage_explorer_roi(stage_explorer) -> None:
     except ValueError as exc:
         controller.warning("STAGE EXPLORER PREVIEW", str(exc))
     except Exception:
+        stage_explorer.set_mda_capture_active(False)
         controller.opm_nidaq.clear_tasks()
         controller.restore_live_preview_after_mda(force=True)
         raise
 
 
-def _send_stage_explorer_rois_to_mda(stage_explorer) -> None:
-    """Export Stage Explorer ROIs while preserving regions and literal centers."""
-    checked = stage_explorer._send_mode_group.checkedAction()
-    flatten = checked is not None and checked.text() == "List of Single Positions"
-    overlap, mode = stage_explorer._toolbar.scan_menu.value()
-    fov_w, fov_h = stage_explorer._fov_w_h()
-    z_pos = stage_explorer._mmc.getZPosition()
-    positions: list[useq.AbsolutePosition] = []
-
-    roi_model = stage_explorer.roi_manager.roi_model
-    for row in range(roi_model.rowCount()):
-        roi = roi_model.index(row).internalPointer()
-        plane = _coverslip_plane_for_roi(stage_explorer, roi)
-        position = roi.create_useq_position(
-            fov_w,
-            fov_h,
-            z_pos=z_pos,
-            overlap=overlap,
-            mode=mode,
-        )
-        if position.sequence and position.sequence.grid_plan:
-            if flatten:
-                positions.extend(
-                    _position_on_coverslip_plane(flat_position, plane)
-                    for flat_position in stage_explorer._flatten_to_single_positions(
-                        [position]
-                    )
-                )
-            else:
-                positions.append(_position_with_coverslip_plane(position, plane))
-            continue
-
-        center_x, center_y = roi.center()
-        if flatten:
-            positions.append(
-                _position_on_coverslip_plane(
-                    position.replace(x=center_x, y=center_y), plane
-                )
-            )
-            continue
-
-        # ``ROI.create_grid_plan`` intentionally returns None when an ROI fits in
-        # one camera FOV.  OPM stage mode still needs the ROI's physical bounds, so
-        # retain a one-cell nested region instead of degrading it to a point.
-        left, top, right, bottom = roi.bbox()
-        if type(roi).__name__ == "RectangleROI":
-            grid_plan = useq.GridFromEdges(
-                top=top,
-                bottom=bottom,
-                left=left,
-                right=right,
-                fov_width=fov_w,
-                fov_height=fov_h,
-                overlap=(overlap, overlap),
-                mode=mode,
-            )
-        else:
-            grid_plan = useq.GridFromPolygon(
-                vertices=list(roi.vertices),
-                fov_width=fov_w,
-                fov_height=fov_h,
-                overlap=(overlap, overlap),
-                mode=mode,
-            )
-        positions.append(
-            _position_with_coverslip_plane(
-                position.replace(sequence=useq.MDASequence(grid_plan=grid_plan)),
-                plane,
-            )
-        )
-
-    if not positions:
-        return
-
-    message = QMessageBox(stage_explorer)
-    message.setWindowTitle("Send to MDA")
-    message.setText("Replace existing stage positions or add to them?")
-    replace_button = message.addButton("Replace", QMessageBox.ButtonRole.AcceptRole)
-    message.addButton("Add", QMessageBox.ButtonRole.AcceptRole)
-    cancel_button = message.addButton("Cancel", QMessageBox.ButtonRole.RejectRole)
-    message.exec()
-    clicked = message.clickedButton()
-    if clicked is cancel_button or clicked is None:
-        return
-    stage_explorer.sendToMDARequested.emit(positions, clicked is replace_button)
-
-
 def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None:
-    """Connect ROI export to MDA and select one unambiguous spatial plan."""
+    """Configure one GUI-owned Stage Explorer through its public widget API."""
     if stage_explorer is None or mda_widget is None:
         return
-    stage_explorer._opm_controller = getattr(stage_explorer.window(), "opm_controller", None)
+    if getattr(stage_explorer, "_opm_integration_configured", False):
+        return
+    stage_explorer._opm_controller = getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
     controller = stage_explorer._opm_controller
-    if (
-        controller is not None
-        and stage_explorer._mmc.isSequenceRunning() is True
-    ):
+    if controller is None:
+        return
+
+    if controller.mmc.isSequenceRunning() is True:
         was_polling = bool(stage_explorer.poll_stage_position)
         if controller._stage_explorer_polling_was_enabled is None:
             controller._stage_explorer_polling_was_enabled = was_polling
         if was_polling:
             stage_explorer.poll_stage_position = False
     try:
-        _equalize_stage_explorer_xy_speed(stage_explorer._mmc)
+        _equalize_stage_explorer_xy_speed(controller.mmc)
     except Exception as exc:
-        controller = stage_explorer._opm_controller
-        if controller is not None:
-            controller.warning(
-                "STAGE EXPLORER MOVE SPEED",
-                f"Could not set X point-move speed equal to Y: {exc}",
-                "Upstream double-click movement remains available.",
-            )
+        controller.warning(
+            "STAGE EXPLORER MOVE SPEED",
+            f"Could not set X point-move speed equal to Y: {exc}",
+            "Upstream double-click movement remains available.",
+        )
+
+    stage_explorer.set_scan_handler(_scan_stage_explorer_roi)
+    stage_explorer.set_snap_lifecycle(
+        prepare=lambda: _prepare_stage_explorer_blended_preview(stage_explorer),
+        cleanup=controller.opm_nidaq.clear_tasks,
+    )
+    stage_explorer.set_roi_position_transform(
+        partial(
+            _transform_stage_explorer_position,
+            stage_explorer=stage_explorer,
+        )
+    )
+    stage_explorer.interactionError.connect(
+        lambda exc: controller.warning("STAGE EXPLORER", str(exc))
+    )
+    stage_explorer.mda_frame_updates_enabled = not controller._opm_acquisition_active
+    stage_explorer.blending_enabled = True
     _install_stage_explorer_coverslip_controls(stage_explorer)
 
-    def _on_send_to_mda(positions: list, clear: bool) -> None:
-        if clear:
-            mda_widget.stage_positions.setValue(positions)
-        else:
-            current = list(mda_widget.stage_positions.value() or [])
-            mda_widget.stage_positions.setValue(current + positions)
-
+    def _on_send_to_mda(_positions: list, _clear: bool) -> None:
         # Exported positions own the spatial plan.  Leaving the global Grid tab
         # active would make useq clear X/Y and would cause the OPM builders to ignore
         # the exported regions.
@@ -1046,99 +874,8 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
         mda_widget.tab_wdg.setChecked(mda_widget.stage_positions, True)
 
     stage_explorer.sendToMDARequested.connect(_on_send_to_mda)
-
-
-def _validate_stage_explorer_compatibility(widget_actions):
-    """Validate the pinned private Stage Explorer API before patching it.
-
-    OPM needs behavior that pymmcore-gui does not expose through public hooks.
-    Keeping the private API check in one place prevents an upstream update from
-    leaving the class partially patched and failing later during interaction.
-
-    Parameters
-    ----------
-    widget_actions : module
-        ``pymmcore_gui.actions.widget_actions`` or a test double.
-
-    Returns
-    -------
-    type
-        The compatible private Stage Explorer class.
-
-    Raises
-    ------
-    RuntimeError
-        If the installed pymmcore-gui revision lacks an API used by the shim.
-    """
-    missing_module_attributes = [
-        name
-        for name in ("_StageExplorer", "_setup_stage_mda_connections")
-        if not hasattr(widget_actions, name)
-    ]
-    explorer_class = getattr(widget_actions, "_StageExplorer", None)
-    missing_methods = (
-        [
-            name
-            for name in _STAGE_EXPLORER_REQUIRED_METHODS
-            if not hasattr(explorer_class, name)
-        ]
-        if explorer_class is not None
-        else []
-    )
-    if not missing_module_attributes and not missing_methods:
-        return explorer_class
-
-    try:
-        installed_version = version("pymmcore-gui")
-    except PackageNotFoundError:
-        installed_version = "unknown"
-    missing = ", ".join((*missing_module_attributes, *missing_methods))
-    raise RuntimeError(
-        "Unsupported pymmcore-gui Stage Explorer private API "
-        f"(installed {installed_version}); missing: {missing}. "
-        "Install the revision pinned in pyproject.toml."
-    )
-
-
-def _install_stage_explorer_export_compatibility() -> None:
-    """Install the guarded private Stage Explorer compatibility shim."""
-    if getattr(pymmcore_widget_actions, "_opm_export_compatibility", False):
-        return
-    explorer_class = _validate_stage_explorer_compatibility(
-        pymmcore_widget_actions
-    )
-    # Vispy stores bound callbacks by ``__name__`` and resolves that name on
-    # the widget when emitting.  Keep this replacement's callback identity
-    # equal to the attribute under which it is installed.
-    _stage_explorer_mouse_double_click.__name__ = "_on_mouse_double_click"
-    method_patches = {
-        "_fov_w_h": _stage_explorer_world_fov_w_h,
-        "_on_frame_ready": _stage_explorer_on_frame_ready,
-        "_on_image_snapped": _stage_explorer_on_image_snapped,
-        "_on_mouse_double_click": _stage_explorer_mouse_double_click,
-        "_on_pixel_size_affine_changed": _refresh_stage_explorer_pixel_affine,
-        "_on_pixel_size_changed": _refresh_stage_explorer_pixel_size,
-        "_on_roi_changed": _update_stage_explorer_transformed_fov,
-        "_on_scan_action": _scan_stage_explorer_roi,
-        "_on_scan_options_changed": _refresh_stage_explorer_scan_options,
-        "_on_send_to_mda": _send_stage_explorer_rois_to_mda,
-    }
-    for method_name in method_patches:
-        setattr(
-            explorer_class,
-            f"_opm_original{method_name}",
-            getattr(explorer_class, method_name),
-        )
-    for method_name, replacement in method_patches.items():
-        setattr(explorer_class, method_name, replacement)
-
-    pymmcore_widget_actions._opm_original_setup_stage_mda_connections = (
-        pymmcore_widget_actions._setup_stage_mda_connections
-    )
-    pymmcore_widget_actions._setup_stage_mda_connections = (
-        _connect_stage_explorer_to_mda
-    )
-    pymmcore_widget_actions._opm_export_compatibility = True
+    stage_explorer._opm_integration_configured = True
+    _refresh_stage_explorer_display_footprint(stage_explorer)
 
 
 def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
@@ -1161,7 +898,6 @@ def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
 def _ensure_opm_widget_registered() -> None:
     """Register the OPM settings widget with pymmcore-gui exactly once."""
     _install_safe_core_action_initializers()
-    _install_stage_explorer_export_compatibility()
     try:
         WidgetActionInfo.for_key(OPM_WIDGET_KEY)
     except KeyError:
@@ -1347,7 +1083,6 @@ class OPMAppController:
         self._mda_preview_timer = None
         self._mda_state_timer = None
         self._opm_preview_last_frame = -1
-        self._suspended_stage_explorer = None
         self._stage_explorer_polling_was_enabled: bool | None = None
         self._stage_explorer_scratch_dirs: list[TemporaryDirectory] = []
         self._opm_mda_thread = None
@@ -1355,6 +1090,7 @@ class OPMAppController:
         self._live_action_was_enabled = None
         self._opm_acquisition_active = False
         self._opm_scan_footprint_active = False
+        self._updating_live_state = False
         self._window_close_filter = None
         self._shutdown_poll_timer = None
         self._shutdown_requested = False
@@ -1440,8 +1176,7 @@ class OPMAppController:
         """
         runner_active = bool(self.mmc is not None and self.mmc.mda.is_running())
         thread_active = bool(
-            self._opm_mda_thread is not None
-            and self._opm_mda_thread.is_alive()
+            self._opm_mda_thread is not None and self._opm_mda_thread.is_alive()
         )
         return runner_active or thread_active
 
@@ -1654,9 +1389,7 @@ class OPMAppController:
                 current_x
                 if top is None
                 else float(
-                    bounds_control.top.value()
-                    if top
-                    else bounds_control.bottom.value()
+                    bounds_control.top.value() if top else bounds_control.bottom.value()
                 )
             )
             target_y = (
@@ -1785,9 +1518,7 @@ class OPMAppController:
         self.opm_settings_widget.picard_shutter_requested.connect(
             self.set_picard_shutter_open
         )
-        self.mmc.mda.events.sequenceFinished.connect(
-            self._on_mda_sequence_finished
-        )
+        self.mmc.mda.events.sequenceFinished.connect(self._on_mda_sequence_finished)
         self.mmc.mda.events.sequenceStarted.connect(self._on_mda_sequence_started)
         self.mmc.mda.events.sequenceFinished.connect(
             self.opm_settings_widget.set_acquisition_idle
@@ -1821,6 +1552,12 @@ class OPMAppController:
         if viewers_manager is not None:
             viewers_manager.previewViewerCreated.connect(_configure_live_preview)
             _configure_live_preview(viewers_manager._current_image_preview)
+
+        stage_explorer_action = self.win.get_action(WidgetAction.STAGE_EXPLORER)
+        stage_explorer_action.triggered.connect(
+            self._schedule_stage_explorer_configuration
+        )
+        self._schedule_stage_explorer_configuration()
 
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
@@ -1917,37 +1654,15 @@ class OPMAppController:
             viewers_manager._follow_acquisition = enabled
 
     def _set_stage_explorer_frame_updates(self, enabled: bool) -> None:
-        """Connect or disconnect Explorer from the global MDA frame stream.
-
-        Disconnecting before dispatch prevents the Qt event queue from filling
-        with one Explorer callback per hardware-triggered camera frame.  The
-        patched callback above is a second guard for an Explorer opened after
-        dispatch.
-        """
-        if enabled:
-            explorer = self._suspended_stage_explorer
-            self._suspended_stage_explorer = None
-            if explorer is None:
-                return
-            try:
-                self.mmc.mda.events.frameReady.connect(explorer._on_frame_ready)
-            except (RuntimeError, TypeError):
-                pass
-            return
-
-        if self._suspended_stage_explorer is not None:
-            return
+        """Use the widget's idempotent MDA frame subscription property."""
         try:
             explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
         except (KeyError, RuntimeError):
             return
         if explorer is None:
             return
-        try:
-            self.mmc.mda.events.frameReady.disconnect(explorer._on_frame_ready)
-        except (RuntimeError, TypeError):
-            return
-        self._suspended_stage_explorer = explorer
+        _connect_stage_explorer_to_mda(explorer, self.mda_widget)
+        explorer.mda_frame_updates_enabled = enabled
 
     def _set_stage_explorer_position_polling(self, enabled: bool) -> None:
         """Suspend Explorer's serial position queries during an OPM acquisition."""
@@ -2023,9 +1738,7 @@ class OPMAppController:
         try:
             self.mmc.clearCircularBuffer()
         except RuntimeError as exc:
-            self.warning(
-                "LIVE STOP WARNING", f"Camera buffer cleanup failed: {exc}"
-            )
+            self.warning("LIVE STOP WARNING", f"Camera buffer cleanup failed: {exc}")
         if not self.mmc.mda.is_running() and not self._opm_acquisition_active:
             self._set_stage_explorer_position_polling(True)
 
@@ -2127,7 +1840,11 @@ class OPMAppController:
         self.config_store.replace(config)
         if self.opm_engine is not None:
             self.opm_engine.set_config(self.config)
-        self.refresh_stage_explorer_footprint()
+        # An inactive Explorer always uses the physical camera FOV, so ordinary
+        # settings edits cannot change its footprint.  Retiling every ROI on
+        # each spin-box update is especially expensive for a 128-pixel crop.
+        if self._opm_scan_footprint_active:
+            self.refresh_stage_explorer_footprint()
 
     def refresh_stage_explorer_footprint(self) -> None:
         """Refresh an existing Explorer without creating its dock implicitly."""
@@ -2136,9 +1853,37 @@ class OPMAppController:
         except (KeyError, RuntimeError):
             return
         if explorer is not None:
+            _connect_stage_explorer_to_mda(explorer, self.mda_widget)
             _refresh_stage_explorer_display_footprint(explorer)
 
+    def _schedule_stage_explorer_configuration(self, *_args) -> None:
+        """Configure an Explorer after pymmcore-gui has created its dock."""
+        QTimer.singleShot(0, self._configure_stage_explorer)
+
+    def _configure_stage_explorer(self) -> None:
+        """Attach OPM behavior through the public Stage Explorer API."""
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is not None:
+            _connect_stage_explorer_to_mda(explorer, self.mda_widget)
+
     def update_live_state(self, device_name=None, property_name=None) -> None:
+        """Apply one non-reentrant live camera and DAQ configuration update."""
+        if getattr(self, "_updating_live_state", False):
+            self.debug(
+                "LIVE STATE SKIPPED",
+                "A camera/DAQ configuration update is already in progress.",
+            )
+            return
+        self._updating_live_state = True
+        try:
+            self._update_live_state_once(device_name, property_name)
+        finally:
+            self._updating_live_state = False
+
+    def _update_live_state_once(self, device_name=None, property_name=None) -> None:
         """Apply live camera, DAQ, and channel state after MM config changes.
 
         The callback may temporarily stop continuous sequence acquisition while
@@ -2375,6 +2120,11 @@ class OPMAppController:
 
     def run_opm_acquisition(self) -> None:
         """Prepare the standard MDA plan and dispatch it through OPM controls."""
+        # Capture the visible controls synchronously at the Run boundary.  The
+        # normal settings-changed signal also keeps this snapshot current, but
+        # acquisition dispatch must never rely on a queued signal when choosing
+        # between hardware-incompatible mirror and stage plans.
+        self.update_config_snapshot(self.opm_settings_widget.value())
         output = self.mda_widget.prepare_mda()
         if output is False:
             return
@@ -2506,9 +2256,7 @@ class OPMAppController:
         opm_events, handler = self.create_opm_events(optimize_now, opm_mode, output)
         self.data_handler = handler
         if handler is not None:
-            handler.set_finish_reason_getter(
-                lambda: self.mmc.mda.status.finish_reason
-            )
+            handler.set_finish_reason_getter(lambda: self.mmc.mda.status.finish_reason)
             self.opm_engine.set_tile_retry_prepare(handler.prepare_tile_retry)
         else:
             self.opm_engine.set_tile_retry_prepare(None)
@@ -2621,9 +2369,7 @@ class OPMAppController:
         positions_selected = self.mda_widget.tab_wdg.isChecked(
             self.mda_widget.stage_positions
         )
-        grid_selected = self.mda_widget.tab_wdg.isChecked(
-            self.mda_widget.grid_plan
-        )
+        grid_selected = self.mda_widget.tab_wdg.isChecked(self.mda_widget.grid_plan)
         sequence = self.mda_widget.value()
         if "timelapse" in opm_mode and not positions_selected and not grid_selected:
             # Core MDAWidget inserts the current XYZ as a synthetic position when
@@ -2635,9 +2381,9 @@ class OPMAppController:
         if not any(mode in opm_mode for mode in supported_modes):
             self.warning("UNKNOWN OPM ACQUISITION MODE", f"OPM mode: {opm_mode}")
             return None, None
-        opm_events, handler = OPMEventBuilder(
-            self.mmc, self.config, sequence
-        ).build(output=output, mode=opm_mode)
+        opm_events, handler = OPMEventBuilder(self.mmc, self.config, sequence).build(
+            output=output, mode=opm_mode
+        )
 
         self.opm_ao_mirror.output_path = output.parents[0]
         return opm_events, handler

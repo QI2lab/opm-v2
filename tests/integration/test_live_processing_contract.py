@@ -11,7 +11,8 @@ import pytest
 from useq import MDAEvent, MDASequence
 
 import opm_v2.handlers.live_acquisition as live_acquisition
-from opm_v2.engine.setup_events import setup_mirrorscan
+from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
+from opm_v2.engine.setup_events import OPMEventBuilder, setup_mirrorscan
 from opm_v2.handlers.live_acquisition import (
     LIVE_ACQUISITION_SCHEMA,
     LIVE_ACQUISITION_SCHEMA_VERSION,
@@ -167,6 +168,49 @@ def test_planned_manifest_is_schema_compatible(
     assert manifest["scan_axis_step_um"] == 2.0
     assert manifest["pixel_size_um"] == pytest.approx(demo_core.getPixelSizeUm())
     assert handler.acquisition_metadata["acq_config"]["opm_mode"] == "mirror"
+
+
+def test_explicit_mirror_selection_overrides_stale_stage_metadata(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Publish the selected builder mode without mutating its source config."""
+    output = workspace_tmp_path / "selected-mirror.ome.zarr"
+    config = opm_config_factory(
+        mode="stage",
+        active_channels=(1,),
+        channel_powers=(12.0,),
+        channel_exposures_ms=(2.5,),
+        scan_range_um=4.0,
+        scan_axis_step_um=2.0,
+    )
+
+    events, handler = OPMEventBuilder(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[(100.0, 200.0, 30.0)], axis_order="tpcz"),
+    ).build(output, mode="mirror")
+    manifest_path, _log_path = acquisition_sidecar_paths(output)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    action_names = [getattr(event.action, "name", None) for event in events]
+    daq_events = [
+        event
+        for event in events
+        if getattr(event.action, "name", None) == ACTION_DAQ
+    ]
+    image_events = [event for event in events if "DAQ" in event.metadata]
+
+    assert daq_events
+    assert {event.action.data["DAQ"]["mode"] for event in daq_events} == {"mirror"}
+    assert ACTION_ASI_SETUP_SCAN not in action_names
+    assert image_events
+    assert {event.metadata["DAQ"]["mode"] for event in image_events} == {"mirror"}
+    assert manifest["mode"] == "mirror"
+    assert handler.acquisition_metadata["acq_config"]["opm_mode"] == "mirror"
+    assert config["acq_config"]["opm_mode"] == "stage"
+    handler.close()
 
 
 @pytest.mark.parametrize("terminal_event", ["completed", "canceled", "errored"])

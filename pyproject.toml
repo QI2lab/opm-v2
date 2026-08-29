@@ -66,8 +66,8 @@ dev = [
 
 [tool.uv.sources]
 pymmcore-plus = { git = "https://github.com/pymmcore-plus/pymmcore-plus", rev = "70d330d57c97d5936e4aa8efefcab6bb161c0030" }
-pymmcore-gui = { git = "https://github.com/pymmcore-plus/pymmcore-gui", rev = "5bc2b3774b511ef804b376850dc6e66d89e75988" }
-pymmcore-widgets = { git = "https://github.com/pymmcore-plus/pymmcore-widgets", rev = "d61a158cb9bfc5da316f2d6cb74ea8c24206d3e4" }
+pymmcore-gui = { path = "../pymmcore-gui", editable = true }
+pymmcore-widgets = { path = "../pymmcore-widgets", editable = true }
 ome-writers = { git = "https://github.com/pymmcore-plus/ome-writers", rev = "bac0f391eeadc1083b70cbafb2e5efd3e7075df9" }
 
 [project.urls]

@@ -11,7 +11,7 @@ from pymmcore_plus import CMMCorePlus
 
 from opm_v2.engine.opm_custom_events import create_ao_grid_event
 from opm_v2.utils import sensorless_ao
-from opm_v2.utils.position_tools import ao_grid_positions
+from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
 
 
 def _camera_with_transient_snap_failure(image: np.ndarray) -> MagicMock:
@@ -166,11 +166,20 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
     )
     optimization_count = 0
     optimization_acceptance: list[str] = []
+    optimization_start_states: list[str] = []
+    optimization_start_coefficients: list[np.ndarray | None] = []
 
     def _record_optimization(**kwargs) -> None:
         nonlocal optimization_count
         optimization_count += 1
         optimization_acceptance.append(kwargs["mode_acceptance"])
+        optimization_start_states.append(kwargs["starting_mirror_state"])
+        starting_coefficients = kwargs["starting_mirror_coefficients"]
+        optimization_start_coefficients.append(
+            None
+            if starting_coefficients is None
+            else np.asarray(starting_coefficients).copy()
+        )
         mirror.current_coeffs = np.asarray(
             [optimization_count, -optimization_count],
             dtype=float,
@@ -210,6 +219,11 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
     assert optimization_acceptance == [
         config["acq_config"]["AO"]["metric_acceptance"]
     ] * len(ao_positions)
+    assert optimization_start_states == [ao_dict["mirror_state"]] * len(ao_positions)
+    np.testing.assert_allclose(
+        np.stack(optimization_start_coefficients),
+        np.zeros((len(ao_positions), 2)),
+    )
     np.testing.assert_allclose(
         mirror.positions_modal_array[:, 0],
         expected_first_coefficients,
@@ -229,4 +243,115 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
     np.testing.assert_allclose(
         mirror.positions_voltage_array[:, 2],
         expected_first_coefficients + 0.2,
+    )
+
+
+def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
+    monkeypatch: pytest.MonkeyPatch,
+    workspace_tmp_path,
+    opm_config_factory,
+    demo_core: CMMCorePlus,
+) -> None:
+    """Initialize each later-Z AO point from the same coarse-grid XY point."""
+    config = opm_config_factory(
+        mode="projection",
+        updates={
+            "acq_config": {
+                "AO": {
+                    "mirror_state": "last optimized",
+                    "num_scan_positions": 2,
+                    "num_tile_positions": 2,
+                }
+            }
+        },
+    )
+    ao_dict = create_ao_grid_event(config).action.data["AO"]["ao_dict"]
+    stage_positions = [
+        {"x": x, "y": y, "z": 40.0}
+        for x in (0.0, 10.0, 20.0, 30.0, 40.0)
+        for y in (0.0, 10.0, 20.0, 30.0)
+    ]
+    acquisition_grid_size = len(stage_positions)
+    mirror = SimpleNamespace(
+        positions_modal_array=np.zeros((2 * acquisition_grid_size, 2)),
+        positions_voltage_array=np.zeros((2 * acquisition_grid_size, 3)),
+        current_coeffs=np.zeros(2),
+        current_voltage=np.zeros(3),
+        optimized_modal_coeffs=np.asarray([9.0, -9.0]),
+    )
+    starts: list[np.ndarray | None] = []
+    optimization_count = 0
+
+    def _record_optimization(**kwargs) -> None:
+        nonlocal optimization_count
+        starting_coefficients = kwargs["starting_mirror_coefficients"]
+        starts.append(
+            None
+            if starting_coefficients is None
+            else np.asarray(starting_coefficients).copy()
+        )
+        optimization_count += 1
+        mirror.current_coeffs = np.asarray(
+            [optimization_count, -optimization_count], dtype=float
+        )
+        mirror.current_voltage = np.asarray(
+            [optimization_count, optimization_count + 0.1, optimization_count + 0.2],
+            dtype=float,
+        )
+
+    monkeypatch.setattr(
+        sensorless_ao,
+        "CMMCorePlus",
+        SimpleNamespace(instance=lambda: demo_core),
+    )
+    monkeypatch.setattr(sensorless_ao.AOMirror, "instance", lambda: mirror)
+    monkeypatch.setattr(sensorless_ao, "run_ao_optimization", _record_optimization)
+    z0_dir = workspace_tmp_path / "z0"
+    z1_dir = workspace_tmp_path / "z1"
+    z0_dir.mkdir()
+    z1_dir.mkdir()
+
+    z0_result = sensorless_ao.run_ao_grid_mapping(
+        ao_dict=ao_dict,
+        stage_positions=stage_positions,
+        position_indices=list(range(acquisition_grid_size)),
+        num_tile_positions=2,
+        num_scan_positions=2,
+        save_dir_path=z0_dir,
+        verbose=False,
+    )
+    z1_result = sensorless_ao.run_ao_grid_mapping(
+        ao_dict=ao_dict,
+        stage_positions=[{**position, "z": 50.0} for position in stage_positions],
+        position_indices=list(
+            range(acquisition_grid_size, 2 * acquisition_grid_size)
+        ),
+        previous_grid_coefficients=z0_result.modal_coefficients,
+        previous_grid_reference_state=z0_result.reference_state,
+        num_tile_positions=2,
+        num_scan_positions=2,
+        save_dir_path=z1_dir,
+        verbose=False,
+    )
+
+    coarse_grid_size = len(z0_result.modal_coefficients)
+    assert coarse_grid_size == 4
+    assert coarse_grid_size < acquisition_grid_size
+    np.testing.assert_allclose(
+        np.stack(starts[:coarse_grid_size]),
+        np.tile(np.asarray([9.0, -9.0]), (coarse_grid_size, 1)),
+    )
+    np.testing.assert_allclose(
+        np.stack(starts[coarse_grid_size:]),
+        z0_result.modal_coefficients,
+    )
+    coarse_positions = ao_grid_positions(stage_positions, 2, 2)
+    acquisition_to_ao = nearest_ao_grid_indices(stage_positions, coarse_positions)
+    np.testing.assert_allclose(
+        mirror.positions_modal_array[:acquisition_grid_size],
+        z0_result.modal_coefficients[acquisition_to_ao],
+    )
+    np.testing.assert_allclose(
+        mirror.positions_modal_array[acquisition_grid_size:],
+        z1_result.modal_coefficients[acquisition_to_ao],
     )

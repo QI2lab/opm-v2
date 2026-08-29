@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from itertools import product
 from pathlib import Path
+from threading import Event, Thread
 
 import numpy as np
 import pytest
@@ -368,6 +369,78 @@ def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
         item["event_metadata"][TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
         for item in frame_metadata
     )
+
+
+def test_tile_retry_waits_for_queued_failed_pass_metadata(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Snapshot retry slots only after asynchronous frame callbacks drain."""
+    output = workspace_tmp_path / "queued-retry.ome.zarr"
+    events = tuple(
+        MDAEvent(index={"t": 0, "p": 0, "z": plane, "c": 0})
+        for plane in range(3)
+    )
+    sequence = MDASequence()
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 1, "p": 1, "z": 3, "c": 1},
+        delete_existing=True,
+        acquisition_order=("t", "p", "z", "c"),
+        events=events,
+    )
+    handler.sequenceStarted(sequence, {})
+    handler.frameReady(
+        np.full((2, 2), 1, dtype=np.uint16),
+        events[0],
+        {"runner_time_ms": 1.0},
+    )
+
+    prepare_started = Event()
+    prepare_errors: list[Exception] = []
+
+    def prepare_retry() -> None:
+        prepare_started.set()
+        try:
+            handler.prepare_tile_retry(events, attempt=1, received_frames=2)
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            prepare_errors.append(exc)
+
+    prepare_thread = Thread(target=prepare_retry)
+    prepare_thread.start()
+    assert prepare_started.wait(timeout=1)
+    prepare_thread.join(timeout=0.05)
+    assert prepare_thread.is_alive(), "retry snapshot did not wait for queued frame"
+
+    # This callback was already emitted by the failed hardware pass, but its
+    # asynchronous output-handler relay had not reached the writer yet.
+    handler.frameReady(
+        np.full((2, 2), 2, dtype=np.uint16),
+        events[1],
+        {"runner_time_ms": 2.0},
+    )
+    prepare_thread.join(timeout=2)
+    assert not prepare_thread.is_alive()
+    assert not prepare_errors
+
+    for plane, value in enumerate((10, 20, 30)):
+        retry_event = events[plane].model_copy(deep=True)
+        retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            retry_event,
+            {"runner_time_ms": float(value)},
+        )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    for plane, value in enumerate((10, 20, 30)):
+        assert np.all(array[0, 0, plane, 0] == value)
+
+    metadata = json.loads((output / "zarr.json").read_text())
+    frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
+    assert len(frame_metadata) == 3
+    assert len({tuple(item["storage_index"]) for item in frame_metadata}) == 3
 
 
 def test_temporal_chunks_preserve_mirror_time_and_plane_order(

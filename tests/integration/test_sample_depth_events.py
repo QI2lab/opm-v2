@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 from useq import AbsolutePosition, CustomAction, GridFromEdges, MDASequence
 
-from opm_v2.engine.opm_custom_events import ACTION_AO_GRID
+from opm_v2.engine.opm_custom_events import ACTION_AO_GRID, ACTION_ASI_SETUP_SCAN
 from opm_v2.engine.setup_events import (
     setup_mirrorscan,
     setup_projection,
@@ -81,6 +81,23 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
     position_count = handler.index_sizes["p"]
     assert position_count % 2 == 0
     base_count = position_count // 2
+    if mode == "stage":
+        stage_scan_progress = [
+            event.action.data["StageScan"]
+            for event in events
+            if getattr(event.action, "name", None) == ACTION_ASI_SETUP_SCAN
+        ]
+        assert [item["position_index"] for item in stage_scan_progress] == list(
+            range(position_count)
+        )
+        assert {item["position_count"] for item in stage_scan_progress} == {
+            position_count
+        }
+        assert [item["z_level_index"] for item in stage_scan_progress] == [
+            0
+        ] * base_count + [1] * base_count
+        assert {item["z_level_count"] for item in stage_scan_progress} == {2}
+
     for base_index in range(base_count):
         surface_event = first_image_by_position[base_index]
         depth_event = first_image_by_position[base_index + base_count]
@@ -110,6 +127,7 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
         ("stage", setup_stagescan, "pzc"),
     ],
 )
+@pytest.mark.parametrize("ao_mode", ["grid at start", "grid at timepoints"])
 def test_grid_ao_runs_before_tiles_at_each_sample_depth(
     demo_core,
     workspace_tmp_path,
@@ -118,6 +136,7 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
     mode,
     setup,
     axis_order,
+    ao_mode,
 ) -> None:
     """Run an identical AO XY grid immediately before each depth's tiles."""
     config = opm_config_factory(
@@ -129,7 +148,7 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
         scan_axis_step_um=2.0,
         updates={
             "acq_config": {
-                "AO": {"ao_mode": "grid at start"},
+                "AO": {"ao_mode": ao_mode},
                 "Positions": {
                     "sample_depth_start_um": 0.0,
                     # This bound is slightly thicker than one simulated
@@ -198,13 +217,37 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
             image_event_indices_by_position.setdefault(event.index["p"], []).append(
                 event_idx
             )
+    apply_events = [
+        (event_idx, event)
+        for event_idx, event in enumerate(events)
+        if isinstance(event.action, CustomAction)
+        and event.action.name == ACTION_AO_GRID
+        and event.action.data["AO"]["apply_ao_map"]
+    ]
+    assert [event.action.data["AO"]["pos_idx"] for _, event in apply_events] == list(
+        range(handler.index_sizes["p"])
+    )
+    for apply_event_idx, apply_event in apply_events:
+        pos_idx = apply_event.action.data["AO"]["pos_idx"]
+        assert apply_event_idx < image_event_indices_by_position[pos_idx][0]
+
     first_grid_idx, second_grid_idx = grid_events[0][0], grid_events[1][0]
+    assert first_grid_idx < min(
+        event_idx
+        for event_idx, event in apply_events
+        if event.action.data["AO"]["pos_idx"] in first_indices
+    )
     assert first_grid_idx < min(
         image_event_indices_by_position[index][0] for index in first_indices
     )
     assert max(
         image_event_indices_by_position[index][-1] for index in first_indices
     ) < second_grid_idx
+    assert second_grid_idx < min(
+        event_idx
+        for event_idx, event in apply_events
+        if event.action.data["AO"]["pos_idx"] in second_indices
+    )
     assert second_grid_idx < min(
         image_event_indices_by_position[index][0] for index in second_indices
     )

@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import json
+from threading import Event
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
 from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, MDARunner
@@ -14,6 +17,7 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_DAQ,
     ACTION_O2O3_AUTOFOCUS,
     ACTION_STAGE_MOVE,
+    TILE_RETRY_ATTEMPT_METADATA_KEY,
     create_daq_event,
     create_o2o3_autofocus_event,
     create_stage_event,
@@ -22,6 +26,7 @@ from opm_v2.engine.opm_engine import (
     IncompleteHardwareSequenceError,
     OPMEngineV2,
 )
+from opm_v2.handlers.opm_data_handler import OpmDataHandler
 
 
 def _runner_engine(
@@ -207,7 +212,9 @@ def test_repeated_stage_scan_failure_aborts_before_move_or_autofocus(
         call(daq),
         call(tile),
     ]
-    engine._restart_hardware_tile.assert_called_once_with(tile, 1)
+    engine._restart_hardware_tile.assert_called_once_with(
+        tile, 1, received_frames=1
+    )
     assert teardown_event.call_args_list == [
         call(initial_stage),
         call(daq),
@@ -268,4 +275,112 @@ def test_successful_tile_retry_allows_runner_to_reach_move_and_autofocus(
         ACTION_STAGE_MOVE,
         ACTION_O2O3_AUTOFOCUS,
     ]
-    engine._restart_hardware_tile.assert_called_once_with(tile, 1)
+    engine._restart_hardware_tile.assert_called_once_with(
+        tile, 1, received_frames=1
+    )
+
+
+def test_real_runner_waits_for_lagging_writer_before_retry_snapshot(
+    demo_core,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Exercise retry through the real asynchronous MDA output relay."""
+    engine = _runner_engine(
+        demo_core,
+        opm_config_factory,
+        simulated_acquisition_hardware,
+        workspace_tmp_path,
+    )
+    initial_stage, daq, tile, _, _ = _acquisition_events(demo_core)
+    output = workspace_tmp_path / "async-retry.ome.zarr"
+
+    class LaggedDataHandler(OpmDataHandler):
+        """Hold one failed-pass callback until retry preparation begins."""
+
+        def __init__(self, **kwargs) -> None:
+            super().__init__(**kwargs)
+            self.release_second_callback = Event()
+            self.frame_callback_count = 0
+            self.next_frame_at_prepare: int | None = None
+
+        def frameReady(self, frame, event, meta) -> None:
+            self.frame_callback_count += 1
+            if self.frame_callback_count == 2:
+                if not self.release_second_callback.wait(timeout=2):
+                    raise TimeoutError("test did not reach retry preparation")
+            super().frameReady(frame, event, meta)
+
+        def prepare_tile_retry(
+            self,
+            events,
+            attempt,
+            received_frames=None,
+        ) -> None:
+            self.next_frame_at_prepare = self._next_frame
+            self.release_second_callback.set()
+            super().prepare_tile_retry(events, attempt, received_frames)
+
+    handler = LaggedDataHandler(
+        path=output,
+        index_sizes={"p": 1, "z": 3, "c": 1},
+        delete_existing=True,
+        acquisition_order=("p", "z", "c"),
+        events=tile.events,
+    )
+    engine._tile_retry_prepare = handler.prepare_tile_retry
+
+    def restart_tile(
+        event: SequencedEvent,
+        attempt: int,
+        received_frames: int | None = None,
+    ) -> None:
+        handler.prepare_tile_retry(event.events, attempt, received_frames)
+        for image_event in event.events:
+            image_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = attempt
+
+    engine._restart_hardware_tile = MagicMock(side_effect=restart_tile)
+
+    def failed_attempt():
+        yield (np.full((2, 2), 1, dtype=np.uint16), tile.events[0], {})
+        yield (np.full((2, 2), 2, dtype=np.uint16), tile.events[1], {})
+        yield None
+
+    def successful_attempt():
+        for plane, value in enumerate((10, 20, 30)):
+            yield (
+                np.full((2, 2), value, dtype=np.uint16),
+                tile.events[plane],
+                {},
+            )
+
+    runner = MDARunner()
+    runner.set_engine(engine)
+    with patch.object(
+        MDAEngine,
+        "exec_event",
+        side_effect=[failed_attempt(), successful_attempt()],
+    ):
+        runner.run(iter((initial_stage, daq, tile)), output=handler)
+
+    assert runner.status.finish_reason is FinishReason.COMPLETED
+    assert handler.next_frame_at_prepare is not None
+    assert handler.next_frame_at_prepare < 2
+    engine._restart_hardware_tile.assert_called_once_with(
+        tile, 1, received_frames=2
+    )
+
+    array = read_tensorstore_array(output / "0")
+    for plane, value in enumerate((10, 20, 30)):
+        assert np.all(array[0, plane, 0] == value)
+
+    metadata = json.loads((output / "zarr.json").read_text())
+    frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
+    assert len(frame_metadata) == 3
+    assert len({tuple(item["storage_index"]) for item in frame_metadata}) == 3
+    assert all(
+        item["event_metadata"][TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
+        for item in frame_metadata
+    )

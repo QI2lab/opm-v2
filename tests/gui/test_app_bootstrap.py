@@ -9,26 +9,26 @@ from unittest.mock import MagicMock, call, patch
 import numpy as np
 import pytest
 from pymmcore_gui import CoreAction, WidgetAction
-from pymmcore_gui._qt.QtCore import Qt
+from pymmcore_gui._qt.QtCore import QEvent, Qt
 from pymmcore_gui._qt.QtWidgets import QApplication
 from pymmcore_widgets.control._rois.roi_model import RectangleROI
 from useq import MDASequence
 
 from opm_v2._app import (
-    _STAGE_EXPLORER_REQUIRED_METHODS,
     LIVE_DISPLAY_INTERVAL_MS,
+    MAX_LIVE_FRAMES_PER_TICK,
     OPM_WIDGET_KEY,
     OPMAppController,
     _add_coverslip_focus_point,
+    _BoundedLivePreviewTimer,
     _configure_live_preview,
     _connect_stage_explorer_to_mda,
     _coverslip_planes_by_roi,
     _fit_coverslip_calibration,
+    _prepare_stage_explorer_blended_preview,
     _stage_explorer_accelerated_speeds,
-    _stage_explorer_on_image_snapped,
     _stage_explorer_scratch_output,
     _start_coverslip_calibration,
-    _validate_stage_explorer_compatibility,
     launch_opm_app,
 )
 from opm_v2.engine.opm_custom_events import (
@@ -44,6 +44,20 @@ from opm_v2.utils.coverslip import (
     COVERSLIP_METADATA_KEY,
     CoverslipPlane,
 )
+
+
+def test_camera_crop_virtual_device_declares_all_five_states() -> None:
+    """Keep the 128-pixel preset inside a valid initialized state device."""
+    config_lines = (
+        Path(__file__).resolve().parents[2] / "OPM_mmgr.cfg"
+    ).read_text(encoding="utf-8").splitlines()
+    position_lines = [
+        line for line in config_lines if line.startswith("Label,ImageCameraCrop,")
+    ]
+
+    assert "Property,ImageCameraCrop,Number of positions,5" in config_lines
+    assert len(position_lines) == 5
+    assert position_lines[0] == "Label,ImageCameraCrop,0,128"
 
 
 @pytest.mark.parametrize(
@@ -82,11 +96,67 @@ def test_timelapse_planning_preserves_positions_tab_intent(
         result = controller.create_opm_events(False, "timelapse", output)
 
     planned_sequence = builder.call_args.args[2]
-    assert tuple(
-        (position.x, position.y, position.z)
-        for position in planned_sequence.stage_positions
-    ) == expected_positions
+    assert (
+        tuple(
+            (position.x, position.y, position.z)
+            for position in planned_sequence.stage_positions
+        )
+        == expected_positions
+    )
     assert result == (["event"], "handler")
+
+
+def test_run_captures_visible_mode_before_acquisition_dispatch(
+    workspace_tmp_path,
+) -> None:
+    """Use the current controls rather than a stale controller mode snapshot."""
+    controller = object.__new__(OPMAppController)
+    visible_config = {"acq_config": {"opm_mode": "mirror"}}
+    requested_output = workspace_tmp_path / "mirror.ome.zarr"
+    controller.opm_settings_widget = SimpleNamespace(value=lambda: visible_config)
+    controller.mda_widget = SimpleNamespace(prepare_mda=lambda: requested_output)
+    controller.update_config_snapshot = MagicMock()
+    controller.custom_execute_mda = MagicMock()
+
+    controller.run_opm_acquisition()
+
+    controller.update_config_snapshot.assert_called_once_with(visible_config)
+    controller.custom_execute_mda.assert_called_once_with(requested_output)
+
+
+def test_inactive_crop_edit_does_not_retile_stage_explorer() -> None:
+    """Keep a 128-pixel settings edit from rebuilding inactive ROI grids."""
+    controller = object.__new__(OPMAppController)
+    controller.config_store = MagicMock()
+    controller.config = {"acq_config": {"camera_roi": {"crop_y": 256}}}
+    controller.opm_engine = None
+    controller._opm_scan_footprint_active = False
+    controller.refresh_stage_explorer_footprint = MagicMock()
+    updated = {"acq_config": {"camera_roi": {"crop_y": 128}}}
+
+    controller.update_config_snapshot(updated)
+
+    controller.config_store.replace.assert_called_once_with(updated)
+    controller.refresh_stage_explorer_footprint.assert_not_called()
+
+
+def test_live_state_update_ignores_reentrant_camera_crop_callback() -> None:
+    """Do not recursively reconfigure Live while changing the camera ROI."""
+    controller = object.__new__(OPMAppController)
+    controller.debug = MagicMock()
+    controller._updating_live_state = False
+    controller._update_live_state_once = MagicMock(
+        side_effect=lambda *_args: controller.update_live_state(
+            "ImageCameraCrop", "Label"
+        )
+    )
+
+    controller.update_live_state("ImageCameraCrop", "Label")
+
+    controller._update_live_state_once.assert_called_once_with(
+        "ImageCameraCrop", "Label"
+    )
+    assert controller._updating_live_state is False
 
 
 def test_registered_extension_composes_gui_engine_and_hardware_instances(
@@ -318,21 +388,23 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
         controller = window.opm_controller
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        controller._configure_stage_explorer()
         pixel_size_um = demo_core.getPixelSizeUm()
         demo_core.setPixelSizeAffine(
             demo_core.getCurrentPixelSizeConfig(),
             (0.0, -pixel_size_um, 0.0, pixel_size_um, 0.0, 0.0),
         )
         explorer._on_pixel_size_affine_changed()
-        assert list(explorer._affine_state.system_affine[:2, :2].flat) == pytest.approx(
-            [0.0, -pixel_size_um, pixel_size_um, 0.0]
-        )
-        assert explorer._fov_w_h() == pytest.approx(
-            (
-                demo_core.getImageHeight() * pixel_size_um,
-                demo_core.getImageWidth() * pixel_size_um,
-            )
-        )
+        assert list(explorer._affine_state.system_affine[:2, :2].flat) == pytest.approx([
+            0.0,
+            -pixel_size_um,
+            pixel_size_um,
+            0.0,
+        ])
+        assert explorer._fov_w_h() == pytest.approx((
+            demo_core.getImageHeight() * pixel_size_um,
+            demo_core.getImageWidth() * pixel_size_um,
+        ))
         assert explorer.roi_manager._fov_size == pytest.approx(explorer._fov_w_h())
 
         roi = RectangleROI(
@@ -379,7 +451,10 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         ]
         message.clickedButton.return_value = replace_button
 
-        with patch("opm_v2._app.QMessageBox", return_value=message):
+        with patch(
+            "pymmcore_gui.widgets._stage_explorer.QMessageBox",
+            return_value=message,
+        ):
             explorer._on_send_to_mda()
 
         assert mda_widget.tab_wdg.isChecked(mda_widget.stage_positions)
@@ -400,9 +475,10 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         assert region.bottom == pytest.approx(205.0)
         nested_metadata = dict(exported[0].sequence.metadata or {})
         if with_coverslip:
-            assert CoverslipPlane.from_metadata(
-                nested_metadata[COVERSLIP_METADATA_KEY]
-            ) == plane
+            assert (
+                CoverslipPlane.from_metadata(nested_metadata[COVERSLIP_METADATA_KEY])
+                == plane
+            )
         else:
             assert COVERSLIP_METADATA_KEY not in nested_metadata
 
@@ -446,7 +522,10 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             add_button,
             cancel_button,
         ]
-        with patch("opm_v2._app.QMessageBox", return_value=message):
+        with patch(
+            "pymmcore_gui.widgets._stage_explorer.QMessageBox",
+            return_value=message,
+        ):
             explorer._on_send_to_mda()
 
         literal = mda_widget.value().stage_positions[0]
@@ -484,6 +563,7 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
         qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
         controller = window.opm_controller
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        controller._configure_stage_explorer()
         pixel_size_um = demo_core.getPixelSizeUm()
         demo_core.setPixelSizeAffine(
             demo_core.getCurrentPixelSizeConfig(),
@@ -523,8 +603,7 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
             (marker._rect.width, marker._rect.height), dtype=float
         )
         marker_world_size = (
-            np.abs(explorer._affine_state.system_affine[:2, :2])
-            @ marker_local_size
+            np.abs(explorer._affine_state.system_affine[:2, :2]) @ marker_local_size
         )
         assert marker_world_size == pytest.approx(mirror_footprint)
 
@@ -537,8 +616,7 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
             (marker._rect.width, marker._rect.height), dtype=float
         )
         restored_marker_world_size = (
-            np.abs(explorer._affine_state.system_affine[:2, :2])
-            @ restored_marker_size
+            np.abs(explorer._affine_state.system_affine[:2, :2]) @ restored_marker_size
         )
         assert restored_marker_world_size == pytest.approx(camera_footprint)
 
@@ -547,9 +625,7 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
             controller._opm_acquisition_active = True
             controller._opm_scan_footprint_active = True
             controller.update_config_snapshot(config)
-            assert explorer.roi_manager._fov_size == pytest.approx(
-                explorer._fov_w_h()
-            )
+            assert explorer.roi_manager._fov_size == pytest.approx(explorer._fov_w_h())
             assert roi.fov_size == pytest.approx(explorer._fov_w_h())
         controller._opm_acquisition_active = False
         controller._opm_scan_footprint_active = False
@@ -601,6 +677,7 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
         # necessarily designated as MMCore's special channel group.
         demo_core.setChannelGroup("")
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        window.opm_controller._configure_stage_explorer()
         fov_width, fov_height = explorer._fov_w_h()
         roi = RectangleROI(
             (100.0, 200.0),
@@ -616,7 +693,7 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
             patch.object(controller, "prepare_stage_explorer_preview") as prepare,
             qtbot.waitSignal(demo_core.mda.events.sequenceFinished, timeout=10000),
         ):
-            explorer._on_scan_action()
+            explorer.toolBar().scan_action.trigger()
 
         prepare.assert_called_once_with()
         assert camera_frame_recorder.frames
@@ -627,6 +704,8 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
         assert ACTION_DAQ not in actions
         assert ACTION_STAGE_MOVE not in actions
         assert controller.opm_engine.simulated_laser_powers == {}
+        assert explorer.blending_enabled is True
+        assert explorer.mosaic_tile_count > 0
         assert (
             controller.config["acq_config"]["DAQ"]
             == preview_config["acq_config"]["DAQ"]
@@ -678,12 +757,11 @@ def test_stage_explorer_preview_uses_four_times_y_speed_for_both_axes() -> None:
     }[prop]
     accelerated = _stage_explorer_accelerated_speeds(mmc)
 
-    assert accelerated == pytest.approx(
-        {"move_speed_x_mm_s": 0.32, "move_speed_y_mm_s": 0.32}
-    )
-    mmc.setProperty.assert_called_once_with(
-        "XYStage", "MotorSpeedX-S(mm/s)", 0.08
-    )
+    assert accelerated == pytest.approx({
+        "move_speed_x_mm_s": 0.32,
+        "move_speed_y_mm_s": 0.32,
+    })
+    mmc.setProperty.assert_called_once_with("XYStage", "MotorSpeedX-S(mm/s)", 0.08)
 
 
 def test_stage_explorer_preview_caps_speed_at_adapter_limit() -> None:
@@ -702,20 +780,32 @@ def test_stage_explorer_preview_caps_speed_at_adapter_limit() -> None:
 
     accelerated = _stage_explorer_accelerated_speeds(mmc)
 
-    assert accelerated == pytest.approx(
-        {"move_speed_x_mm_s": 1.2864, "move_speed_y_mm_s": 1.2864}
-    )
+    assert accelerated == pytest.approx({
+        "move_speed_x_mm_s": 1.2864,
+        "move_speed_y_mm_s": 1.2864,
+    })
 
 
 def test_stage_explorer_speed_property_failure_does_not_disable_interaction() -> None:
     """Keep Explorer connections alive when ASI speed setup is unavailable."""
-    controller = SimpleNamespace(warning=MagicMock())
+    controller = SimpleNamespace(
+        warning=MagicMock(),
+        mmc=MagicMock(),
+        _stage_explorer_polling_was_enabled=None,
+        _opm_acquisition_active=False,
+        prepare_stage_explorer_preview=MagicMock(),
+        opm_nidaq=SimpleNamespace(clear_tasks=MagicMock()),
+    )
+    controller.mmc.isSequenceRunning.return_value = False
     stage_explorer = SimpleNamespace(
-        _mmc=MagicMock(),
-        window=MagicMock(
-            return_value=SimpleNamespace(opm_controller=controller)
-        ),
+        window=MagicMock(return_value=SimpleNamespace(opm_controller=controller)),
         sendToMDARequested=MagicMock(),
+        set_scan_handler=MagicMock(),
+        set_snap_lifecycle=MagicMock(),
+        set_roi_position_transform=MagicMock(),
+        interactionError=MagicMock(),
+        mda_frame_updates_enabled=True,
+        blending_enabled=False,
     )
     mda_widget = MagicMock()
 
@@ -725,11 +815,15 @@ def test_stage_explorer_speed_property_failure_does_not_disable_interaction() ->
             side_effect=RuntimeError("ASI property unavailable"),
         ),
         patch("opm_v2._app._install_stage_explorer_coverslip_controls"),
+        patch("opm_v2._app._refresh_stage_explorer_display_footprint"),
     ):
         _connect_stage_explorer_to_mda(stage_explorer, mda_widget)
 
     controller.warning.assert_called_once()
     stage_explorer.sendToMDARequested.connect.assert_called_once()
+    stage_explorer.set_scan_handler.assert_called_once()
+    stage_explorer.set_snap_lifecycle.assert_called_once()
+    assert stage_explorer.blending_enabled is True
 
 
 def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
@@ -757,12 +851,14 @@ def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
     try:
         qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        window.opm_controller._configure_stage_explorer()
         explorer.show()
         qtbot.waitExposed(explorer)
-        assert explorer._on_mouse_double_click.__name__ == "_on_mouse_double_click"
         controller = window.opm_controller
+        assert explorer._opm_integration_configured
+        assert not hasattr(explorer, "_opm_original_on_mouse_double_click")
         assert explorer._opm_controller is controller
-        assert explorer._snap_on_double_click is True
+        assert explorer.snap_on_double_click is True
         assert explorer.roi_manager.mode != "create-poly"
         assert not demo_core.isSequenceRunning()
         controller.opm_nidaq.set_acquisition_params(
@@ -794,7 +890,9 @@ def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
             )
             prepare_projection.assert_called_once_with()
 
+        qtbot.waitUntil(lambda: explorer.mosaic_tile_count == 1, timeout=2000)
         start_projection.assert_called_once_with()
+        assert explorer.blending_enabled is True
         assert controller.opm_nidaq.scan_type == "projection"
         assert demo_core.getXYPosition() == pytest.approx(target_xy, abs=0.1)
         assert explorer._stage_controller.snap_on_finish is False
@@ -804,38 +902,12 @@ def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
         window.close()
 
 
-def test_stage_explorer_private_api_is_validated_before_patching() -> None:
-    """Fail clearly when a pymmcore-gui update changes the private shim API."""
-    incompatible_actions = SimpleNamespace(
-        _StageExplorer=type(
-            "ChangedStageExplorer",
-            (),
-            {
-                method_name: object()
-                for method_name in (
-                    set(_STAGE_EXPLORER_REQUIRED_METHODS)
-                    - {"_on_scan_action"}
-                )
-            },
-        ),
-        _setup_stage_mda_connections=object(),
-    )
-
-    with pytest.raises(
-        RuntimeError,
-        match=r"Unsupported pymmcore-gui.*missing: _on_scan_action",
-    ):
-        _validate_stage_explorer_compatibility(incompatible_actions)
-
-
 def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
     """Program projection preview from live MM properties, not OPM channels."""
     controller = object.__new__(OPMAppController)
     controller.config = {
         "Camera": {"camera_id": "Camera"},
-        "OPM": {
-            "channel_ids": ["405nm", "488nm", "561nm", "637nm", "730nm"]
-        },
+        "OPM": {"channel_ids": ["405nm", "488nm", "561nm", "637nm", "730nm"]},
         "acq_config": {
             "DAQ": {"laser_blanking": True},
             "camera_roi": {
@@ -893,6 +965,47 @@ def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
     controller.opm_nidaq.start_waveform_playback.assert_called_once_with()
 
 
+def test_projection_settings_identify_stage_explorer_blending_session() -> None:
+    """Keep one mosaic only while projection and camera settings are compatible."""
+    mmc = MagicMock()
+    mmc.getAvailableConfigGroups.return_value = ("Channel",)
+    mmc.getChannelGroup.return_value = "Channel"
+    mmc.getCurrentConfig.return_value = "FITC"
+    mmc.getCameraDevice.return_value = "Camera"
+    mmc.getROI.return_value = (0, 0, 1900, 128)
+    mmc.getImageWidth.return_value = 1900
+    mmc.getImageHeight.return_value = 128
+    mmc.getPixelSizeUm.return_value = 0.115
+    mmc.getPixelSizeAffine.return_value = (1, 0, 0, 0, 1, 0)
+    daq = SimpleNamespace(
+        scan_type="projection",
+        channel_states=[False, True, False, False, False],
+        exposure_ms=5.0,
+        image_mirror_range_um=100.0,
+    )
+    controller = SimpleNamespace(
+        mmc=mmc,
+        opm_nidaq=daq,
+        prepare_stage_explorer_preview=MagicMock(),
+        _opm_scan_footprint_active=False,
+        config={"acq_config": {"opm_mode": "projection"}},
+    )
+    explorer = SimpleNamespace(
+        _opm_controller=controller,
+        camera_fov_size_um=MagicMock(return_value=(218.5, 14.72)),
+        begin_blending_session=MagicMock(),
+    )
+
+    _prepare_stage_explorer_blended_preview(explorer)
+    first_key = explorer.begin_blending_session.call_args.args[0]
+    daq.exposure_ms = 7.5
+    _prepare_stage_explorer_blended_preview(explorer)
+    second_key = explorer.begin_blending_session.call_args.args[0]
+
+    assert first_key != second_key
+    assert controller.prepare_stage_explorer_preview.call_count == 2
+
+
 def test_user_live_request_programs_and_starts_preview_daq() -> None:
     """Drive the production preview callback through the stateful DAQ backend."""
     controller = object.__new__(OPMAppController)
@@ -928,20 +1041,25 @@ def test_live_preview_avoids_reentrant_qt_event_processing() -> None:
     assert preview.process_events_on_update is False
 
 
-def test_stage_explorer_ignores_snap_signal_during_live_sequence() -> None:
-    """Never add a camera image to the Explorer while Live is running."""
-    explorer = SimpleNamespace(
-        _mmc=MagicMock(),
-        _opm_original_on_image_snapped=MagicMock(),
+def test_live_preview_tick_terminates_while_camera_keeps_refilling() -> None:
+    """Never wait for a fast 128-row camera buffer to become empty."""
+    core = MagicMock()
+    core.getRemainingImageCount.return_value = 10_000
+    core.popNextImage.side_effect = range(MAX_LIVE_FRAMES_PER_TICK)
+    preview = SimpleNamespace(
+        _mmc=core,
+        _timer_id=17,
+        append=MagicMock(),
     )
-    explorer._mmc.isSequenceRunning.return_value = True
+    event = SimpleNamespace(
+        type=lambda: QEvent.Type.Timer,
+        timerId=lambda: 17,
+    )
+    timer_filter = _BoundedLivePreviewTimer(preview)
 
-    _stage_explorer_on_image_snapped(explorer)
-
-    explorer._opm_original_on_image_snapped.assert_not_called()
-    explorer._mmc.isSequenceRunning.return_value = False
-    _stage_explorer_on_image_snapped(explorer)
-    explorer._opm_original_on_image_snapped.assert_called_once_with()
+    assert timer_filter.eventFilter(preview, event) is True
+    assert core.popNextImage.call_count == MAX_LIVE_FRAMES_PER_TICK
+    preview.append.assert_called_once_with(MAX_LIVE_FRAMES_PER_TICK - 1)
 
 
 def test_live_sequence_suspends_and_restores_stage_explorer_polling() -> None:
@@ -1018,6 +1136,7 @@ def test_real_live_preview_excludes_stage_explorer_updates(
     try:
         qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
         explorer = window.get_widget(WidgetAction.STAGE_EXPLORER)
+        window.opm_controller._configure_stage_explorer()
         polling_before_live = explorer.poll_stage_position
         assert not window.get_action(CoreAction.TOGGLE_LIVE).autoRepeat()
         demo_core.setExposure(2.0)
@@ -1031,6 +1150,10 @@ def test_real_live_preview_excludes_stage_explorer_updates(
             assert preview_dock is not None
             preview = preview_dock.widget()
             assert preview.process_events_on_update is False
+            assert isinstance(
+                preview._opm_bounded_timer_filter,
+                _BoundedLivePreviewTimer,
+            )
             qtbot.waitUntil(
                 lambda: hasattr(preview, "_opm_refresh_interval_ms"),
                 timeout=5000,

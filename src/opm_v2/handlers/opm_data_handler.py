@@ -7,6 +7,8 @@ from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from os import PathLike
 from pathlib import Path
+from threading import Condition
+from time import monotonic
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -29,6 +31,7 @@ if TYPE_CHECKING:
 
 
 TIMELAPSE_CHUNK_MEMORY_BUDGET_BYTES = 64 * 1024**2
+TILE_RETRY_STORAGE_DRAIN_TIMEOUT_S = 120.0
 
 
 class OpmDataHandler:
@@ -129,6 +132,8 @@ class OpmDataHandler:
         self._tile_retry_metadata_slots: dict[
             tuple[int, tuple[int, ...]], int
         ] = {}
+        self._write_condition = Condition()
+        self._write_error: Exception | None = None
         self._publisher = (
             LiveAcquisitionPublisher(self.path, live_manifest)
             if live_manifest is not None
@@ -214,6 +219,8 @@ class OpmDataHandler:
         self._view = None
         self._tile_retry_range = None
         self._tile_retry_metadata_slots = {}
+        with self._write_condition:
+            self._write_error = None
         if self._publisher is not None:
             self._publisher.started(
                 frames_expected=self._frame_count,
@@ -241,6 +248,9 @@ class OpmDataHandler:
         try:
             self._write_frame(frame, event, meta)
         except Exception as exc:
+            with self._write_condition:
+                self._write_error = exc
+                self._write_condition.notify_all()
             self._publish_terminal(
                 "errored",
                 frames_saved=self._next_frame,
@@ -248,6 +258,9 @@ class OpmDataHandler:
                 error=str(exc),
             )
             raise
+        else:
+            with self._write_condition:
+                self._write_condition.notify_all()
 
     def _write_frame(
         self, frame: np.ndarray, event: MDAEvent, meta: FrameMetaV1
@@ -307,7 +320,12 @@ class OpmDataHandler:
         }
         self._finish_tile_retry_if_last(target_frame)
 
-    def prepare_tile_retry(self, events: Sequence[MDAEvent], attempt: int) -> None:
+    def prepare_tile_retry(
+        self,
+        events: Sequence[MDAEvent],
+        attempt: int,
+        received_frames: int | None = None,
+    ) -> None:
         """Prepare the current OME-Zarr tile for complete in-place replacement.
 
         Frames already appended for a failed tile are flushed before the retry
@@ -321,6 +339,11 @@ class OpmDataHandler:
             Every camera event in the hardware-triggered tile being restarted.
         attempt : int
             One-based retry attempt number.
+        received_frames : int or None
+            Number of frames emitted by the failed hardware attempt.  The MDA
+            runner dispatches output handlers asynchronously, so retry setup
+            must wait for those already-emitted callbacks before snapshotting
+            the metadata slots that will be replaced.
 
         Raises
         ------
@@ -339,6 +362,14 @@ class OpmDataHandler:
             raise ValueError(
                 "Retried camera tile must be contiguous in acquisition order"
             )
+
+        if received_frames is not None:
+            if not 0 <= received_frames <= len(events):
+                raise ValueError(
+                    "received_frames must lie within the retried tile; received "
+                    f"{received_frames} for {len(events)} planned frames"
+                )
+            self._wait_for_saved_frame_count(first + received_frames)
 
         self._tile_retry_range = (first, last)
         self._tile_retry_metadata_slots = {}
@@ -395,6 +426,36 @@ class OpmDataHandler:
             f"Frame range: {first}-{last}",
             "Every previously saved frame in this tile will be replaced",
         )
+
+    def _wait_for_saved_frame_count(self, expected_next_frame: int) -> None:
+        """Wait for asynchronous writer callbacks emitted before tile failure.
+
+        Raises
+        ------
+        RuntimeError
+            If a queued writer callback failed.
+        TimeoutError
+            If the output-handler relay did not drain within the bounded wait.
+        """
+        deadline = monotonic() + TILE_RETRY_STORAGE_DRAIN_TIMEOUT_S
+        with self._write_condition:
+            while (
+                self._next_frame < expected_next_frame
+                and self._write_error is None
+            ):
+                remaining = deadline - monotonic()
+                if remaining <= 0:
+                    raise TimeoutError(
+                        "Timed out waiting for queued OME-Zarr writes before tile "
+                        f"retry: saved through frame {self._next_frame}, expected "
+                        f"{expected_next_frame}"
+                    )
+                self._write_condition.wait(remaining)
+
+            if self._write_error is not None:
+                raise RuntimeError(
+                    "OME-Zarr writer failed before tile retry preparation"
+                ) from self._write_error
 
     def _is_tile_retry_frame(self, target_frame: int) -> bool:
         """Return whether a repeated frame belongs to the active tile retry.

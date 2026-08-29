@@ -569,6 +569,8 @@ def create_asi_scan_setup_event(
     start_mm: float,
     end_mm: float,
     speed_mm_s: float,
+    *,
+    progress: Mapping[str, object] | None = None,
 ) -> MDAEvent:
     """Create an event that configures ASI stage-scan hardware.
 
@@ -580,20 +582,24 @@ def create_asi_scan_setup_event(
         Stage-scan end coordinate in millimeters.
     speed_mm_s : float
         Stage speed in millimeters per second.
+    progress : Mapping[str, object] or None
+        Planned acquisition progress associated with this physical stage scan.
+        The engine reports it only after the ASI driver accepts the scan-start
+        command.
 
     Returns
     -------
     MDAEvent
         ASI hardware-configuration event.
     """
-    return _custom_event(
-        ACTION_ASI_SETUP_SCAN,
-        {
-            "ASI": {
-                "mode": "scan",
-                "scan_axis_start_mm": float(start_mm),
-                "scan_axis_end_mm": float(end_mm),
-                "scan_axis_speed_mm_s": float(speed_mm_s),
-            }
-        },
-    )
+    data: dict[str, object] = {
+        "ASI": {
+            "mode": "scan",
+            "scan_axis_start_mm": float(start_mm),
+            "scan_axis_end_mm": float(end_mm),
+            "scan_axis_speed_mm_s": float(speed_mm_s),
+        }
+    }
+    if progress is not None:
+        data["StageScan"] = dict(progress)
+    return _custom_event(ACTION_ASI_SETUP_SCAN, data)

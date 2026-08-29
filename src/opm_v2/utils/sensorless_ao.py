@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import time
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from time import sleep
 
@@ -36,6 +37,15 @@ DEBUGGING = True
 MAXIMUM_MODE_DELTA = 0.5
 DEFUALT_PSF_RADIUS_PX = 3
 DEFUALT_SIGN_FIGS = 6
+
+
+@dataclass(frozen=True)
+class AOGridResult:
+    """Optimized states on the coarse AO grid, ordered by grid position."""
+
+    modal_coefficients: NDArray
+    actuator_positions: NDArray
+    reference_state: str
 
 # Modes to optimize lists
 focusing_modes = [2, 7, 14, 23]
@@ -451,6 +461,9 @@ def run_ao_optimization(
     metric_precision: int = DEFUALT_SIGN_FIGS,
     modes_to_optimize: str = "spherical first",
     starting_mirror_state: str = "last optimized",
+    starting_mirror_coefficients: NDArray | None = None,
+    starting_reference_state: str = "system_flat",
+    starting_coefficients_source: str | None = None,
     mode_acceptance: str = "zero",
     num_averaged_frames: int = 50,
     pos_idx: int = None,
@@ -486,6 +499,13 @@ def run_ao_optimization(
         Named set of mirror modes to optimize.
     starting_mirror_state : str
         Initial mirror state, such as ``system flat`` or ``last optimized``.
+    starting_mirror_coefficients : numpy.ndarray or None
+        Explicit modal coefficients used instead of a named mirror state. This
+        supports point-matched initialization from the preceding AO Z level.
+    starting_reference_state : str
+        Mirror reference associated with explicit starting coefficients.
+    starting_coefficients_source : str or None
+        Description recorded for an explicit coefficient initializer.
     mode_acceptance : str
         Rule used to accept a fitted modal update.
     num_averaged_frames : int
@@ -591,19 +611,37 @@ def run_ao_optimization(
     # Set starting mirror state
     # ---------------------------------------------#
 
-    if "system" in starting_mirror_state:
+    if starting_mirror_coefficients is not None:
+        inherited_coefficients = np.asarray(
+            starting_mirror_coefficients,
+            dtype=np.float32,
+        )
+        if inherited_coefficients.shape != AOMirror_local.current_coeffs.shape:
+            raise ValueError(
+                "Inherited AO coefficients do not match the configured mirror modes"
+            )
+        AOMirror_local.set_reference_state(starting_reference_state)
+        if not AOMirror_local.set_modal_coefficients(inherited_coefficients.copy()):
+            raise RuntimeError("Failed to apply inherited AO mirror coefficients")
+        coefficient_source = starting_coefficients_source or "explicit coefficients"
+        starting_state_label = f"{coefficient_source} ({starting_reference_state})"
+    elif "system" in starting_mirror_state:
         AOMirror_local.apply_system_flat_voltage()
+        starting_state_label = starting_mirror_state
     elif "optimized" in starting_mirror_state:
         AOMirror_local.apply_optimized_voltage()
+        starting_state_label = starting_mirror_state
     elif "factory" in starting_mirror_state:
         AOMirror_local.apply_factory_flat_voltage()
+        starting_state_label = starting_mirror_state
     elif "zeros" in starting_mirror_state:
         AOMirror_local.apply_zeros_voltage()
+        starting_state_label = starting_mirror_state
     else:
         raise ValueError(f"Invalid starting mirror state: {starting_mirror_state}")
 
     if verbose:
-        print(f"\n------- INFO -------\nStarting mirror state: {starting_mirror_state}")
+        print(f"\n------- INFO -------\nStarting mirror state: {starting_state_label}")
 
     # ---------------------------------------------#
     # Setup tracking for images / metrics / coefficients
@@ -651,7 +689,7 @@ def run_ao_optimization(
         starting_coef_delta * (coef_delta_scale**k) for k in range(num_iterations)
     ]
     metadata = {
-        "starting_mirror_state": starting_mirror_state,
+        "starting_mirror_state": starting_state_label,
         "starting_coeffs": starting_coeffs.tolist(),
         "stage_position": stage_position,
         "opm_mode": daq_mode,
@@ -2318,11 +2356,13 @@ def run_ao_grid_mapping(
     ao_dict: dict,
     stage_positions: list,
     position_indices: list[int] | None = None,
+    previous_grid_coefficients: NDArray | None = None,
+    previous_grid_reference_state: str | None = None,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
     save_dir_path: Path = None,
     verbose: bool = True,
-) -> bool:
+) -> AOGridResult:
     """Run adaptive optics on a grid and interpolate across stage positions.
 
     Parameters
@@ -2332,6 +2372,11 @@ def run_ao_grid_mapping(
     position_indices : list[int] or None
         Global AO position-array indices represented by ``stage_positions``.
         ``None`` maps the positions contiguously from index zero.
+    previous_grid_coefficients : numpy.ndarray or None
+        Coarse AO-grid coefficients from the preceding logical Z level, in the
+        same grid-point order. ``None`` starts every AO point from the GUI state.
+    previous_grid_reference_state : str or None
+        Mirror reference associated with ``previous_grid_coefficients``.
     ao_dict : dict
         A dictionary containing AO optimization parameters
     num_tile_positions : int
@@ -2345,8 +2390,8 @@ def run_ao_grid_mapping(
 
     Returns
     -------
-    bool
-        Whether grid mapping completed successfully.
+    AOGridResult
+        Exact optimized states on this coarse AO grid.
 
     Raises
     ------
@@ -2426,6 +2471,34 @@ def run_ao_grid_mapping(
         num_ao_pos,
         AOMirror_local.positions_voltage_array.shape[1],
     ))
+    if previous_grid_coefficients is not None:
+        previous_grid_coefficients = np.asarray(previous_grid_coefficients)
+        if previous_grid_coefficients.shape != ao_grid_wfc_coeffs.shape:
+            raise ValueError(
+                "Previous-Z AO grid coefficients must match the current coarse grid"
+            )
+        if previous_grid_reference_state is None:
+            raise ValueError(
+                "Previous-Z AO grid coefficients require a mirror reference state"
+            )
+
+    mirror_state = str(ao_dict["mirror_state"])
+    if "factory" in mirror_state:
+        grid_reference_state = "factory_flat"
+        gui_start_coefficients = np.zeros_like(AOMirror_local.current_coeffs)
+    elif "zeros" in mirror_state:
+        grid_reference_state = "zeros_voltage"
+        gui_start_coefficients = np.zeros_like(AOMirror_local.current_coeffs)
+    elif "optimized" in mirror_state:
+        grid_reference_state = "system_flat"
+        gui_start_coefficients = AOMirror_local.optimized_modal_coeffs.copy()
+    elif "system" in mirror_state:
+        grid_reference_state = "system_flat"
+        gui_start_coefficients = np.zeros_like(AOMirror_local.current_coeffs)
+    else:
+        raise ValueError(f"Invalid starting mirror state: {mirror_state}")
+    if previous_grid_reference_state is not None:
+        grid_reference_state = previous_grid_reference_state
 
     # Run AO optimization for each stage position
     if verbose:
@@ -2478,8 +2551,6 @@ def run_ao_grid_mapping(
             current_x, current_y = mmc.getXYPosition()
             sleep(0.5)
 
-        mirror_state = ao_dict["mirror_state"] if ao_pos_idx == 0 else "optimized"
-
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
 
@@ -2496,6 +2567,17 @@ def run_ao_grid_mapping(
             metric_precision=ao_dict["metric_precision"],
             modes_to_optimize=ao_dict["modes_to_optimize"],
             starting_mirror_state=mirror_state,
+            starting_mirror_coefficients=(
+                gui_start_coefficients
+                if previous_grid_coefficients is None
+                else previous_grid_coefficients[ao_pos_idx]
+            ),
+            starting_reference_state=grid_reference_state,
+            starting_coefficients_source=(
+                "GUI state"
+                if previous_grid_coefficients is None
+                else "previous Z"
+            ),
             mode_acceptance=ao_dict["metric_acceptance"],
             num_averaged_frames=ao_dict["num_averaged_frames"],
             pos_idx=None,
@@ -2532,7 +2614,11 @@ def run_ao_grid_mapping(
 
     if verbose:
         print("\nAO grid mapping complete. Mirror positions array updated.")
-    return True
+    return AOGridResult(
+        modal_coefficients=ao_grid_wfc_coeffs.copy(),
+        actuator_positions=ao_grid_wfc_positions.copy(),
+        reference_state=grid_reference_state,
+    )
 
 
 # -------------------------------------------------#

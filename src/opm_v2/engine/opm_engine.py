@@ -51,7 +51,11 @@ from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 from opm_v2.utils.elveflow_control import run_fluidic_program
-from opm_v2.utils.sensorless_ao import run_ao_grid_mapping, run_ao_optimization
+from opm_v2.utils.sensorless_ao import (
+    AOGridResult,
+    run_ao_grid_mapping,
+    run_ao_optimization,
+)
 
 logging.getLogger("pymmcore-plus")
 
@@ -65,6 +69,11 @@ MAX_TILE_RETRY_ATTEMPTS = 1
 
 class IncompleteHardwareSequenceError(RuntimeError):
     """A hardware-triggered event ended before every planned frame arrived."""
+
+    def __init__(self, message: str, *, expected: int, received: int) -> None:
+        super().__init__(message)
+        self.expected_frames = expected
+        self.opm_received_frames = received
 
 
 def debug(header: str, *lines: object) -> None:
@@ -155,10 +164,13 @@ class OPMEngineV2(MDAEngine):
         self._stage_speeds_before_sequence: dict[str, str] = {}
         self._is_stage_explorer_preview = False
         self._stage_move_count = 0
+        self._pending_stage_scan_progress: dict[str, object] | None = None
+        self._previous_ao_grid_result: AOGridResult | None = None
+        self._previous_ao_grid_key: tuple[int, int] | None = None
         self._safe_stop_requested = ThreadEvent()
         self._tile_setup_events: dict[str, MDAEvent] = {}
         self._tile_retry_prepare: (
-            Callable[[Sequence[MDAEvent], int], None] | None
+            Callable[[Sequence[MDAEvent], int, int | None], None] | None
         ) = None
 
     def update_config(self):
@@ -194,7 +206,7 @@ class OPMEngineV2(MDAEngine):
 
     def set_tile_retry_prepare(
         self,
-        callback: Callable[[Sequence[MDAEvent], int], None] | None,
+        callback: Callable[[Sequence[MDAEvent], int, int | None], None] | None,
     ) -> None:
         """Set the storage callback used before a hardware tile is restarted.
 
@@ -397,6 +409,8 @@ class OPMEngineV2(MDAEngine):
         self._stage_move_count = 0
         self._tile_setup_events = {}
         self._capture_stage_speeds()
+        self._previous_ao_grid_result = None
+        self._previous_ao_grid_key = None
         metadata = getattr(sequence, "metadata", {})
         is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in metadata
         self._is_stage_explorer_preview = is_stage_explorer_preview
@@ -727,6 +741,7 @@ class OPMEngineV2(MDAEngine):
             If the ASI scan state machine does not become idle before the timeout.
         """
         self.start_asi_scan_after_camera_sequence = False
+        self._pending_stage_scan_progress = None
         if self.simulate_hardware:
             if self.simulated_asi_state.get("scan_state") == "Running":
                 self.simulated_asi_state["scan_state"] = "Idle"
@@ -986,6 +1001,7 @@ class OPMEngineV2(MDAEngine):
                 self._stage_move_count = getattr(self, "_stage_move_count", 0) + 1
 
             elif action_name == ACTION_ASI_SETUP_SCAN:
+                stage_scan_progress = data_dict.get("StageScan")
                 if self.simulate_hardware:
                     previous_scan_state = self.simulated_asi_state.get("scan_state")
                     self.simulated_asi_state = {
@@ -1000,6 +1016,11 @@ class OPMEngineV2(MDAEngine):
                     }
                     if previous_scan_state != "Idle":
                         self.simulated_asi_transitions.append("Idle")
+                    self._pending_stage_scan_progress = (
+                        dict(stage_scan_progress)
+                        if isinstance(stage_scan_progress, Mapping)
+                        else None
+                    )
                     self.start_asi_scan_after_camera_sequence = True
                     self._remember_tile_setup_event(event)
                     return
@@ -1096,6 +1117,11 @@ class OPMEngineV2(MDAEngine):
                 # Match the working main-branch order: program DAQ, ROI, and
                 # exposure first, then arm the camera for the ASI start pulse.
                 self.configure_stage_camera_trigger()
+                self._pending_stage_scan_progress = (
+                    dict(stage_scan_progress)
+                    if isinstance(stage_scan_progress, Mapping)
+                    else None
+                )
                 self.start_asi_scan_after_camera_sequence = True
 
             elif action_name == ACTION_AO_OPTIMIZE:
@@ -1276,6 +1302,28 @@ class OPMEngineV2(MDAEngine):
                     self.mmcore.getXYStageDevice(), "ScanState", "Running"
                 )
             self.start_asi_scan_after_camera_sequence = False
+            self._log_stage_scan_started()
+
+    def _log_stage_scan_started(self) -> None:
+        """Report planned progress after the physical stage scan has started."""
+        progress = getattr(self, "_pending_stage_scan_progress", None)
+        self._pending_stage_scan_progress = None
+        if not progress:
+            return
+
+        info(
+            "OPM STAGE SCAN STARTED",
+            f"position: {int(progress['position_index']) + 1}/"
+            f"{int(progress['position_count'])}",
+            f"Z level: {int(progress['z_level_index']) + 1}/"
+            f"{int(progress['z_level_count'])}",
+            f"timepoint: {int(progress['time_index']) + 1}/"
+            f"{int(progress['time_count'])}",
+            "XYZ origin: "
+            f"({float(progress['x_um']):.2f}, "
+            f"{float(progress['y_um']):.2f}, "
+            f"{float(progress['z_um']):.2f}) um",
+        )
 
     def exec_event(
         self, event: MDAEvent
@@ -1296,6 +1344,12 @@ class OPMEngineV2(MDAEngine):
         Iterable[tuple[numpy.ndarray, MDAEvent, FrameMetaV1]] or None
             Camera frames from the base engine for image events; custom actions
             do not produce frames.
+
+        Raises
+        ------
+        RuntimeError
+            If a later-Z AO grid is reached without the completed coarse-grid
+            result from the immediately preceding Z level.
         """
         if isinstance(event.action, CustomAction):
             action_name = event.action.name
@@ -1366,22 +1420,56 @@ class OPMEngineV2(MDAEngine):
             elif action_name == ACTION_AO_GRID:
                 pos_idx = data_dict["AO"]["pos_idx"]
                 if data_dict["AO"]["apply_ao_map"]:
-                    self.AOMirror.apply_positions_array(int(pos_idx))
+                    applied = self.AOMirror.apply_positions_array(int(pos_idx))
+                    if not applied:
+                        raise RuntimeError(
+                            "Failed to apply AO grid correction for acquisition "
+                            f"position {int(pos_idx)}"
+                        )
                     debug(
                         "AO GRID EXISTING POSITIONS",
                         f"pos: {int(pos_idx)}",
                         f"positions: {self.AOMirror.current_coeffs.copy()}",
                     )
                 else:
-                    run_ao_grid_mapping(
+                    time_idx = int(data_dict["AO"].get("time_idx", 0))
+                    z_idx = int(data_dict["AO"].get("z_idx", 0))
+                    previous_result = None
+                    if z_idx > 0:
+                        expected_key = (time_idx, z_idx - 1)
+                        if (
+                            getattr(self, "_previous_ao_grid_key", None)
+                            != expected_key
+                            or getattr(self, "_previous_ao_grid_result", None) is None
+                        ):
+                            raise RuntimeError(
+                                "Cannot initialize AO grid from previous Z level: "
+                                f"expected completed grid {expected_key}, received "
+                                f"{getattr(self, '_previous_ao_grid_key', None)}"
+                            )
+                        previous_result = self._previous_ao_grid_result
+
+                    grid_result = run_ao_grid_mapping(
                         stage_positions=data_dict["AO"]["stage_positions"],
                         position_indices=data_dict["AO"].get("position_indices"),
                         ao_dict=data_dict["AO"]["ao_dict"],
+                        previous_grid_coefficients=(
+                            None
+                            if previous_result is None
+                            else previous_result.modal_coefficients
+                        ),
+                        previous_grid_reference_state=(
+                            None
+                            if previous_result is None
+                            else previous_result.reference_state
+                        ),
                         num_tile_positions=data_dict["AO"]["num_tile_positions"],
                         num_scan_positions=data_dict["AO"]["num_scan_positions"],
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING,
                     )
+                    self._previous_ao_grid_result = grid_result
+                    self._previous_ao_grid_key = (time_idx, z_idx)
 
             elif action_name == ACTION_DAQ:
                 self.opmDAQ.start_waveform_playback()
@@ -1441,6 +1529,9 @@ class OPMEngineV2(MDAEngine):
         ------
         IncompleteHardwareSequenceError
             If the sequence ends without every planned camera frame.
+        TimeoutError
+            If the upstream camera sequence times out.  The exception retains
+            the number of frames already emitted for transactional retry.
         """
         source = iter(super().exec_event(event) or ())
         send = getattr(source, "send", None)
@@ -1460,6 +1551,13 @@ class OPMEngineV2(MDAEngine):
                 payload = send(signal) if send is not None else next(source)
         except StopIteration:
             pass
+        except TimeoutError as exc:
+            # Preserve TimeoutError for callers while carrying the number of
+            # payloads already queued to the asynchronous output-handler relay.
+            # Retry storage must drain exactly those callbacks before it takes
+            # its metadata-slot snapshot.
+            setattr(exc, "opm_received_frames", received)
+            raise
 
         if canceled:
             return
@@ -1468,7 +1566,9 @@ class OPMEngineV2(MDAEngine):
             first_index = dict(event.events[0].index) if event.events else {}
             raise IncompleteHardwareSequenceError(
                 "Incomplete OPM hardware sequence at "
-                f"{first_index}: expected {expected} frames, received {received}"
+                f"{first_index}: expected {expected} frames, received {received}",
+                expected=expected,
+                received=received,
             )
 
     def _exec_tile_with_retry(
@@ -1509,10 +1609,17 @@ class OPMEngineV2(MDAEngine):
                     f"Reason: {exc}",
                     f"Restarting complete tile: attempt {attempt}",
                 )
-                self._restart_hardware_tile(event, attempt)
+                self._restart_hardware_tile(
+                    event,
+                    attempt,
+                    received_frames=getattr(exc, "opm_received_frames", None),
+                )
 
     def _restart_hardware_tile(
-        self, event: SequencedEvent, attempt: int
+        self,
+        event: SequencedEvent,
+        attempt: int,
+        received_frames: int | None = None,
     ) -> None:
         """Quiesce, recover, and completely re-arm a failed camera tile.
 
@@ -1531,7 +1638,7 @@ class OPMEngineV2(MDAEngine):
 
         if self._tile_retry_prepare is None:  # pragma: no cover - guarded above
             raise RuntimeError("No OPM tile-rewrite callback is configured")
-        self._tile_retry_prepare(event.events, attempt)
+        self._tile_retry_prepare(event.events, attempt, received_frames)
 
         self._snap_camera_for_retry()
         self.mmcore.clearCircularBuffer()
@@ -1665,8 +1772,7 @@ class OPMEngineV2(MDAEngine):
                             0.0,
                         )
 
-            if self.AOMirror.output_path:
-                self.AOMirror.save_positions_array()
+            self._save_ao_position_arrays()
             self.mmcore.clearCircularBuffer()
 
             # Upstream commands the pre-acquisition XYZ return and then calls
@@ -1697,3 +1803,8 @@ class OPMEngineV2(MDAEngine):
             self._tile_setup_events = {}
             self._tile_retry_prepare = None
             self.clear_safe_stop()
+
+    def _save_ao_position_arrays(self) -> None:
+        """Persist position-indexed deformable-mirror state for every run."""
+        if self.AOMirror.output_path:
+            self.AOMirror.save_positions_array(prefix="ao_position")

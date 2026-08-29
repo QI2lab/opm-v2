@@ -117,6 +117,17 @@ def test_stage_scan_preserves_micrometre_grid_range_in_asi_millimetres(
     )
     assert asi_event.action.data["ASI"]["scan_axis_start_mm"] == pytest.approx(3.167460)
     assert asi_event.action.data["ASI"]["scan_axis_end_mm"] == pytest.approx(3.168460)
+    assert asi_event.action.data["StageScan"] == {
+        "time_index": 0,
+        "time_count": 1,
+        "position_index": 0,
+        "position_count": 2,
+        "z_level_index": 0,
+        "z_level_count": 1,
+        "x_um": pytest.approx(3167.460),
+        "y_um": pytest.approx(1265.889),
+        "z_um": pytest.approx(0.0),
+    }
     assert handler.index_sizes == {"t": 1, "p": 2, "c": 3, "z": 52}
 
 

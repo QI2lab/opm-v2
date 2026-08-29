@@ -45,7 +45,6 @@ def test_coverslip_plane_fit_and_metadata_round_trip() -> None:
 
 def test_stage_explorer_calibration_uses_standard_live_mode_and_restores() -> None:
     """Collect sample-stage points in Standard mode and attach their plane."""
-    controller = SimpleNamespace(info=MagicMock(), warning=MagicMock())
     roi = RectangleROI((0.0, 0.0), (100.0, 100.0))
     manager = SimpleNamespace(selected_rois=MagicMock(return_value=[roi]))
     mmc = MagicMock()
@@ -55,12 +54,11 @@ def test_stage_explorer_calibration_uses_standard_live_mode_and_restores() -> No
     mmc.getCurrentConfig.side_effect = ["Projection", "Standard"]
     mmc.getXYPosition.side_effect = [(10.0, 10.0), (90.0, 10.0), (10.0, 90.0)]
     mmc.getZPosition.side_effect = [9.9, 10.7, 8.3]
-    points_visual = MagicMock()
+    controller = SimpleNamespace(info=MagicMock(), warning=MagicMock(), mmc=mmc)
     explorer = SimpleNamespace(
-        _mmc=mmc,
         _opm_controller=controller,
         _opm_coverslip_points=[],
-        _opm_coverslip_points_visual=points_visual,
+        _opm_calibration_controls=SimpleNamespace(set_points=MagicMock()),
         _opm_coverslip_target_roi=None,
         _opm_coverslip_previous_live_preset=None,
         roi_manager=manager,
@@ -112,16 +110,12 @@ def test_coverslip_plane_survives_nested_mda_position_serialization() -> None:
         plane,
     )
 
-    restored_position = AbsolutePosition.model_validate_json(
-        position.model_dump_json()
-    )
+    restored_position = AbsolutePosition.model_validate_json(position.model_dump_json())
     metadata = restored_position.sequence.metadata
     assert metadata[COVERSLIP_METADATA_KEY]["schema_version"] == (
         COVERSLIP_METADATA_VERSION
     )
-    parsed = parse_mda_position_plan([
-        restored_position.model_dump(mode="json")
-    ])
+    parsed = parse_mda_position_plan([restored_position.model_dump(mode="json")])
 
     assert len(parsed) == 1
     assert isinstance(parsed[0], StageExplorerRegion)

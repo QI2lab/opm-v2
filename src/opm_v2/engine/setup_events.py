@@ -12,6 +12,7 @@ Create OPM acquisition event structures.
 
 import json
 from collections.abc import Iterator
+from copy import deepcopy
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -3034,9 +3035,9 @@ def setup_mirrorscan(
 
             # ----------------------------------------------------------------#
             # Create mirror state update events for 'start' and 'time-point' ao modes
-            if ("start" in ao_mode) or (
-                (ao_mode in ("at timepoints", "grid at timepoints"))
-                and (time_interval > 0)
+            if ("start" in ao_mode) or ao_mode in (
+                "at timepoints",
+                "grid at timepoints",
             ):
                 ao_scheduler.append_position_update(opm_events, pos_idx)
 
@@ -3833,6 +3834,19 @@ def setup_stagescan(
                         start_mm=raw_scan_start_mm,
                         end_mm=raw_scan_start_mm + raw_scan_length_mm,
                         speed_mm_s=float(scan_axis_speed),
+                        progress={
+                            "time_index": int(time_idx),
+                            "time_count": int(n_time_steps),
+                            "position_index": int(pos_idx),
+                            "position_count": int(n_stage_positions),
+                            "z_level_index": int(z_idx),
+                            "z_level_count": int(
+                                n_z_positions * len(sample_depths_um)
+                            ),
+                            "x_um": float(stage_positions[pos_idx]["x"]),
+                            "y_um": float(stage_positions[pos_idx]["y"]),
+                            "z_um": float(stage_positions[pos_idx]["z"]),
+                        },
                     )
                     opm_events.append(current_asi_setup_event)
 
@@ -3954,12 +3968,19 @@ class OPMEventBuilder:
             If the acquisition mode is unknown.
         """
         mode = mode or self.config["acq_config"]["opm_mode"]
+        # ``mode`` is the acquisition the caller selected and therefore must
+        # also be the mode published in the manifest and OME-Zarr metadata.
+        # Work on an isolated snapshot so a stale widget/controller config
+        # cannot label mirror data as stage data, and planning cannot mutate
+        # the caller's live configuration.
+        config = deepcopy(self.config)
+        config["acq_config"]["opm_mode"] = mode
         if "timelapse" in mode:
-            return setup_timelapse(self.mmc, self.config, self.sequence, output)
+            return setup_timelapse(self.mmc, config, self.sequence, output)
         if "projection" in mode:
-            return setup_projection(self.mmc, self.config, self.sequence, output)
+            return setup_projection(self.mmc, config, self.sequence, output)
         if "mirror" in mode:
-            return setup_mirrorscan(self.mmc, self.config, self.sequence, output)
+            return setup_mirrorscan(self.mmc, config, self.sequence, output)
         if "stage" in mode:
-            return setup_stagescan(self.mmc, self.config, self.sequence, output)
+            return setup_stagescan(self.mmc, config, self.sequence, output)
         raise ValueError(f"Unknown OPM event builder mode: {mode}")

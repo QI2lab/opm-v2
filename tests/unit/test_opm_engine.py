@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 import weakref
+from pathlib import Path
 from threading import Event as ThreadEvent
 from unittest.mock import MagicMock, call, patch
 
+import numpy as np
 import pytest
 from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, SkipEvent
 from useq import CustomAction, MDAEvent, MDASequence
 
 from opm_v2.engine.opm_custom_events import (
+    ACTION_AO_GRID,
     ACTION_ASI_SETUP_SCAN,
     ACTION_DAQ,
     ACTION_O2O3_AUTOFOCUS,
@@ -26,6 +29,7 @@ from opm_v2.engine.opm_engine import (
     IncompleteHardwareSequenceError,
     OPMEngineV2,
 )
+from opm_v2.utils.sensorless_ao import AOGridResult
 
 
 def _isolated_engine() -> OPMEngineV2:
@@ -46,6 +50,9 @@ def _isolated_engine() -> OPMEngineV2:
     engine._stage_speeds_before_sequence = {}
     engine._is_stage_explorer_preview = False
     engine._stage_move_count = 0
+    engine._pending_stage_scan_progress = None
+    engine._previous_ao_grid_result = None
+    engine._previous_ao_grid_key = None
     engine._safe_stop_requested = ThreadEvent()
     engine._tile_setup_events = {}
     engine._tile_retry_prepare = None
@@ -110,7 +117,7 @@ def test_sequenced_timeout_restarts_complete_tile_once() -> None:
         "retry-frame-1",
     ]
     assert upstream_exec.call_count == 2
-    restart.assert_called_once_with(event, 1)
+    restart.assert_called_once_with(event, 1, received_frames=1)
 
 
 def test_repeated_sequenced_timeout_propagates_after_one_retry() -> None:
@@ -141,7 +148,7 @@ def test_repeated_sequenced_timeout_propagates_after_one_retry() -> None:
     ):
         list(engine.exec_event(event))
 
-    restart.assert_called_once_with(event, 1)
+    restart.assert_called_once_with(event, 1, received_frames=0)
 
 
 def test_missing_frame_sentinel_triggers_complete_tile_retry() -> None:
@@ -180,7 +187,7 @@ def test_missing_frame_sentinel_triggers_complete_tile_retry() -> None:
         "retry-frame-0",
         "retry-frame-1",
     ]
-    restart.assert_called_once_with(event, 1)
+    restart.assert_called_once_with(event, 1, received_frames=1)
 
 
 def test_repeated_incomplete_hardware_tile_aborts_after_retry() -> None:
@@ -214,7 +221,7 @@ def test_repeated_incomplete_hardware_tile_aborts_after_retry() -> None:
     ):
         list(engine.exec_event(event))
 
-    restart.assert_called_once_with(event, 1)
+    restart.assert_called_once_with(event, 1, received_frames=1)
 
 
 def test_incomplete_sequence_without_retry_propagates_immediately() -> None:
@@ -294,7 +301,7 @@ def test_tile_restart_replays_full_hardware_startup_order() -> None:
     engine.opmDAQ.clear_tasks.assert_called_once_with()
     engine.opmDAQ.reset.assert_called_once_with()
     engine._prepare_xy_for_point_move.assert_called_once_with()
-    engine._tile_retry_prepare.assert_called_once_with(image_events, 1)
+    engine._tile_retry_prepare.assert_called_once_with(image_events, 1, None)
     engine._snap_camera_for_retry.assert_called_once_with()
     mmcore.clearCircularBuffer.assert_called_once_with()
     assert [
@@ -372,6 +379,72 @@ def test_asi_setup_waits_for_post_camera_sequence_hook() -> None:
     assert engine.start_asi_scan_after_camera_sequence is False
 
 
+def test_stage_scan_logs_planned_progress_only_after_scan_starts() -> None:
+    """Report physical position and Z progress at the ASI start boundary."""
+    engine = _isolated_engine()
+    event = create_asi_scan_setup_event(
+        start_mm=1.0,
+        end_mm=2.0,
+        speed_mm_s=0.5,
+        progress={
+            "time_index": 1,
+            "time_count": 3,
+            "position_index": 5,
+            "position_count": 12,
+            "z_level_index": 1,
+            "z_level_count": 4,
+            "x_um": 1000.0,
+            "y_um": 250.5,
+            "z_um": 30.25,
+        },
+    )
+
+    with patch("opm_v2.engine.opm_engine.info") as log_info:
+        engine.setup_event(event)
+        log_info.assert_not_called()
+
+        engine.post_sequence_started(MDAEvent())
+
+    log_info.assert_called_once_with(
+        "OPM STAGE SCAN STARTED",
+        "position: 6/12",
+        "Z level: 2/4",
+        "timepoint: 2/3",
+        "XYZ origin: (1000.00, 250.50, 30.25) um",
+    )
+    assert engine._pending_stage_scan_progress is None
+
+
+def test_stage_scan_does_not_log_when_driver_rejects_start() -> None:
+    """Do not report a scan start before Micro-Manager accepts the command."""
+    engine = object.__new__(OPMEngineV2)
+    engine.simulate_hardware = False
+    engine.start_asi_scan_after_camera_sequence = True
+    engine._pending_stage_scan_progress = {
+        "time_index": 0,
+        "time_count": 1,
+        "position_index": 0,
+        "position_count": 1,
+        "z_level_index": 0,
+        "z_level_count": 1,
+        "x_um": 0.0,
+        "y_um": 0.0,
+        "z_um": 0.0,
+    }
+    mmcore = MagicMock()
+    engine._mmcore_ref = weakref.ref(mmcore)
+    mmcore.getXYStageDevice.return_value = "XYStage"
+    mmcore.setProperty.side_effect = RuntimeError("driver rejected scan start")
+
+    with (
+        patch("opm_v2.engine.opm_engine.info") as log_info,
+        pytest.raises(RuntimeError, match="driver rejected scan start"),
+    ):
+        engine.post_sequence_started(MDAEvent())
+
+    log_info.assert_not_called()
+
+
 def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
     """Send sub-0.01 mm stage coordinates to the ASI adapter unchanged."""
     engine = object.__new__(OPMEngineV2)
@@ -413,6 +486,124 @@ def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
         "XYStage", "ScanFastAxisStopPosition(mm)", pytest.approx(3.168460)
     ) in mmcore.setProperty.call_args_list
     engine.configure_stage_camera_trigger.assert_called_once_with()
+
+
+def test_ao_grid_engine_passes_previous_z_coarse_grid_result() -> None:
+    """Bridge completed coarse-grid coefficients to the next logical Z event."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    z0_coefficients = np.asarray([[1.0, 2.0], [3.0, 4.0]])
+    z1_coefficients = np.asarray([[1.5, 2.5], [3.5, 4.5]])
+    z0_result = AOGridResult(
+        modal_coefficients=z0_coefficients,
+        actuator_positions=np.zeros((2, 3)),
+        reference_state="system_flat",
+    )
+    z1_result = AOGridResult(
+        modal_coefficients=z1_coefficients,
+        actuator_positions=np.zeros((2, 3)),
+        reference_state="system_flat",
+    )
+
+    def _event(z_idx: int) -> MDAEvent:
+        return MDAEvent(
+            action=CustomAction(
+                name=ACTION_AO_GRID,
+                data={
+                    "AO": {
+                        "apply_ao_map": False,
+                        "pos_idx": 0,
+                        "time_idx": 0,
+                        "z_idx": z_idx,
+                        "stage_positions": [{"x": 0.0, "y": 0.0, "z": z_idx}],
+                        "position_indices": [z_idx],
+                        "ao_dict": {},
+                        "num_tile_positions": 1,
+                        "num_scan_positions": 2,
+                        "output_path": None,
+                    }
+                },
+            )
+        )
+
+    with patch(
+        "opm_v2.engine.opm_engine.run_ao_grid_mapping",
+        side_effect=(z0_result, z1_result),
+    ) as run_grid:
+        engine.exec_event(_event(0))
+        engine.exec_event(_event(1))
+
+    assert run_grid.call_count == 2
+    assert run_grid.call_args_list[0].kwargs["previous_grid_coefficients"] is None
+    np.testing.assert_array_equal(
+        run_grid.call_args_list[1].kwargs["previous_grid_coefficients"],
+        z0_coefficients,
+    )
+    assert engine._previous_ao_grid_key == (0, 1)
+    assert engine._previous_ao_grid_result is z1_result
+
+
+def test_ao_grid_engine_rejects_missing_previous_z_result() -> None:
+    """Never silently reset a later-Z grid when its predecessor is unavailable."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    event = MDAEvent(
+        action=CustomAction(
+            name=ACTION_AO_GRID,
+            data={
+                "AO": {
+                    "apply_ao_map": False,
+                    "pos_idx": 0,
+                    "time_idx": 0,
+                    "z_idx": 1,
+                }
+            },
+        )
+    )
+
+    with (
+        patch("opm_v2.engine.opm_engine.run_ao_grid_mapping") as run_grid,
+        pytest.raises(RuntimeError, match="expected completed grid"),
+    ):
+        engine.exec_event(event)
+
+    run_grid.assert_not_called()
+
+
+def test_ao_grid_engine_applies_global_position_correction() -> None:
+    """Apply the mapped mirror state for the exact acquisition position index."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.apply_positions_array.return_value = True
+    engine.AOMirror.current_coeffs = np.asarray([1.0, 2.0])
+    event = MDAEvent(
+        action=CustomAction(
+            name=ACTION_AO_GRID,
+            data={"AO": {"apply_ao_map": True, "pos_idx": 7}},
+        )
+    )
+
+    engine.exec_event(event)
+
+    engine.AOMirror.apply_positions_array.assert_called_once_with(7)
+
+
+def test_ao_grid_engine_stops_when_position_correction_fails() -> None:
+    """Do not proceed to imaging after a requested mirror state is rejected."""
+    engine = _isolated_engine()
+    engine.simulate_hardware = False
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.apply_positions_array.return_value = False
+    event = MDAEvent(
+        action=CustomAction(
+            name=ACTION_AO_GRID,
+            data={"AO": {"apply_ao_map": True, "pos_idx": 3}},
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="acquisition position 3"):
+        engine.exec_event(event)
 
 
 def test_preview_stage_move_speed_override_is_restored() -> None:
@@ -922,6 +1113,26 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
     mmcore.setTimeoutMs.assert_not_called()
     mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 5000)
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
+
+
+@pytest.mark.parametrize(
+    "ao_mode",
+    ["none", "once at start"],
+)
+def test_ao_position_sidecars_are_mode_neutral_and_always_saved(
+    ao_mode: str,
+) -> None:
+    """Record deformable-mirror arrays even when optimization is disabled."""
+    engine = _isolated_engine()
+    engine._config = {"acq_config": {"AO": {"ao_mode": ao_mode}}}
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.output_path = Path("acquisition")
+
+    engine._save_ao_position_arrays()
+
+    engine.AOMirror.save_positions_array.assert_called_once_with(
+        prefix="ao_position"
+    )
 
 
 def test_daq_exposure_validation_uses_only_enabled_channels() -> None:

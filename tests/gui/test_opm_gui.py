@@ -223,6 +223,27 @@ def test_opm_stop_button_reports_cooperative_stop_state(
     assert not settings.stop_button.isEnabled()
 
 
+def test_camera_crop_is_locked_during_acquisition(
+    workspace_tmp_path, qtbot, opm_config_factory
+) -> None:
+    """Prevent unsafe ROI changes while an acquisition owns the camera."""
+    config = opm_config_factory(mode="mirror", camera_shape=(64, 256))
+    config_path = opm_config_factory.write(
+        config, workspace_tmp_path / "locked_camera_crop.json"
+    )
+    settings = OPMSettingsV2(config_path)
+    qtbot.addWidget(settings)
+
+    settings.set_acquisition_running(True)
+    assert not settings.group_camera_roi.isEnabled()
+    assert not settings.spbx_roi_crop_y.isEnabled()
+    assert settings.stop_button.isEnabled()
+
+    settings.set_acquisition_idle()
+    assert settings.group_camera_roi.isEnabled()
+    assert settings.spbx_roi_crop_y.isEnabled()
+
+
 def test_custom_widget_loads_reusable_configuration_without_resetting_it(
     workspace_tmp_path, qtbot, opm_config_factory
 ) -> None:
