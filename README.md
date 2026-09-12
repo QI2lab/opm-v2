@@ -2,6 +2,7 @@
 
 [![License: BSD 3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-green)](LICENSE)
 [![Python: >=3.12](https://img.shields.io/badge/python-%3E%3D3.12-green)](https://www.python.org/)
+[![DOI](https://zenodo.org/badge/930026502.svg)](https://doi.org/10.5281/zenodo.22730401)
 
 ![image](https://user-images.githubusercontent.com/26783318/124163887-eb04cb00-da54-11eb-9db8-87c5269d3996.png)
 # qi2lab-OPM-v2 | Next generation control for iterative multiplexing and adaptive optics oblique plane microscopy (AO-OPM)
