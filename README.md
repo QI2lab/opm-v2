@@ -1,8 +1,5 @@
 # opm-v2
 
-Publication-ready diagrams and an implementation-level trace of every OPM/DAQ
-mode are available in [docs/daq_programs](docs/daq_programs/README.md).
-
 [![License: BSD 3-Clause](https://img.shields.io/badge/license-BSD--3--Clause-green)](LICENSE)
 [![Python: >=3.12](https://img.shields.io/badge/python-%3E%3D3.12-green)](https://www.python.org/)
 
