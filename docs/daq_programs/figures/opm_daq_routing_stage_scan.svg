@@ -1,0 +1,188 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="407.52pt" height="222.462125pt" viewBox="0 0 407.52 222.462125" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-09-04T10:03:12.799360</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>opm_v2/docs/daq_programs/generate_figures.py</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 222.462125 
+L 407.52 222.462125 
+L 407.52 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 20.55744 96.239213 
+L 101.71296 96.239213 
+Q 108.14112 96.239213 108.14112 93.045869 
+L 108.14112 58.717421 
+Q 108.14112 55.524077 101.71296 55.524077 
+L 20.55744 55.524077 
+Q 14.12928 55.524077 14.12928 58.717421 
+L 14.12928 93.045869 
+Q 14.12928 96.239213 20.55744 96.239213 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #e7f4ee; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 149.12064 96.239213 
+L 234.29376 96.239213 
+Q 240.72192 96.239213 240.72192 93.045869 
+L 240.72192 58.717421 
+Q 240.72192 55.524077 234.29376 55.524077 
+L 149.12064 55.524077 
+Q 142.69248 55.524077 142.69248 58.717421 
+L 142.69248 93.045869 
+Q 142.69248 96.239213 149.12064 96.239213 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #e8f3f8; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 285.71904 96.239213 
+L 382.94496 96.239213 
+Q 389.37312 96.239213 389.37312 93.045869 
+L 389.37312 58.717421 
+Q 389.37312 55.524077 382.94496 55.524077 
+L 285.71904 55.524077 
+Q 279.29088 55.524077 279.29088 58.717421 
+L 279.29088 93.045869 
+Q 279.29088 96.239213 285.71904 96.239213 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #e8f3f8; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 149.12064 174.076973 
+L 234.29376 174.076973 
+Q 240.72192 174.076973 240.72192 170.883629 
+L 240.72192 136.555181 
+Q 240.72192 133.361837 234.29376 133.361837 
+L 149.12064 133.361837 
+Q 142.69248 133.361837 142.69248 136.555181 
+L 142.69248 170.883629 
+Q 142.69248 174.076973 149.12064 174.076973 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #f7f8fa; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_6">
+    <path d="M 285.71904 174.076973 
+L 382.94496 174.076973 
+Q 389.37312 174.076973 389.37312 170.883629 
+L 389.37312 136.555181 
+Q 389.37312 133.361837 382.94496 133.361837 
+L 285.71904 133.361837 
+Q 279.29088 133.361837 279.29088 136.555181 
+L 279.29088 170.883629 
+Q 279.29088 174.076973 285.71904 174.076973 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #e7f4ee; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 20.55744 174.076973 
+L 101.71296 174.076973 
+Q 108.14112 174.076973 108.14112 170.883629 
+L 108.14112 136.555181 
+Q 108.14112 133.361837 101.71296 133.361837 
+L 20.55744 133.361837 
+Q 14.12928 133.361837 14.12928 136.555181 
+L 14.12928 170.883629 
+Q 14.12928 174.076973 20.55744 174.076973 
+z
+" clip-path="url(#p65c71f4aae)" style="fill: #f7f8fa; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="text_1">
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(34.009575 69.486458)">Stage controller</text>
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(21.871044 77.648317)">constant-speed motion</text>
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(28.160513 85.810176)">camera start signal</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(178.364325 69.486192)">Camera</text>
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(164.493919 77.648051)">short exposures</text>
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(157.234387 85.809911)">during stage motion</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(293.224938 73.567387)">Camera EXPOSURE OUT</text>
+    <text style="font-size: 6.8px; font-family: 'DejaVu Sans'" transform="translate(322.666281 81.728715)">to PFI0</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(176.94795 147.512569)">Digital in</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(167.669794 155.434374)">camera timing</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(176.932997 163.355663)">port PFI0</text>
+   </g>
+   <g id="text_5">
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(317.176641 147.512311)">Digital out</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(313.799297 155.434116)">laser control</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(307.066266 163.355921)">timing from PFI2</text>
+   </g>
+   <g id="text_6">
+    <text style="font-size: 7.5px; font-family: 'DejaVu Sans'" transform="translate(40.845356 151.166915)">Analog out</text>
+    <text style="font-size: 7.5px; font-family: 'DejaVu Sans'" transform="translate(24.596723 160.168966)">mirrors held steady</text>
+   </g>
+   <g id="patch_8">
+    <path d="M 104.320722 75.881645 
+Q 125.417585 75.881645 145.564119 75.881645 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 142.364119 74.281645 
+L 145.564119 75.881645 
+L 142.364119 77.481645 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="patch_9">
+    <path d="M 236.898334 75.881645 
+Q 260.005193 75.881645 282.161723 75.881645 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 278.961723 74.281645 
+L 282.161723 75.881645 
+L 278.961723 77.481645 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="patch_10">
+    <path d="M 333.442638 94.309414 
+Q 267.152774 128.876891 193.646633 135.581221 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 196.978735 136.883949 
+L 193.646633 135.581221 
+L 196.688076 133.697177 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="patch_11">
+    <path d="M 236.898334 153.719405 
+Q 260.005193 153.719405 282.161723 153.719405 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 278.961723 152.119405 
+L 282.161723 153.719405 
+L 278.961723 155.319405 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="text_7">
+    <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start" x="2.88" y="11.998125" transform="rotate(-0 2.88 11.998125)">Stage scan routing</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p65c71f4aae">
+   <rect x="2.88" y="19.998125" width="401.76" height="199.584"/>
+  </clipPath>
+ </defs>
+</svg>

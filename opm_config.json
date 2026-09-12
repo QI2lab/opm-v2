@@ -142,14 +142,14 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "stage",
-        "o2o3_mode": "per xyz position",
+        "opm_mode": "mirror",
+        "o2o3_mode": "none",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
             "center_y": 1151.0,
             "crop_x": 1900.0,
-            "crop_y": 384.0
+            "crop_y": 256.0
         },
         "AO": {
             "mirror_state": "system flat",
@@ -158,13 +158,13 @@
             "mode_alpha": 0.5,
             "num_iterations": 2,
             "num_mode_samples": 3,
-            "image_mirror_range_um": 100.0,
+            "image_mirror_range_um": 150.0,
             "channel_id": "488nm",
             "channel_power": 20.0,
             "exposure_ms": 300.0,
-            "ao_mode": "grid at start",
-            "num_scan_positions": 2,
-            "num_tile_positions": 2,
+            "ao_mode": "none",
+            "num_scan_positions": 4,
+            "num_tile_positions": 4,
             "save_dir_path": "f:/optimize_now",
             "daq_mode": "projection",
             "lightsheet_mode": "on",
@@ -180,28 +180,28 @@
         },
         "DAQ": {
             "channel_states": [
+                false,
                 true,
-                true,
-                true,
+                false,
                 false,
                 false
             ],
             "channel_powers": [
-                10.0,
-                15.0,
-                20.0,
-                0.0,
+                30.0,
+                80.0,
+                24.0,
+                30.0,
                 6.0
             ],
             "channel_exposures_ms": [
                 12.0,
-                12.0,
+                3.0,
                 12.0,
                 12.0,
                 0.0
             ],
-            "scan_axis_step_um": 0.4,
-            "scan_range_um": 5.0,
+            "scan_axis_step_um": 0.8,
+            "scan_range_um": 10.0,
             "laser_blanking": true
         },
         "Positions": {
@@ -209,7 +209,7 @@
             "coverslip_slope_y": 0.0,
             "coverslip_max_dz": 2.0,
             "sample_depth_start_um": 0.0,
-            "sample_depth_end_um": 35.0,
+            "sample_depth_end_um": 0.0,
             "scan_axis_overlap_um": 30,
             "scan_axis_overlap": 0.15,
             "tile_axis_overlap": 0.15,
@@ -219,7 +219,7 @@
             "": "none"
         },
         "stage_scan": {
-            "max_stage_scan_range_um": 1000.0,
+            "max_stage_scan_range_um": 0.0,
             "excess_start_frames": 0,
             "excess_end_frames": 0
         },

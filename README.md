@@ -1,5 +1,8 @@
 # opm-v2
 
+Publication-ready diagrams and an implementation-level trace of every OPM/DAQ
+mode are available in [docs/daq_programs](docs/daq_programs/README.md).
+
 [![License](https://img.shields.io/pypi/l/opm-v2.svg?color=green)](https://github.com/qi2lab/opm-v2/main/LICENSE)
 [![Python Version](https://img.shields.io/pypi/pyversions/opm-v2.svg?color=green)](https://python.org)
 

@@ -134,3 +134,6 @@ src/opm_v2/hardware/*.json
 src/opm_v2/hardware/wfc_position_files
 .localappdata/
 .agents/
+.codex/
+.conda/
+archived_configs/
