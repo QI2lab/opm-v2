@@ -1,0 +1,144 @@
+<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE svg PUBLIC "-//W3C//DTD SVG 1.1//EN"
+  "http://www.w3.org/Graphics/SVG/1.1/DTD/svg11.dtd">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" width="407.52pt" height="222.462125pt" viewBox="0 0 407.52 222.462125" xmlns="http://www.w3.org/2000/svg" version="1.1">
+ <metadata>
+  <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
+   <cc:Work>
+    <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
+    <dc:date>2026-09-04T10:03:12.208361</dc:date>
+    <dc:format>image/svg+xml</dc:format>
+    <dc:creator>
+     <cc:Agent>
+      <dc:title>opm_v2/docs/daq_programs/generate_figures.py</dc:title>
+     </cc:Agent>
+    </dc:creator>
+   </cc:Work>
+  </rdf:RDF>
+ </metadata>
+ <defs>
+  <style type="text/css">*{stroke-linejoin: round; stroke-linecap: butt}</style>
+ </defs>
+ <g id="figure_1">
+  <g id="patch_1">
+   <path d="M 0 222.462125 
+L 407.52 222.462125 
+L 407.52 0 
+L 0 0 
+z
+" style="fill: #ffffff"/>
+  </g>
+  <g id="axes_1">
+   <g id="patch_2">
+    <path d="M 20.55744 136.156013 
+L 101.71296 136.156013 
+Q 108.14112 136.156013 108.14112 132.962669 
+L 108.14112 94.642541 
+Q 108.14112 91.449197 101.71296 91.449197 
+L 20.55744 91.449197 
+Q 14.12928 91.449197 14.12928 94.642541 
+L 14.12928 132.962669 
+Q 14.12928 136.156013 20.55744 136.156013 
+z
+" clip-path="url(#p725b4536cc)" style="fill: #e8f3f8; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_3">
+    <path d="M 149.12064 92.247533 
+L 234.29376 92.247533 
+Q 240.72192 92.247533 240.72192 89.054189 
+L 240.72192 54.725741 
+Q 240.72192 51.532397 234.29376 51.532397 
+L 149.12064 51.532397 
+Q 142.69248 51.532397 142.69248 54.725741 
+L 142.69248 89.054189 
+Q 142.69248 92.247533 149.12064 92.247533 
+z
+" clip-path="url(#p725b4536cc)" style="fill: #f7f8fa; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_4">
+    <path d="M 285.71904 92.247533 
+L 382.94496 92.247533 
+Q 389.37312 92.247533 389.37312 89.054189 
+L 389.37312 54.725741 
+Q 389.37312 51.532397 382.94496 51.532397 
+L 285.71904 51.532397 
+Q 279.29088 51.532397 279.29088 54.725741 
+L 279.29088 89.054189 
+Q 279.29088 92.247533 285.71904 92.247533 
+z
+" clip-path="url(#p725b4536cc)" style="fill: #e7f4ee; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="patch_5">
+    <path d="M 245.54304 178.068653 
+L 386.96256 178.068653 
+Q 393.39072 178.068653 393.39072 174.875309 
+L 393.39072 132.563501 
+Q 393.39072 129.370157 386.96256 129.370157 
+L 245.54304 129.370157 
+Q 239.11488 129.370157 239.11488 132.563501 
+L 239.11488 174.875309 
+Q 239.11488 178.068653 245.54304 178.068653 
+z
+" clip-path="url(#p725b4536cc)" style="fill: #fff1df; stroke: #4b5563; stroke-width: 0.8; stroke-linejoin: miter"/>
+   </g>
+   <g id="text_1">
+    <text style="font-weight: 700; font-size: 7.5px; font-family: 'DejaVu Sans'" transform="translate(45.021333 106.749382)">Camera</text>
+    <text style="font-weight: 700; font-size: 7.5px; font-family: 'DejaVu Sans'" transform="translate(28.45395 115.750847)">EXPOSURE OUT</text>
+    <text style="font-weight: 700; font-size: 7.5px; font-family: 'DejaVu Sans'" transform="translate(46.146333 124.752312)">to PFI0</text>
+   </g>
+   <g id="text_2">
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(176.94795 65.683129)">Digital in</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(167.669794 73.604934)">camera timing</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(176.932997 81.526223)">port PFI0</text>
+   </g>
+   <g id="text_3">
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(317.176641 65.682871)">Digital out</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(313.799297 73.604676)">laser control</text>
+    <text style="font-size: 6.6px; font-family: 'DejaVu Sans'" transform="translate(307.066266 81.526481)">timing from PFI2</text>
+   </g>
+   <g id="text_4">
+    <text style="font-size: 6.4px; font-family: 'DejaVu Sans'" transform="translate(298.9388 147.700405)">Analog out</text>
+    <text style="font-size: 6.4px; font-family: 'DejaVu Sans'" transform="translate(295.1983 155.382155)">mirror sweep</text>
+    <text style="font-size: 6.4px; font-family: 'DejaVu Sans'" transform="translate(271.0348 163.063905)">started by camera exposure</text>
+   </g>
+   <g id="patch_6">
+    <path d="M 104.180459 105.314072 
+Q 125.414597 92.847578 145.829207 80.862227 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 142.259581 81.102575 
+L 145.829207 80.862227 
+L 143.879711 83.862137 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="patch_7">
+    <path d="M 236.898334 71.889965 
+Q 260.005193 71.889965 282.161723 71.889965 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 278.961723 70.289965 
+L 282.161723 71.889965 
+L 278.961723 73.489965 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="patch_8">
+    <path d="M 104.217028 122.22741 
+Q 169.846321 154.400038 241.983759 153.738838 
+" style="fill: none; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+    <path d="M 238.769229 152.168234 
+L 241.983759 153.738838 
+L 238.798558 155.3681 
+z
+" style="fill: #4b5563; stroke: #4b5563; stroke-width: 0.85; stroke-linecap: round"/>
+   </g>
+   <g id="text_5">
+    <text style="font-weight: 700; font-size: 12px; font-family: 'DejaVu Sans'; text-anchor: start" x="2.88" y="11.998125" transform="rotate(-0 2.88 11.998125)">Projection routing</text>
+   </g>
+  </g>
+ </g>
+ <defs>
+  <clipPath id="p725b4536cc">
+   <rect x="2.88" y="19.998125" width="401.76" height="199.584"/>
+  </clipPath>
+ </defs>
+</svg>

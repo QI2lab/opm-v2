@@ -1,0 +1,168 @@
+"""Integrate projection event planning with MMCore demo hardware."""
+
+from __future__ import annotations
+
+import pytest
+from useq import AbsolutePosition, GridFromEdges, MDASequence
+
+from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_DAQ
+from opm_v2.engine.setup_events import setup_projection
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
+
+
+@pytest.mark.parametrize(
+    ("active_channels", "positions"),
+    [
+        ((0,), [(0.0, 0.0, 0.0)]),
+        ((0, 1), [(0.0, 0.0, 0.0), (10.0, 20.0, 2.0)]),
+        ((0, 2, 4), [(0.0, 0.0, 0.0), (10.0, 20.0, 2.0)]),
+    ],
+)
+def test_projection_events_support_channels_without_asi(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+    assert_standard_image_fields,
+    active_channels,
+    positions,
+) -> None:
+    """Build projection events for reusable channel and position cases.
+
+    Parameters
+    ----------
+    demo_core : CMMCorePlus
+        Core loaded with Micro-Manager demo devices.
+    workspace_tmp_path : Path
+        Directory used to construct the output handler.
+    opm_config_factory : OpmConfigFactory
+        Reusable simulated configuration factory.
+    simulated_acquisition_hardware : SimulatedAcquisitionHardware
+        Initialized singleton hardware simulations.
+    split_events : Callable
+        Event classifier fixture.
+    assert_standard_image_fields : Callable
+        Reusable standard useq field assertion.
+    active_channels : tuple[int, ...]
+        Enabled canonical channel indices.
+    positions : list[tuple[float, float, float]]
+        Stage positions supplied by the standard MDA plan.
+    """
+    channel_count = len(active_channels)
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=active_channels,
+        channel_powers=[10.0 * (index + 1) for index in range(channel_count)],
+        channel_exposures_ms=[5.0] * channel_count,
+        scan_range_um=32.0,
+    )
+    events, handler = setup_projection(
+        demo_core,
+        config,
+        MDASequence(stage_positions=positions, axis_order="pc"),
+        workspace_tmp_path / "projection.ome.zarr",
+    )
+    image_events, custom_actions = split_events(events)
+
+    assert [dict(event.index) for event in image_events] == [
+        {"t": 0, "p": position, "c": channel}
+        for position in range(len(positions))
+        for channel in range(channel_count)
+    ]
+    assert all(event.metadata["DAQ"]["mode"] == "projection" for event in image_events)
+    assert_standard_image_fields(image_events)
+    assert custom_actions.count(ACTION_DAQ) == len(positions)
+    assert ACTION_ASI_SETUP_SCAN not in custom_actions
+    assert handler.index_sizes == {"t": 1, "p": len(positions), "c": channel_count}
+
+
+def test_projection_retiles_stage_explorer_region_in_physical_stage_axes(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+) -> None:
+    """Use ROI bounds rather than the Stage Explorer camera-grid coordinates."""
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(5.0,),
+        scan_range_um=4.0,
+    )
+    region = AbsolutePosition(
+        z=7.0,
+        name="projection_roi",
+        sequence=MDASequence(
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=108.0,
+                top=200.0,
+                bottom=204.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            )
+        ),
+    )
+
+    events, handler = setup_projection(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pc"),
+        workspace_tmp_path / "projection-explorer.ome.zarr",
+    )
+    image_events, custom_actions = split_events(events)
+
+    assert [event.metadata["Stage"]["x_pos"] for event in image_events] == pytest.approx(
+        [100.0, 102.67, 105.34]
+    )
+    assert {event.metadata["Stage"]["y_pos"] for event in image_events} == {200.0}
+    assert {event.metadata["Stage"]["z_pos"] for event in image_events} == {7.0}
+    assert custom_actions.count(ACTION_DAQ) == 3
+    assert handler.index_sizes == {"t": 1, "p": 3, "c": 1}
+
+
+def test_projection_applies_exported_coverslip_plane(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+) -> None:
+    """Predict sample Z from every retiled physical projection coordinate."""
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(5.0,),
+        scan_range_um=4.0,
+    )
+    plane = CoverslipPlane(100.0, 200.0, 7.0, 0.1, 0.2)
+    region = AbsolutePosition(
+        z=7.0,
+        sequence=MDASequence(
+            metadata={COVERSLIP_METADATA_KEY: plane.to_metadata()},
+            grid_plan=GridFromEdges(
+                left=100.0,
+                right=108.0,
+                top=200.0,
+                bottom=204.0,
+                fov_width=50.0,
+                fov_height=50.0,
+            ),
+        ),
+    )
+
+    events, _handler = setup_projection(
+        demo_core,
+        config,
+        MDASequence(stage_positions=[region], axis_order="pc"),
+        workspace_tmp_path / "projection-coverslip.ome.zarr",
+    )
+    image_events, _custom_actions = split_events(events)
+
+    assert [event.metadata["Stage"]["z_pos"] for event in image_events] == pytest.approx(
+        [7.0, 7.27, 7.53]
+    )

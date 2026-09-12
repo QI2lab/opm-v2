@@ -1,5 +1,5 @@
 """
-Methods for creating OPM acquisition event structures
+Create OPM acquisition event structures.
 
 - Optimize now (o2o3 autofocus and adaptive optics)
 - Timelapse (Fast image time series, 2d or 3d with multiple image-mirror positions)
@@ -11,18 +11,33 @@ Methods for creating OPM acquisition event structures
 """
 
 import json
+from collections.abc import Iterator
+from copy import deepcopy
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from types import MappingProxyType as mappingproxy
-from typing import Dict, List, Optional
 
 import numpy as np
 from numpy.typing import NDArray
 from pymmcore_plus import CMMCorePlus
 from tqdm import trange
-from useq import MDAEvent, MDASequence
+from useq import (
+    AbsolutePosition,
+    Channel,
+    MDAEvent,
+    MDASequence,
+    TIntervalLoops,
+    ZRelativePositions,
+)
 
-from opm_v2.engine.debug_printing import debug, info
+from opm_v2.engine.debug_printing import (
+    debug as _debug,
+)
+from opm_v2.engine.debug_printing import (
+    info,
+    warning,
+)
 from opm_v2.engine.opm_custom_events import (
     create_ao_grid_event,
     create_ao_mirror_update_event,
@@ -33,18 +48,65 @@ from opm_v2.engine.opm_custom_events import (
     create_fluidics_event,
     create_o2o3_autofocus_event,
     create_stage_event,
-    create_timelapse_event,
 )
-from opm_v2.handlers.opm_mirror_handler import OPMMirrorHandler
+from opm_v2.handlers.live_acquisition import build_live_acquisition_manifest
+from opm_v2.handlers.opm_data_handler import OpmDataHandler
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
+from opm_v2.utils.position_tools import (
+    ao_grid_positions,
+    apply_oblique_scan_correction,
+    compose_stage_positions,
+    expand_stage_positions_for_depth,
+    oblique_camera_extents_um,
+    sample_depth_levels_um,
+    split_stage_scan_bounds,
+)
 
 DEBUGGING = True
 MAX_IMAGE_MIRROR_RANGE_UM = 250
 
-#---------------------------------------------------------#
+
+@dataclass(frozen=True)
+class LiteralStagePosition:
+    """One explicit physical stage position exported by the MDA widget."""
+
+    x: float
+    y: float
+    z: float
+    name: str | None = None
+
+
+@dataclass(frozen=True)
+class StageExplorerRegion:
+    """One rectangular Stage Explorer ROI expressed in physical stage axes."""
+
+    x_min: float
+    x_max: float
+    y_min: float
+    y_max: float
+    z: float
+    name: str | None = None
+    coverslip_plane: CoverslipPlane | None = None
+
+
+def debug(header: str, *lines: object) -> None:
+    """Log a debug message when module-level debugging is enabled.
+
+    Parameters
+    ----------
+    header : str
+        Message heading.
+    *lines : object
+        Detail values included in the message.
+    """
+    _debug(header, *lines, enabled=DEBUGGING)
+
+
+# ---------------------------------------------------------#
 # Helper methods for consistency
-#---------------------------------------------------------#
+# ---------------------------------------------------------#
 
 
 def stage_positions_from_grid(
@@ -54,51 +116,58 @@ def stage_positions_from_grid(
     camera_crop_x: int,
     camera_crop_y: int,
     scan_range_um: float,
-    scan_axis_overlap: Optional[float] = 0.2,
-    tile_axis_overlap: Optional[float] = 0.2,
-    z_axis_overlap: Optional[float] = 0.2,
-    coverslip_max_dz: Optional[float] = None,
-    coverslip_slope_x: Optional[float] = 0,
-    coverslip_slope_y: Optional[float] = 0
-) -> List[Dict]:
-    """Generates stage positions list
+    scan_axis_overlap: float | None = 0.2,
+    tile_axis_overlap: float | None = 0.2,
+    z_axis_overlap: float | None = 0.2,
+    angle_deg: float = 30.0,
+    coverslip_max_dz: float | None = None,
+    coverslip_slope_x: float | None = 0,
+    coverslip_slope_y: float | None = 0,
+    mmc: CMMCorePlus | None = None,
+) -> list[dict]:
+    """Generate stage positions from the active grid and Z plans.
 
     TODO: Break up scans based on coverslip slope in each direction.
 
     Parameters
     ----------
-    mda_grid_plan : _type_
-        _description_
-    mda_z_plan : _type_
-        _description_
+    mda_grid_plan : dict
+        Grid bounds selected in the MDA widget.
+    mda_z_plan : dict or None
+        Optional Z-range plan selected in the MDA widget.
     opm_mode : str
-        _description_
+        OPM acquisition mode.
     camera_crop_x : int
-        _description_
+        Camera ROI width in pixels.
     camera_crop_y : int
-        _description_
+        Camera ROI height in pixels.
     scan_range_um : float
-        _description_
+        Scan-axis range in micrometers.
     scan_axis_overlap : Optional[float], optional
-        _description_, by default 0.2
+        Fractional scan-axis overlap.
     tile_axis_overlap : Optional[float], optional
-        _description_, by default 0.2
+        Fractional tile-axis overlap.
     z_axis_overlap : Optional[float], optional
-        _description_, by default 0.2
+        Fractional Z-axis overlap.
+    angle_deg : float, optional
+        OPM sheet angle in degrees.
     coverslip_max_dz : Optional[float], optional
-        _description_, by default None
+        Maximum allowed coverslip Z change in micrometers.
     coverslip_slope_x : Optional[float], optional
-        _description_, by default 0
+        Coverslip slope along X.
     coverslip_slope_y : Optional[float], optional
-        _description_, by default 0
+        Coverslip slope along Y.
+    mmc : CMMCorePlus or None, optional
+        Core that owns the active pixel-size configuration. Falls back to the
+        process singleton for backward-compatible direct calls.
 
     Returns
     -------
     List[Dict]
-        List of stage positions stored as dictionaries
+        Stage positions stored as X, Y, and Z dictionaries.
     """
     stage_positions = []
-    _mmc = CMMCorePlus.instance()
+    _mmc = mmc or CMMCorePlus.instance()
 
     if mda_z_plan is not None:
         max_z_pos = float(mda_z_plan["top"])
@@ -117,12 +186,10 @@ def stage_positions_from_grid(
             z_step_um = 0
         else:
             range_z_um = np.round(np.abs(max_z_pos - min_z_pos), 2)
-            z_step_max = (
-                camera_crop_y
-                * _mmc.getPixelSizeUm()
-                * (1.0 - z_axis_overlap)
-                * np.sin((np.pi / 180.0) * float(30))
+            _, camera_z_extent_um = oblique_camera_extents_um(
+                camera_crop_y, _mmc.getPixelSizeUm(), angle_deg
             )
+            z_step_max = camera_z_extent_um * (1.0 - z_axis_overlap)
             n_z_positions = int(np.ceil(range_z_um / z_step_max))
             z_step_um = np.round(range_z_um / n_z_positions, 2)
 
@@ -152,15 +219,18 @@ def stage_positions_from_grid(
         y_step_um = np.round(range_y_um / n_y_positions, 2)
 
     if scan_range_um == 0:
-        info(
-            "NO STAGE POSITIONS",
-            "Scan range is 0; no stage positions were generated.",
-        )
+        warning("SCAN RANGE", "Scan range == 0.")
         return []
     else:
+        # Preserve the working main-branch placement rule for both projection
+        # and mirror scans.  The requested interval determines the number of
+        # positions, then that interval is divided evenly.  This deliberately
+        # produces at least the requested overlap instead of placing every
+        # origin at the maximum allowed stride.
         x_step_max = scan_range_um * (1 - scan_axis_overlap)
-        n_x_positions = int(np.ceil(range_x_um / x_step_max))
+        n_x_positions = max(1, int(np.ceil(range_x_um / x_step_max)))
         x_step_um = np.round(range_x_um / n_x_positions, 2)
+        x_positions = min_x_pos + np.arange(n_x_positions) * x_step_um
 
     if "projection" in opm_mode or "mirror" in opm_mode:
         if x_step_max > MAX_IMAGE_MIRROR_RANGE_UM:
@@ -195,17 +265,14 @@ def stage_positions_from_grid(
                 x_iterator = range(n_x_positions)
 
             for ii in x_iterator:
-                stage_positions.append(
-                    {
-                        "x": min_x_pos + ii * x_step_um,
-                        "y": min_y_pos + jj * y_step_um,
-                        "z": min_z_pos
-                        + kk * z_step_um
-                        + ii * dz_per_x_tile
-                        + jj * dz_per_y_tile,
-                    }
-                )
-
+                stage_positions.append({
+                    "x": float(x_positions[ii]),
+                    "y": min_y_pos + jj * y_step_um,
+                    "z": min_z_pos
+                    + kk * z_step_um
+                    + ii * dz_per_x_tile
+                    + jj * dz_per_y_tile,
+                })
     debug(
         "XYZ STAGE POSITIONS",
         f"x start: {min_x_pos}",
@@ -221,10 +288,377 @@ def stage_positions_from_grid(
         f"number z tiles: {n_z_positions}",
         f"x tile length um: {x_step_um}",
         f"y tile length um: {y_step_um}",
-        enabled=DEBUGGING
     )
 
     return stage_positions
+
+
+def parse_mda_position_plan(
+    mda_positions_plan: list[dict] | tuple[dict, ...],
+) -> list[LiteralStagePosition | StageExplorerRegion]:
+    """Convert native MDA positions into explicit points or Stage Explorer regions.
+
+    A Stage Explorer ROI is represented by an ``AbsolutePosition`` whose nested
+    sequence contains an absolute grid.  Those grid bounds are already in physical
+    stage-world coordinates, so left/right map to physical X and top/bottom map to
+    physical Y.  This differs intentionally from this application's transposed
+    top-level MDA bounds controls.
+
+    Parameters
+    ----------
+    mda_positions_plan : list or tuple of dict
+        JSON-compatible stage positions from the native MDA widget.
+
+    Returns
+    -------
+    list[LiteralStagePosition | StageExplorerRegion]
+        Spatial items in their original MDA-table order.
+
+    Raises
+    ------
+    ValueError
+        If a position is incomplete or an exported ROI is not rectangular.
+    """
+    items: list[LiteralStagePosition | StageExplorerRegion] = []
+    for index, stage_pos in enumerate(mda_positions_plan):
+        nested_sequence = stage_pos.get("sequence")
+        nested_grid = (
+            nested_sequence.get("grid_plan")
+            if isinstance(nested_sequence, dict)
+            else None
+        )
+        name = stage_pos.get("name")
+        z_value = stage_pos.get("z")
+
+        if nested_grid is not None:
+            if "vertices" in nested_grid:
+                raise ValueError(
+                    "Stage Explorer polygon ROIs are not supported by OPM spatial "
+                    "planning. Export a rectangular ROI."
+                )
+            missing_bounds = {
+                key
+                for key in ("left", "right", "top", "bottom")
+                if key not in nested_grid
+            }
+            if missing_bounds:
+                raise ValueError(
+                    "Stage Explorer ROI is missing grid bounds: "
+                    f"{sorted(missing_bounds)}"
+                )
+            if z_value is None:
+                raise ValueError(
+                    f"Stage Explorer ROI at MDA position {index} has no Z coordinate."
+                )
+            left = float(nested_grid["left"])
+            right = float(nested_grid["right"])
+            top = float(nested_grid["top"])
+            bottom = float(nested_grid["bottom"])
+            nested_metadata = nested_sequence.get("metadata") or {}
+            plane_payload = nested_metadata.get(COVERSLIP_METADATA_KEY)
+            try:
+                coverslip_plane = (
+                    CoverslipPlane.from_metadata(plane_payload)
+                    if plane_payload is not None
+                    else None
+                )
+            except ValueError as exc:
+                raise ValueError(
+                    f"Stage Explorer ROI at MDA position {index} has invalid "
+                    "coverslip plane metadata"
+                ) from exc
+            items.append(
+                StageExplorerRegion(
+                    x_min=min(left, right),
+                    x_max=max(left, right),
+                    y_min=min(top, bottom),
+                    y_max=max(top, bottom),
+                    z=float(z_value),
+                    name=str(name) if name is not None else None,
+                    coverslip_plane=coverslip_plane,
+                )
+            )
+            continue
+
+        coordinates = {axis: stage_pos.get(axis) for axis in ("x", "y", "z")}
+        missing_coordinates = [
+            axis for axis, value in coordinates.items() if value is None
+        ]
+        if missing_coordinates:
+            raise ValueError(
+                f"MDA position {index} is missing coordinates "
+                f"{missing_coordinates}. Re-export the ROI from Stage Explorer."
+            )
+        items.append(
+            LiteralStagePosition(
+                x=float(coordinates["x"]),
+                y=float(coordinates["y"]),
+                z=float(coordinates["z"]),
+                name=str(name) if name is not None else None,
+            )
+        )
+    return items
+
+
+def position_plan_has_regions(
+    mda_positions_plan: list[dict] | tuple[dict, ...] | None,
+) -> bool:
+    """Return whether a native MDA position contains a nested ROI grid.
+
+    Returns
+    -------
+    bool
+        Whether at least one position contains a nested grid plan.
+    """
+    return bool(
+        mda_positions_plan
+        and any(
+            isinstance(stage_pos.get("sequence"), dict)
+            and stage_pos["sequence"].get("grid_plan") is not None
+            for stage_pos in mda_positions_plan
+        )
+    )
+
+
+def stage_positions_from_position_plan(
+    mda_positions_plan: list[dict] | tuple[dict, ...],
+    *,
+    mda_z_plan: dict | None,
+    opm_mode: str,
+    camera_crop_x: int,
+    camera_crop_y: int,
+    scan_range_um: float,
+    scan_axis_overlap: float,
+    tile_axis_overlap: float,
+    z_axis_overlap: float = 0.2,
+    angle_deg: float = 30.0,
+    coverslip_slope_x: float = 0,
+    coverslip_slope_y: float = 0,
+    mmc: CMMCorePlus | None = None,
+) -> list[dict[str, float]]:
+    """Generate projection or mirror positions from exported points and ROI regions.
+
+    Returns
+    -------
+    list[dict[str, float]]
+        Physical XYZ stage positions for the OPM event builders.
+
+    Raises
+    ------
+    ValueError
+        If Stage Explorer regions are combined with a top-level Z plan.
+    """
+    items = parse_mda_position_plan(mda_positions_plan)
+    if mda_z_plan is not None and any(
+        isinstance(item, StageExplorerRegion) for item in items
+    ):
+        raise ValueError(
+            "A top-level MDA Z plan cannot be combined with Stage Explorer ROI "
+            "regions. Export regions at the required Z position or disable the Z tab."
+        )
+
+    stage_positions: list[dict[str, float]] = []
+    for item in items:
+        if isinstance(item, LiteralStagePosition):
+            stage_positions.append({"x": item.x, "y": item.y, "z": item.z})
+            continue
+
+        # Stage Explorer bounds use normal physical stage-world axes.  Normalize
+        # their direction before passing them to the existing projection/mirror
+        # tiler, which expects left/right as X and bottom/top as Y.
+        region_grid = {
+            "left": item.x_min,
+            "right": item.x_max,
+            "bottom": item.y_min,
+            "top": item.y_max,
+        }
+        region_positions = stage_positions_from_grid(
+            mda_grid_plan=region_grid,
+            mda_z_plan={"bottom": item.z, "top": item.z},
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            scan_axis_overlap=scan_axis_overlap,
+            tile_axis_overlap=tile_axis_overlap,
+            z_axis_overlap=z_axis_overlap,
+            angle_deg=angle_deg,
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
+        )
+        if item.coverslip_plane is not None:
+            scan_reference_z_um = item.coverslip_plane.z_at(item.x_min, item.y_min)
+            for position in region_positions:
+                position["z"] = float(
+                    np.round(
+                        item.coverslip_plane.z_at(position["x"], position["y"]), 2
+                    )
+                )
+                position["scan_reference_z_um"] = float(scan_reference_z_um)
+        stage_positions.extend(region_positions)
+    return stage_positions
+
+
+def _coordinate_range(
+    positions: list[dict[str, float]], key: str
+) -> list[float] | None:
+    """Return the finite minimum and maximum for one planned coordinate.
+
+    Returns
+    -------
+    list[float] or None
+        Inclusive coordinate range, or ``None`` when no finite values exist.
+    """
+    values = [
+        float(position[key])
+        for position in positions
+        if key in position and np.isfinite(position[key])
+    ]
+    return [min(values), max(values)] if values else None
+
+
+def resolved_spatial_plan_summary(
+    *,
+    mda_positions_plan: list[dict] | tuple[dict, ...] | None,
+    stage_positions: list[dict[str, float]],
+    coverslip_slope_x: float,
+    coverslip_slope_y: float,
+    ao_mode: str,
+    config: dict,
+) -> dict:
+    """Describe the persisted input plane and the resolved acquisition positions.
+
+    The summary is built from the same parsed useq positions and AO grid helper
+    used by acquisition execution.  It is suitable for both console preflight
+    diagnostics and OME-Zarr global metadata.
+
+    Returns
+    -------
+    dict
+        JSON-compatible source-plane and resolved-position summary.
+    """
+    spatial_items = (
+        parse_mda_position_plan(mda_positions_plan) if mda_positions_plan else []
+    )
+    regions = [
+        item for item in spatial_items if isinstance(item, StageExplorerRegion)
+    ]
+    fallback_is_sloped = bool(coverslip_slope_x or coverslip_slope_y)
+    region_summaries: list[dict] = []
+    sources: set[str] = set()
+
+    for region in regions:
+        plane = region.coverslip_plane
+        if plane is not None:
+            source = "stage_explorer_metadata"
+            corner_z = [
+                plane.z_at(x_um, y_um)
+                for x_um in (region.x_min, region.x_max)
+                for y_um in (region.y_min, region.y_max)
+            ]
+            plane_metadata = plane.to_metadata()
+            predicted_z_range = [min(corner_z), max(corner_z)]
+        elif fallback_is_sloped:
+            source = "opm_settings_fallback"
+            plane_metadata = None
+            predicted_z_range = None
+        else:
+            source = "flat_parent_z"
+            plane_metadata = None
+            predicted_z_range = [region.z, region.z]
+        sources.add(source)
+        region_summaries.append({
+            "name": region.name,
+            "bounds_um": {
+                "x": [region.x_min, region.x_max],
+                "y": [region.y_min, region.y_max],
+            },
+            "parent_z_um": region.z,
+            "source": source,
+            "coverslip_plane": plane_metadata,
+            "predicted_coverslip_z_range_um": predicted_z_range,
+        })
+
+    if not sources:
+        sources.add(
+            "opm_settings_fallback" if fallback_is_sloped else "flat_parent_z"
+        )
+    source = next(iter(sources)) if len(sources) == 1 else "mixed"
+    resolved = {
+        "count": len(stage_positions),
+        "x_range_um": _coordinate_range(stage_positions, "x"),
+        "y_range_um": _coordinate_range(stage_positions, "y"),
+        "z_range_um": _coordinate_range(stage_positions, "z"),
+    }
+
+    summary = {
+        "schema_version": 1,
+        "coverslip_source": source,
+        "legacy_opm_slopes": {
+            "slope_x": float(coverslip_slope_x),
+            "slope_y": float(coverslip_slope_y),
+        },
+        "regions": region_summaries,
+        "resolved_stage_positions": resolved,
+    }
+
+    ao_summary = None
+    if "grid" in ao_mode and stage_positions:
+        ao_config = config["acq_config"]["AO"]
+        n_scan = int(ao_config["num_scan_positions"])
+        n_tile = int(ao_config["num_tile_positions"])
+        ao_targets: list[dict[str, float]] = []
+        for indices in stage_position_z_groups(stage_positions):
+            ao_targets.extend(
+                ao_grid_positions(
+                    [stage_positions[index] for index in indices],
+                    num_scan_positions=n_scan,
+                    num_tile_positions=n_tile,
+                )
+            )
+        ao_summary = {
+            "count": len(ao_targets),
+            "x_range_um": _coordinate_range(ao_targets, "x"),
+            "y_range_um": _coordinate_range(ao_targets, "y"),
+            "z_range_um": _coordinate_range(ao_targets, "z"),
+        }
+        summary["resolved_ao_grid_positions"] = ao_summary
+
+    diagnostic_lines: list[object] = [
+        f"source: {source}",
+        f"legacy OPM slope X/Y: {coverslip_slope_x:.6f} / "
+        f"{coverslip_slope_y:.6f}",
+    ]
+    for index, region in enumerate(region_summaries):
+        plane_metadata = region["coverslip_plane"]
+        if plane_metadata is None:
+            diagnostic_lines.append(
+                f"ROI {index} ({region['name']}): {region['source']}; "
+                f"parent Z={region['parent_z_um']:.2f} um"
+            )
+        else:
+            diagnostic_lines.extend((
+                f"ROI {index} ({region['name']}): slope X/Y="
+                f"{plane_metadata['slope_x']:.6f} / "
+                f"{plane_metadata['slope_y']:.6f}",
+                f"ROI {index} fit RMS={plane_metadata['rms_error_um']:.3f} um; "
+                f"points={len(plane_metadata['fit_points_um'])}; "
+                f"predicted Z range="
+                f"{region['predicted_coverslip_z_range_um'][0]:.2f} to "
+                f"{region['predicted_coverslip_z_range_um'][1]:.2f} um",
+            ))
+    diagnostic_lines.append(
+        f"resolved experiment positions: {resolved['count']}; "
+        f"Z range={resolved['z_range_um']}"
+    )
+    if ao_summary is not None:
+        diagnostic_lines.append(
+            f"resolved AO grid positions: {ao_summary['count']}; "
+            f"Z range={ao_summary['z_range_um']}"
+        )
+    info("COVERSLIP PLAN", *diagnostic_lines)
+    return summary
 
 
 def populate_opm_metadata(
@@ -253,14 +687,85 @@ def populate_opm_metadata(
     ao_mirror_coeffs: NDArray = None,
     ao_mirror_volts: NDArray = None,
 ):
+    """Build metadata shared by OPM image events.
+
+    Parameters
+    ----------
+    daq_mode : str
+        DAQ acquisition mode.
+    channel_states : list
+        Enabled laser-channel flags.
+    channel_exposures_ms : list
+        Exposure for each channel in milliseconds.
+    laser_powers : list
+        Power for each laser channel.
+    interleaved : bool
+        Whether channel frames are interleaved.
+    blanking : bool
+        Whether camera exposure gates the lasers.
+    current_channel : str
+        Channel associated with the image event.
+    exposure_ms : float
+        Camera exposure in milliseconds.
+    camera_center_x, camera_center_y : int
+        Camera ROI center coordinates in pixels.
+    camera_crop_x, camera_crop_y : int
+        Camera ROI width and height in pixels.
+    offset : float
+        Camera conversion offset.
+    e_to_ADU : float
+        Camera electrons-to-ADU conversion factor.
+    angle_deg : float
+        OPM imaging angle in degrees.
+    camera_Zstage_orientation : str
+        Camera-to-Z-stage orientation.
+    camera_XYstage_orientation : str
+        Camera-to-XY-stage orientation.
+    camera_mirror_orientation : str
+        Camera-to-image-mirror orientation.
+    stage_position : dict
+        Current X, Y, and Z stage coordinates.
+    mirror_voltage : float or None
+        Static image-mirror voltage.
+    image_mirror_range_um : float or None
+        Image-mirror scan range in micrometers.
+    mirror_step : float or None
+        Image-mirror scan step in micrometers.
+    ao_mirror_coeffs : numpy.ndarray or None
+        AO modal coefficients.
+    ao_mirror_volts : numpy.ndarray or None
+        AO actuator voltages.
+
+    Returns
+    -------
+    dict
+        Structured DAQ, camera, OPM, stage, and AO metadata.
+    """
     # Assign the DAQ-image mode specific variables
     image_mirror_position = float(mirror_voltage) if mirror_voltage else None
     image_mirror_range_um = (
         float(image_mirror_range_um) if image_mirror_range_um else None
     )
     image_mirror_step_um = float(mirror_step) if mirror_step else None
-    ao_mirror_coeffs = ao_mirror_coeffs.tolist() if ao_mirror_coeffs else None
-    ao_mirror_volts = ao_mirror_volts.tolist() if ao_mirror_volts else None
+    ao_mirror_coeffs = (
+        ao_mirror_coeffs.tolist() if ao_mirror_coeffs is not None else None
+    )
+    ao_mirror_volts = ao_mirror_volts.tolist() if ao_mirror_volts is not None else None
+    stage_metadata = {
+        "x_pos": float(stage_position.get("lab_scan_um", stage_position["x"])),
+        "y_pos": float(stage_position["y"]),
+        "z_pos": float(stage_position["z"]),
+    }
+    if "depth_index" in stage_position:
+        stage_metadata.update(
+            {
+                "depth_index": int(stage_position["depth_index"]),
+                "sample_depth_um": float(stage_position["sample_depth_um"]),
+                "stage_depth_offset_um": float(
+                    stage_position["stage_depth_offset_um"]
+                ),
+            }
+        )
     metadata = {
         "DAQ": {
             "mode": str(daq_mode),
@@ -289,84 +794,1009 @@ def populate_opm_metadata(
             "camera_XYstage_orientation": str(camera_XYstage_orientation),
             "camera_mirror_orientation": str(camera_mirror_orientation),
         },
-        "Stage": {
-            "x_pos": float(stage_position["x"]),
-            "y_pos": float(stage_position["y"]),
-            "z_pos": float(stage_position["z"]),
-        },
+        "Stage": stage_metadata,
         "AO_mirror": {"modal_coeffs": ao_mirror_coeffs, "voltages": ao_mirror_volts},
     }
     return metadata
 
 
-def save_events_json(opm_events, filepath: Path):
-    """
-    Save a list of MDAEvent objects to a JSON file for inspection.
+def get_sequence_plans(sequence: MDASequence) -> dict:
+    """Extract active MDA sequence plans.
 
     Parameters
     ----------
-    opm_events : list[MDAEvent]
-        Event list returned by setup_events
-    filepath : Path
-        Destination json file
+    sequence : MDASequence
+        Sequence from the MDA widget.
+
+    Returns
+    -------
+    dict
+        Grid, time, position, and Z plans.
+    """
+    sequence_dict = json.loads(sequence.model_dump_json())
+    return {
+        "grid": sequence_dict["grid_plan"],
+        "time": sequence_dict["time_plan"],
+        "positions": sequence_dict["stage_positions"],
+        "z": sequence_dict["z_plan"],
+    }
+
+
+def apply_opm_sample_depth_plan(
+    stage_positions: list[dict[str, float]],
+    *,
+    config: dict,
+    camera_crop_y: int,
+    pixel_size_um: float,
+    mda_z_plan: dict | None,
+) -> tuple[list[dict[str, float]], NDArray[np.float64]]:
+    """Expand physical positions over coverslip-relative sample depths.
+
+    The OPM widget owns this depth plan.  Native MDA Z plans retain their
+    existing behavior when the OPM depth controls are both zero, but combining
+    the two plans is rejected because their reference frames are different.
+
+    Returns
+    -------
+    tuple[list[dict[str, float]], numpy.ndarray]
+        Expanded positions and user-facing sample depths in micrometers.
+
+    Raises
+    ------
+    ValueError
+        If depth settings are invalid or conflict with a native MDA Z plan.
+    """
+    positions_config = config["acq_config"]["Positions"]
+    depth_start_um = float(positions_config.get("sample_depth_start_um", 0.0))
+    depth_end_um = float(positions_config.get("sample_depth_end_um", 0.0))
+    depth_plan_active = not (
+        np.isclose(depth_start_um, 0.0) and np.isclose(depth_end_um, 0.0)
+    )
+    if depth_plan_active and mda_z_plan is not None:
+        raise ValueError(
+            "OPM sample depth cannot be combined with the native MDA Z plan. "
+            "Disable the MDA Z tab and set depth in OPM Settings."
+        )
+
+    _scan_extent_um, axial_footprint_um = oblique_camera_extents_um(
+        int(camera_crop_y), float(pixel_size_um), float(config["OPM"]["angle_deg"])
+    )
+    sample_depths_um = sample_depth_levels_um(
+        depth_start_um,
+        depth_end_um,
+        axial_footprint_um,
+        float(positions_config["z_axis_overlap"]),
+    )
+    needs_scan_correction = (
+        depth_plan_active
+        or not np.isclose(float(positions_config.get("coverslip_slope_x", 0.0)), 0.0)
+        or not np.isclose(float(positions_config.get("coverslip_slope_y", 0.0)), 0.0)
+        or any("scan_reference_z_um" in position for position in stage_positions)
+    )
+    corrected_positions = (
+        apply_oblique_scan_correction(
+            stage_positions,
+            float(config["OPM"]["angle_deg"]),
+            str(config["OPM"]["camera_Zstage_orientation"]),
+        )
+        if needs_scan_correction
+        else [dict(position) for position in stage_positions]
+    )
+    zstage_orientation = str(config["OPM"]["camera_Zstage_orientation"])
+    expanded = expand_stage_positions_for_depth(
+        corrected_positions,
+        sample_depths_um,
+        zstage_orientation,
+        angle_deg=float(config["OPM"]["angle_deg"]),
+    )
+    debug(
+        "OPM SAMPLE DEPTH PLAN",
+        f"requested coverage start/end: {depth_start_um}/{depth_end_um} um",
+        f"axial slab footprint: {axial_footprint_um:.3f} um",
+        f"z overlap: {positions_config['z_axis_overlap']}",
+        f"slab origins: {sample_depths_um.tolist()}",
+        f"camera/sample-depth Z orientation: {zstage_orientation}",
+        f"base/expanded positions: {len(stage_positions)}/{len(expanded)}",
+    )
+    return expanded, sample_depths_um
+
+
+def normalize_ao_mode(mode: str) -> str:
+    """Normalize GUI AO labels to the event scheduler vocabulary.
+
+    Parameters
+    ----------
+    mode : str
+        AO frequency label stored by the custom widget.
+
+    Returns
+    -------
+    str
+        Canonical event-builder label.
+    """
+    return {"at xyz position": "at xyz positions"}.get(mode, mode)
+
+
+def normalize_autofocus_mode(mode: str) -> str:
+    """Normalize GUI autofocus labels to event-builder vocabulary.
+
+    Parameters
+    ----------
+    mode : str
+        O2/O3 frequency label stored by the custom widget.
+
+    Returns
+    -------
+    str
+        Canonical event-builder label.
+    """
+    return {
+        "per timepoint": "at timepoints",
+        "per xyz position": "at xyz positions",
+    }.get(mode, mode)
+
+
+def get_indexed_acquisition_order(
+    sequence: MDASequence, index_sizes: dict[str, int]
+) -> tuple[str, ...]:
+    """Determine indexed-axis order selected by the MDA widget.
+
+    Parameters
+    ----------
+    sequence : MDASequence
+        Sequence from the MDA widget.
+    index_sizes : dict[str, int]
+        Indexed acquisition shape.
+
+    Returns
+    -------
+    tuple[str, ...]
+        Indexed axes in camera frame-arrival order.
+    """
+    ordered_axes: list[str] = []
+    for axis in sequence.axis_order:
+        axis_name = str(getattr(axis, "value", axis))
+        if axis_name in index_sizes and axis_name not in ordered_axes:
+            ordered_axes.append(axis_name)
+    ordered_axes.extend(axis for axis in index_sizes if axis not in ordered_axes)
+    return tuple(ordered_axes)
+
+
+def get_channel_plan(
+    config: dict,
+    mode_key: str,
+    round_active_exposures: bool = False,
+) -> dict:
+    """Read channel settings without mutating configuration lists.
+
+    Parameters
+    ----------
+    config : dict
+        OPM configuration.
+    mode_key : str
+        Acquisition subsection containing channel settings.
+    round_active_exposures : bool
+        Whether to round enabled-channel exposures to two decimals.
+
+    Returns
+    -------
+    dict
+        Channel states, powers, exposures, names, and interleaving state.
+
+    Raises
+    ------
+    Exception
+        If all configured laser powers are zero.
+    """
+    mode_config = config["acq_config"][mode_key]
+    channel_states = list(mode_config["channel_states"])
+    channel_powers = list(mode_config["channel_powers"])
+    channel_exposures_ms = list(mode_config["channel_exposures_ms"])
+    channel_names = config["OPM"]["channel_ids"]
+
+    active_channel_exps = []
+    for index, channel_is_active in enumerate(channel_states):
+        if channel_is_active:
+            exposure = channel_exposures_ms[index]
+            if round_active_exposures:
+                exposure = np.round(exposure, 2)
+            active_channel_exps.append(exposure)
+        else:
+            channel_powers[index] = 0
+
+    if sum(channel_powers) == 0:
+        raise Exception("All lasers set to 0!")
+
+    return {
+        "states": channel_states,
+        "powers": channel_powers,
+        "exposures_ms": channel_exposures_ms,
+        "names": channel_names,
+        "active_exposures_ms": active_channel_exps,
+        "active_count": sum(channel_states),
+        "active_names": [
+            name for is_active, name in zip(channel_states, channel_names) if is_active
+        ],
+        "active_indices": tuple(
+            index for index, is_active in enumerate(channel_states) if is_active
+        ),
+        "interleaved": len(set(active_channel_exps)) == 1,
+    }
+
+
+def get_camera_conversion(mmc: CMMCorePlus, config: dict) -> tuple[float, float]:
+    """Read camera offset and electrons-to-ADU conversion.
+
+    Parameters
+    ----------
+    mmc : CMMCorePlus
+        Active Micro-Manager core.
+    config : dict
+        OPM configuration.
+
+    Returns
+    -------
+    tuple[float, float]
+        Offset and electrons-to-ADU factor, using neutral values when the
+        camera does not expose those properties.
+    """
+    try:
+        offset = mmc.getProperty(
+            config["Camera"]["camera_id"], "CONVERSION FACTOR OFFSET"
+        )
+        e_to_ADU = mmc.getProperty(
+            config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
+        )
+    except Exception as exc:
+        debug(
+            "CAMERA CONVERSION PROPERTIES",
+            "Failed to get offset or e_to_adu properties.",
+            f"Exception: {exc}",
+        )
+        offset = 0.0
+        e_to_ADU = 1.0
+
+    return float(offset), float(e_to_ADU)
+
+
+def create_zarr_handler(
+    output: Path,
+    indice_sizes: dict,
+    acquisition_order: tuple[str, ...] | None = None,
+    events: list[MDAEvent] | None = None,
+    config: dict | None = None,
+    spatial_plan: dict | None = None,
+    max_time_chunk_size: int = 1,
+    time_chunk_concurrency: int | None = None,
+    pixel_size_um: float | None = None,
+) -> OpmDataHandler:
+    """Create the OPM Zarr handler after validating its output path.
+
+    Parameters
+    ----------
+    output : Path
+        Requested ``.zarr`` or ``.ome.zarr`` destination.
+    indice_sizes : dict
+        Indexed acquisition shape.
+    acquisition_order : tuple[str, ...] or None
+        Camera frame-arrival axis order.
+    events : list[MDAEvent] or None
+        Prepared events supplying OPM semantic metadata.
+    config : dict or None
+        Complete GUI acquisition configuration stored as global metadata.
+    spatial_plan : dict or None
+        Resolved spatial-plan summary stored alongside the configuration.
+    max_time_chunk_size : int
+        Maximum temporal Zarr chunk length. Values above one batch adjacent
+        timelapse frames into fewer, larger writes.
+    time_chunk_concurrency : int or None
+        Number of temporal chunks that can be active at once for memory-budget
+        calculations.
+    pixel_size_um : float or None
+        Physical camera pixel size published in the acquisition manifest.
+
+    Returns
+    -------
+    OpmDataHandler
+        TensorStore-backed ome-writers output handler.
+
+    Raises
+    ------
+    ValueError
+        If planned events, configuration, or pixel size are unavailable.
+    Exception
+        If the output does not use a supported Zarr suffix.
+    """
+    output = Path(output)
+    if output.name.endswith((".zarr", ".ome.zarr")):
+        acquisition_metadata = dict(config or {})
+        if spatial_plan is not None:
+            acquisition_metadata["resolved_spatial_plan"] = spatial_plan
+        if events is None or config is None:
+            raise ValueError(
+                "Live acquisition publication requires planned events and config"
+            )
+        resolved_order = list(acquisition_order or indice_sizes)
+        resolved_order.extend(
+            axis for axis in ("t", "p", "c", "z") if axis not in resolved_order
+        )
+        resolved_pixel_size_um = float(
+            pixel_size_um
+            if pixel_size_um is not None
+            else config.get("OPM", {}).get("pixel_size_um")
+        )
+        live_manifest = build_live_acquisition_manifest(
+            data_path=output,
+            index_sizes=indice_sizes,
+            acquisition_order=tuple(resolved_order),
+            events=events,
+            config=config,
+            pixel_size_um=resolved_pixel_size_um,
+        )
+        handler = OpmDataHandler(
+            path=output,
+            index_sizes=indice_sizes,
+            acquisition_order=acquisition_order,
+            delete_existing=True,
+            events=events,
+            acquisition_metadata=acquisition_metadata,
+            max_time_chunk_size=max_time_chunk_size,
+            time_chunk_concurrency=time_chunk_concurrency,
+            live_manifest=live_manifest,
+        )
+        info("QI2LAB HANDLER", f"indices: {indice_sizes}")
+        return handler
+    raise Exception("Default handler selected, modify save path!")
+
+
+def single_channel_settings(
+    channel_states: list,
+    channel_powers: list,
+    channel_exposures_ms: list,
+    chan_idx: int,
+) -> tuple[list, list, list]:
+    """Create DAQ lists that enable one channel.
+
+    Parameters
+    ----------
+    channel_states : list
+        Original enabled-channel flags.
+    channel_powers : list
+        Original channel powers.
+    channel_exposures_ms : list
+        Original channel exposures.
+    chan_idx : int
+        Channel to enable.
+
+    Returns
+    -------
+    tuple[list, list, list]
+        Single-channel states, powers, and exposures.
+    """
+    temp_channels = [False] * len(channel_states)
+    temp_exposures = [0] * len(channel_exposures_ms)
+    temp_powers = [0] * len(channel_powers)
+    temp_channels[chan_idx] = True
+    temp_exposures[chan_idx] = channel_exposures_ms[chan_idx]
+    temp_powers[chan_idx] = channel_powers[chan_idx]
+    return temp_channels, temp_powers, temp_exposures
+
+
+def clone_event(event: MDAEvent) -> MDAEvent:
+    """Return an independent deep copy of a useq event.
+
+    Parameters
+    ----------
+    event : MDAEvent
+        Event to clone.
+
+    Returns
+    -------
+    MDAEvent
+        Independent event copy.
+    """
+    return event.model_copy(deep=True)
+
+
+def apply_timepoint_timing(
+    events: list[MDAEvent],
+    start_index: int,
+    time_index: int,
+    interval_s: float,
+    *,
+    reset_event_timer: bool = False,
+) -> None:
+    """Apply upstream runner timing to the first event in a timepoint.
+
+    Parameters
+    ----------
+    events : list[MDAEvent]
+        Event list containing the completed timepoint.
+    start_index : int
+        Index at which the timepoint's events begin.
+    time_index : int
+        Zero-based timepoint index.
+    interval_s : float
+        Requested interval between timepoints in seconds.
+    reset_event_timer : bool
+        Whether this event starts a new independent timing series.
+    """
+    if start_index >= len(events):
+        return
+    update: dict[str, object] = {}
+    if interval_s > 0:
+        update["min_start_time"] = float(time_index) * float(interval_s)
+    if reset_event_timer:
+        update["reset_event_timer"] = True
+    if update:
+        events[start_index] = events[start_index].model_copy(update=update)
+
+
+def iter_planned_image_events(
+    index_sizes: dict[str, int],
+    acquisition_order: tuple[str, ...],
+    *,
+    time_interval_s: float = 0.0,
+) -> Iterator[MDAEvent]:
+    """Yield image-plan events using useq's native sequence iterator.
+
+    The returned events are planning records: channel configurations and physical
+    positions are removed so OPM can attach its actual hardware state while retaining
+    useq's indexing, axis ordering, and timepoint scheduling.
+
+    Parameters
+    ----------
+    index_sizes : dict[str, int]
+        Positive sizes for the ``t``, ``p``, ``c``, and ``z`` axes.
+    acquisition_order : tuple[str, ...]
+        Axis order in which camera frames are expected.
+    time_interval_s : float
+        Time interval passed to useq's time plan.
+
+    Yields
+    ------
+    MDAEvent
+        Standard useq event carrying normalized string indices and timing.
+
+    Raises
+    ------
+    ValueError
+        If axis sizes and acquisition order do not describe the same axes.
+    """
+    sizes = {str(axis): int(size) for axis, size in index_sizes.items() if size > 0}
+    if set(sizes) != set(acquisition_order):
+        raise ValueError("acquisition_order must contain every planned axis once")
+
+    kwargs: dict[str, object] = {"axis_order": acquisition_order}
+    if "p" in sizes:
+        kwargs["stage_positions"] = tuple(
+            AbsolutePosition(name=str(index)) for index in range(sizes["p"])
+        )
+    if "c" in sizes:
+        kwargs["channels"] = tuple(
+            Channel(config=f"opm-{index}") for index in range(sizes["c"])
+        )
+    if "t" in sizes:
+        kwargs["time_plan"] = TIntervalLoops(
+            interval=float(time_interval_s), loops=sizes["t"]
+        )
+    if "z" in sizes:
+        kwargs["z_plan"] = ZRelativePositions(
+            relative=[float(index) for index in range(sizes["z"])]
+        )
+
+    for event in MDASequence(**kwargs).iter_events():
+        index = {
+            str(getattr(axis, "value", axis)): int(value)
+            for axis, value in event.index.items()
+        }
+        yield event.model_copy(
+            update={
+                "index": mappingproxy(index),
+                "channel": None,
+                "x_pos": None,
+                "y_pos": None,
+                "z_pos": None,
+                "exposure": None,
+            },
+            deep=True,
+        )
+
+
+class AOEventScheduler:
+    """Schedule repeated AO custom-event mutations.
+
+    Parameters
+    ----------
+    ao_mode : str
+        AO scheduling mode.
+    optimize_event : MDAEvent or None
+        Template AO optimization event.
+    grid_event : MDAEvent or None
+        Template AO grid event.
     """
 
-    events_dict = []
+    def __init__(
+        self,
+        ao_mode: str,
+        optimize_event: MDAEvent | None = None,
+        grid_event: MDAEvent | None = None,
+    ) -> None:
+        """Initialize the AO event scheduler.
 
-    for ii, event in enumerate(opm_events):
-        # Convert to plain dictionary
-        ev_dict = event.model_dump()
+        Parameters
+        ----------
+        ao_mode : str
+            AO scheduling mode.
+        optimize_event : MDAEvent or None
+            Template AO optimization event.
+        grid_event : MDAEvent or None
+            Template AO grid event.
+        """
+        self.ao_mode = ao_mode
+        self.optimize_event = optimize_event
+        self.grid_event = grid_event
 
-        # add index for easier debugging
-        ev_dict["event_index"] = ii
+    def _event_for_mode(self) -> MDAEvent:
+        """Clone the AO template for the current mode.
 
-        events_dict.append(ev_dict)
+        Returns
+        -------
+        MDAEvent
+            AO event appropriate for the configured mode.
 
-    filepath = Path(filepath)
-    filepath.parent.mkdir(parents=True, exist_ok=True)
+        Raises
+        ------
+        ValueError
+            If the required event template was not supplied.
+        """
+        if "grid" in self.ao_mode:
+            if self.grid_event is None:
+                raise ValueError("AO grid mode requested without a grid event.")
+            return clone_event(self.grid_event)
+        if self.optimize_event is None:
+            raise ValueError("AO optimize mode requested without an optimize event.")
+        return clone_event(self.optimize_event)
 
-    with open(filepath, "w") as f:
-        json.dump(events_dict, f, indent=2)
+    def append_timepoint_event(
+        self,
+        opm_events: list[MDAEvent],
+        time_idx: int,
+        output_dir: Path,
+        optimize_dir_template: str = "time_{time_idx}_ao_optimize",
+        grid_dir_template: str = "time_{time_idx}_ao_grid",
+        interval: int = 1,
+    ) -> None:
+        """Append an AO event for a scheduled timepoint.
+
+        Parameters
+        ----------
+        opm_events : list[MDAEvent]
+            Event list to extend.
+        time_idx : int
+            Current timepoint index.
+        output_dir : Path
+            Root AO result directory.
+        optimize_dir_template : str
+            Optimization result-directory template.
+        grid_dir_template : str
+            Grid result-directory template.
+        interval : int
+            Number of timepoints between AO events.
+        """
+        if interval <= 0 or time_idx % interval != 0:
+            return
+
+        if self.ao_mode == "at timepoints":
+            current_ao_dir = output_dir / Path(
+                optimize_dir_template.format(time_idx=time_idx)
+            )
+            current_ao_dir.mkdir(exist_ok=True)
+            ao_event = self._event_for_mode()
+            ao_event.action.data["AO"]["output_path"] = current_ao_dir
+            ao_event.action.data["AO"]["time_idx"] = time_idx
+            opm_events.append(ao_event)
+        elif self.ao_mode == "grid at timepoints":
+            current_ao_dir = output_dir / Path(
+                grid_dir_template.format(time_idx=time_idx)
+            )
+            current_ao_dir.mkdir(exist_ok=True)
+            ao_event = self._event_for_mode()
+            ao_event.action.data["AO"]["output_path"] = current_ao_dir
+            ao_event.action.data["AO"]["time_idx"] = time_idx
+            opm_events.append(ao_event)
+
+    def append_position_update(
+        self,
+        opm_events: list[MDAEvent],
+        pos_idx: int,
+        use_position_index_for_optimize: bool = False,
+    ) -> None:
+        """Append an AO update for a stage position.
+
+        Parameters
+        ----------
+        opm_events : list[MDAEvent]
+            Event list to extend.
+        pos_idx : int
+            Current stage-position index.
+        use_position_index_for_optimize : bool
+            Whether optimization events retain the current position index.
+        """
+        if "grid" in self.ao_mode:
+            ao_event = self._event_for_mode()
+            ao_event.action.data["AO"]["apply_ao_map"] = True
+            ao_event.action.data["AO"]["pos_idx"] = pos_idx
+        else:
+            ao_event = self._event_for_mode()
+            ao_event.action.data["AO"]["apply_existing"] = True
+            ao_event.action.data["AO"]["pos_idx"] = (
+                int(pos_idx) if use_position_index_for_optimize else 0
+            )
+        opm_events.append(ao_event)
 
 
-#---------------------------------------------------------#
+def stage_position_z_groups(
+    stage_positions: list[dict[str, float]],
+) -> list[list[int]]:
+    """Group depth-major positions into levels with an identical XY pattern.
+
+    OPM position generators repeat the complete XY tile pattern at each
+    logical Z level.  Coverslip correction may give tiles within one level
+    different physical Z coordinates, so grouping on unique Z values would
+    incorrectly split a sloped level.
+
+    Returns
+    -------
+    list[list[int]]
+        Global position indices for each logical Z level.
+    """
+    n_positions = len(stage_positions)
+    if n_positions == 0:
+        return []
+    xy_positions = np.asarray(
+        [
+            (position.get("lab_scan_um", position["x"]), position["y"])
+            for position in stage_positions
+        ],
+        dtype=float,
+    )
+    positions_per_level = n_positions
+    for candidate in range(1, n_positions):
+        if n_positions % candidate:
+            continue
+        expected = np.tile(xy_positions[:candidate], (n_positions // candidate, 1))
+        if np.allclose(xy_positions, expected, rtol=0.0, atol=1e-6):
+            positions_per_level = candidate
+            break
+    return [
+        list(range(start, start + positions_per_level))
+        for start in range(0, n_positions, positions_per_level)
+    ]
+
+
+def append_ao_grid_z_event(
+    opm_events: list[MDAEvent],
+    ao_grid_event: MDAEvent,
+    stage_positions: list[dict[str, float]],
+    position_indices: list[int],
+    output_dir: Path,
+    *,
+    time_idx: int,
+    z_idx: int,
+) -> None:
+    """Schedule AO mapping for one logical Z level."""
+    current_output_dir = output_dir / Path(
+        f"time_{time_idx}_z_{z_idx}_ao_grid_results"
+    )
+    current_output_dir.mkdir(parents=True, exist_ok=True)
+    current_event = clone_event(ao_grid_event)
+    current_event.action.data["AO"]["stage_positions"] = [
+        stage_positions[index] for index in position_indices
+    ]
+    current_event.action.data["AO"]["position_indices"] = position_indices
+    current_event.action.data["AO"]["output_path"] = current_output_dir
+    current_event.action.data["AO"]["time_idx"] = int(time_idx)
+    current_event.action.data["AO"]["z_idx"] = int(z_idx)
+    opm_events.append(current_event)
+
+
+def should_run_ao_grid_z_level(
+    ao_mode: str,
+    time_idx: int,
+    *,
+    interval: int = 1,
+) -> bool:
+    """Return whether the current timepoint requires per-Z AO mapping.
+
+    Returns
+    -------
+    bool
+        Whether AO mapping should run at this Z-level boundary.
+    """
+    if ao_mode == "grid at start":
+        return time_idx == 0
+    return (
+        ao_mode == "grid at timepoints"
+        and interval > 0
+        and time_idx % interval == 0
+    )
+
+
+def create_opm_image_event(
+    *,
+    index: dict,
+    config: dict,
+    stage_position: dict,
+    daq_mode: str,
+    channel_states: list,
+    channel_exposures_ms: list,
+    laser_powers: list,
+    interleaved: bool,
+    blanking: bool,
+    current_channel: str,
+    exposure_ms: float,
+    camera_center_x: int,
+    camera_center_y: int,
+    camera_crop_x: int,
+    camera_crop_y: int,
+    offset: float,
+    e_to_ADU: float,
+    mirror_voltage: float = None,
+    image_mirror_range_um: float = None,
+    mirror_step: float = None,
+    ao_mirror_coeffs: NDArray = None,
+    ao_mirror_volts: NDArray = None,
+) -> MDAEvent:
+    """Create an image event with standard OPM metadata.
+
+    Parameters
+    ----------
+    index : dict
+        Indexed acquisition position.
+    config : dict
+        OPM configuration.
+    stage_position : dict
+        Current X, Y, and Z stage position.
+    daq_mode : str
+        DAQ acquisition mode.
+    channel_states : list
+        Enabled laser-channel flags.
+    channel_exposures_ms : list
+        Per-channel exposures in milliseconds.
+    laser_powers : list
+        Per-channel laser powers.
+    interleaved : bool
+        Whether channel frames are interleaved.
+    blanking : bool
+        Whether camera exposure gates the lasers.
+    current_channel : str
+        Channel associated with the event.
+    exposure_ms : float
+        Camera exposure in milliseconds.
+    camera_center_x, camera_center_y : int
+        Camera ROI center coordinates.
+    camera_crop_x, camera_crop_y : int
+        Camera ROI dimensions.
+    offset : float
+        Camera conversion offset.
+    e_to_ADU : float
+        Camera electrons-to-ADU factor.
+    mirror_voltage : float or None
+        Static image-mirror voltage.
+    image_mirror_range_um : float or None
+        Image-mirror scan range.
+    mirror_step : float or None
+        Image-mirror scan step.
+    ao_mirror_coeffs : numpy.ndarray or None
+        AO modal coefficients.
+    ao_mirror_volts : numpy.ndarray or None
+        AO actuator voltages.
+
+    Returns
+    -------
+    MDAEvent
+        Indexed camera acquisition event.
+    """
+    return MDAEvent(
+        index=mappingproxy(index),
+        exposure=float(exposure_ms),
+        metadata=populate_opm_metadata(
+            daq_mode=daq_mode,
+            mirror_voltage=mirror_voltage,
+            image_mirror_range_um=image_mirror_range_um,
+            mirror_step=mirror_step,
+            channel_states=channel_states,
+            channel_exposures_ms=channel_exposures_ms,
+            laser_powers=laser_powers,
+            interleaved=interleaved,
+            blanking=blanking,
+            current_channel=current_channel,
+            exposure_ms=exposure_ms,
+            camera_center_x=camera_center_x,
+            camera_center_y=camera_center_y,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            offset=offset,
+            e_to_ADU=e_to_ADU,
+            angle_deg=config["OPM"]["angle_deg"],
+            camera_Zstage_orientation=config["OPM"]["camera_Zstage_orientation"],
+            camera_XYstage_orientation=config["OPM"]["camera_XYstage_orientation"],
+            camera_mirror_orientation=config["OPM"]["camera_mirror_orientation"],
+            stage_position=stage_position,
+            ao_mirror_coeffs=ao_mirror_coeffs,
+            ao_mirror_volts=ao_mirror_volts,
+        ),
+    )
+
+
+def create_stage_scan_image_event(
+    *,
+    index: dict,
+    config: dict,
+    stage_position: dict,
+    scan_axis_idx: int,
+    scan_axis_step_um: float,
+    channel_states: list,
+    channel_exposures_ms: list,
+    laser_powers: list,
+    laser_blanking: bool,
+    current_channel: str,
+    exposure_ms: float,
+    camera_center_x: int,
+    camera_center_y: int,
+    camera_crop_x: int,
+    camera_crop_y: int,
+    offset: float,
+    e_to_ADU: float,
+    excess_start_images: int,
+    excess_end_images: int,
+    is_excess_image: bool,
+) -> MDAEvent:
+    """Create a stage-scan camera event with stage-specific metadata.
+
+    Parameters
+    ----------
+    index : dict
+        Indexed acquisition position.
+    config : dict
+        OPM configuration.
+    stage_position : dict
+        Current X, Y, and Z stage position.
+    scan_axis_idx : int
+        Current scan-axis frame index.
+    scan_axis_step_um : float
+        Scan-axis sampling step in micrometers.
+    channel_states : list
+        Enabled laser-channel flags.
+    channel_exposures_ms : list
+        Per-channel exposures in milliseconds.
+    laser_powers : list
+        Per-channel laser powers.
+    laser_blanking : bool
+        Whether camera exposure gates the lasers.
+    current_channel : str
+        Channel associated with the event.
+    exposure_ms : float
+        Camera exposure in milliseconds.
+    camera_center_x, camera_center_y : int
+        Camera ROI center coordinates.
+    camera_crop_x, camera_crop_y : int
+        Camera ROI dimensions.
+    offset : float
+        Camera conversion offset.
+    e_to_ADU : float
+        Camera electrons-to-ADU factor.
+    excess_start_images, excess_end_images : int
+        Extra camera frames at the scan boundaries.
+    is_excess_image : bool
+        Whether this frame lies outside the retained scan range.
+
+    Returns
+    -------
+    MDAEvent
+        Indexed camera acquisition event.
+    """
+    return MDAEvent(
+        index=mappingproxy(index),
+        exposure=float(exposure_ms),
+        metadata={
+            "DAQ": {
+                "mode": "stage",
+                "scan_axis_step_um": float(scan_axis_step_um),
+                "channel_states": channel_states,
+                "exposure_channels_ms": channel_exposures_ms,
+                "interleaved": True,
+                "laser_powers": laser_powers,
+                "blanking": laser_blanking,
+                "current_channel": current_channel,
+            },
+            "Camera": {
+                "exposure_ms": float(exposure_ms),
+                "camera_center_x": camera_center_x - int(camera_crop_x // 2),
+                "camera_center_y": camera_center_y - int(camera_crop_y // 2),
+                "camera_crop_x": int(camera_crop_x),
+                "camera_crop_y": int(camera_crop_y),
+                "offset": float(offset),
+                "e_to_ADU": float(e_to_ADU),
+            },
+            "OPM": {
+                "angle_deg": float(config["OPM"]["angle_deg"]),
+                "camera_Zstage_orientation": str(
+                    config["OPM"]["camera_Zstage_orientation"]
+                ),
+                "camera_XYstage_orientation": str(
+                    config["OPM"]["camera_XYstage_orientation"]
+                ),
+                "camera_mirror_orientation": str(
+                    config["OPM"]["camera_mirror_orientation"]
+                ),
+                "excess_scan_positions": int(excess_start_images),
+                "excess_scan_end_positions": int(excess_end_images),
+                "excess_scan_start_positions": int(excess_start_images),
+            },
+            "Stage": {
+                "x_pos": stage_position.get("lab_scan_um", stage_position["x"])
+                + (scan_axis_idx * scan_axis_step_um),
+                "y_pos": stage_position["y"],
+                "z_pos": stage_position["z"],
+                **(
+                    {
+                        "depth_index": int(stage_position["depth_index"]),
+                        "sample_depth_um": float(stage_position["sample_depth_um"]),
+                        "stage_depth_offset_um": float(
+                            stage_position["stage_depth_offset_um"]
+                        ),
+                    }
+                    if "depth_index" in stage_position
+                    else {}
+                ),
+                "excess_image": is_excess_image,
+            },
+        },
+    )
+
+
+# ---------------------------------------------------------#
 # Methods for generating OPM custom acquisitions
-#---------------------------------------------------------#
+# ---------------------------------------------------------#
 
 
 def setup_optimizenow(
     mmc: CMMCorePlus,
     config: dict,
-) -> list[MDAEvent]:
-    """Runs either A.O. optimization or O2O3 auto focus
+) -> tuple[list[MDAEvent], None]:
+    """Build immediate AO optimization or O2/O3 autofocus events.
 
     Parameters
     ----------
     mmc : CMMCorePlus
-        MMCor instance
+        Active Micro-Manager core.
     config : dict
-        OPM config from disk
+        OPM configuration loaded from disk.
 
     Returns
     -------
-    list[MDAEvent]
-        OPM events
+    tuple[list[MDAEvent], None]
+        Custom optimization events and no output handler.
     """
-    ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    acq_config = config["acq_config"]
+    ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
+    o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
 
     # Sequentially run auto focus then AO optmization
     opm_events: list[MDAEvent] = []
 
     if "now" in o2o3_mode:
-        roi_center_x = config["Camera"]["roi_center_x"]
-        roi_center_y = config["Camera"]["roi_center_y"]
-        camera_crop_x = config["Camera"]["roi_crop_x"]
-        camera_crop_y = config["O2O3-autofocus"]["roi_crop_y"]
+        roi_center_x = acq_config["camera_roi"]["center_x"]
+        roi_center_y = acq_config["camera_roi"]["center_y"]
+        camera_crop_x = acq_config["camera_roi"]["crop_x"]
+        camera_crop_y = config["O2O3-autofocus"]["crop_y"]
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[roi_center_x, roi_center_y],
             camera_crop=[camera_crop_x, camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
         opm_events.append(o2o3_event)
 
@@ -386,7 +1816,7 @@ def setup_timelapse(
     config: dict,
     sequence: MDASequence,
     output: Path,
-) -> list[MDAEvent]:
+) -> tuple[list[MDAEvent], OpmDataHandler]:
     """Timelapse acquisition with optional multiple scan mirror positions.
 
     This imaging mode holds the mirror static and acquires the N timepoints,
@@ -415,79 +1845,54 @@ def setup_timelapse(
 
     Returns
     -------
-    list[MDAEvent]
-        _description_
-    Handler
-        OPM zarr file saving handler
+    tuple[list[MDAEvent], OpmDataHandler]
+        Camera acquisition events and TensorStore-backed output handler.
+
+    Raises
+    ------
+    ValueError
+        If the required MDA time or spatial plan is missing or invalid.
     """
-    info("TIMELAPSE ACQUISITION")
-    
+    debug("SETUP TIMELAPSE", "Setting up a timelapse acquisition.")
+
     OPMdaq_setup = OPMNIDAQ.instance()
     opm_events = []
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile acquisition settings from configuration
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
     # Get the acquisition modes
-    ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
+    acq_config = config["acq_config"]
+    daq_config = acq_config["DAQ"]
+    positions_config = acq_config["Positions"]
+    ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
+    o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
 
     # Get the camera crop values
-    camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
-    camera_crop_x = int(config["acq_config"]["camera_roi"]["crop_x"])
-    camera_center_y = int(config["acq_config"]["camera_roi"]["center_y"])
-    camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
+    camera_crop_y = int(acq_config["camera_roi"]["crop_y"])
+    camera_crop_x = int(acq_config["camera_roi"]["crop_x"])
+    camera_center_y = int(acq_config["camera_roi"]["center_y"])
+    camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
-    #----------------------------------------------------------------#
-    # Get channel settings
-    channel_states = config["acq_config"]["timelapse"]["channel_states"]
-    channel_powers = config["acq_config"]["timelapse"]["channel_powers"]
-    channel_exposures_ms = config["acq_config"]["timelapse"]["channel_exposures_ms"]
-    channel_names = config["OPM"]["channel_ids"]
+    # ----------------------------------------------------------------#
+    # Get channel and camera metadata settings
+    channel_plan = get_channel_plan(config, "DAQ")
+    channel_states = channel_plan["states"]
+    channel_powers = channel_plan["powers"]
+    channel_exposures_ms = channel_plan["exposures_ms"]
+    channel_names = channel_plan["names"]
+    active_channel_indices = channel_plan["active_indices"]
+    n_active_channels = channel_plan["active_count"]
+    active_channel_exps = channel_plan["active_exposures_ms"]
+    interleaved_acq = channel_plan["interleaved"]
+    offset, e_to_ADU = get_camera_conversion(mmc, config)
 
-    n_active_channels = sum(channel_states)
-
-    # Interleave only available if all channels have the same exposure.
-    active_channel_exps = []
-    for ii, ch_state in enumerate(channel_states):
-        if ch_state:
-            active_channel_exps.append(channel_exposures_ms[ii])
-        else:
-            # set not used channel powers to 0
-            channel_powers[ii] = 0
-
-    if len(set(active_channel_exps)) == 1:
-        interleaved_acq = True
-    else:
-        interleaved_acq = False
-
-    if sum(channel_powers) == 0:
-        raise Exception("All lasers set to 0!")
-
-    #----------------------------------------------------------------#
-    # try to get camera conversion factor information
-    try:
-        offset = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR OFFSET"
-        )
-        e_to_ADU = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
-        )
-    except Exception as e:
-        debug(
-            "CAMERA ERROR",
-            f"Failed to get offset or e_to_adu properties: {e}",
-            enabled=DEBUGGING,
-        )
-        offset = 0.0
-        e_to_ADU = 1.0
-
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # get the scan mirror positions
-    scan_range_um = config["acq_config"]["mirror_scan"]["scan_range_um"]
-    scan_step_um = config["acq_config"]["mirror_scan"]["scan_step_size_um"]
-    laser_blanking = config["acq_config"]["mirror_scan"]["laser_blanking"]
+    scan_range_um = daq_config["scan_range_um"]
+    scan_step_um = daq_config["scan_axis_step_um"]
+    laser_blanking = daq_config["laser_blanking"]
 
     # get the number of scan steps as expected by the daq
     if scan_range_um == 0.0:
@@ -501,6 +1906,12 @@ def setup_timelapse(
         mirror_voltages = np.array([config["NIDAQ"]["image_mirror_neutral_v"]])
     else:
         scan_mode = "mirror"
+        info(
+            "MIRROR SCAN",
+            "Mirror scan acquisition selected.",
+            f"Range: {scan_range_um} um",
+            f"Step: {scan_step_um} um",
+        )
         OPMdaq_setup.set_acquisition_params(
             scan_type=scan_mode,
             channel_states=channel_states,
@@ -508,26 +1919,33 @@ def setup_timelapse(
             image_mirror_step_um=scan_step_um,
         )
         OPMdaq_setup.generate_waveforms()
-        mirror_voltages = np.unique(OPMdaq_setup._ao_waveform[:, 0])
+        mirror_voltages = np.unique(OPMdaq_setup.analog_waveform[:, 0])
         n_scan_steps = mirror_voltages.shape[0]
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile mda acquisition settings from active tabs
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
     # Split apart sequence dictionary
-    sequence_dict = json.loads(sequence.model_dump_json())
-    mda_positions_plan = sequence_dict["stage_positions"]
-    mda_time_plan = sequence_dict["time_plan"]
+    sequence_plans = get_sequence_plans(sequence)
+    mda_grid_plan = sequence_plans["grid"]
+    mda_positions_plan = sequence_plans["positions"]
+    mda_time_plan = sequence_plans["time"]
+    mda_z_plan = sequence_plans["z"]
 
-    if (mda_positions_plan is None) or (mda_time_plan is None):
-        raise Exception("Must select MDA Positions AND Time plan")
+    if mda_time_plan is None:
+        raise ValueError("Timelapse mode requires an MDA Time plan")
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create custom events
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create DAQ event
     daq_event = create_daq_event(
         "2d",
@@ -540,17 +1958,18 @@ def setup_timelapse(
         laser_blanking=laser_blanking,
     )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = config["O2O3-autofocus"]["crop_y"]
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the AO custom events
     AOmirror_setup = AOMirror.instance()
 
@@ -559,19 +1978,21 @@ def setup_timelapse(
         if "grid" in ao_mode:
             ao_mode = "per xyz position"
             info(
-                "ADAPTIVE OPTICS",
-                "Running at each XYZ position"
+                "AO MODE UPDATED",
+                "AO grid selected.",
+                "Running optimization at each XYZ position.",
             )
         ao_root_dir = output.parent / Path(f"{output.stem}_ao_results")
         ao_root_dir.mkdir(exist_ok=True)
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Compile tine points and positions from active MDA tabs and config
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Get time points
     n_time_steps = mda_time_plan["loops"]
+    time_interval = float(mda_time_plan["interval"])
 
     # estimate the timeloop duration
     estimated_loop_duration_s = (
@@ -585,29 +2006,87 @@ def setup_timelapse(
     else:
         update_ao_mirror_mid_loop = False
 
-    #----------------------------------------------------------------#
-    # Get xyz stage position
-    stage_positions = []
-    for stage_pos in mda_positions_plan:
-        stage_positions.append(
-            {
-                "x": float(stage_pos["x"]),
-                "y": float(stage_pos["y"]),
-                "z": float(stage_pos["z"]),
-            }
+    # ----------------------------------------------------------------#
+    # Resolve the native useq spatial plan with the same physical-coordinate
+    # translation used by mirror acquisitions.  A timelapse holds the image
+    # mirror at each scan plane, so its stage tiling footprint is mirror-like.
+    coverslip_slope_x = float(positions_config["coverslip_slope_x"])
+    coverslip_slope_y = float(positions_config["coverslip_slope_y"])
+    tile_axis_overlap = float(positions_config["tile_axis_overlap"])
+    scan_axis_overlap = float(
+        positions_config.get("scan_axis_overlap", tile_axis_overlap)
+    )
+    z_axis_overlap = float(positions_config["z_axis_overlap"])
+    position_kwargs = {
+        "mda_z_plan": mda_z_plan,
+        "opm_mode": "mirror",
+        "camera_crop_x": camera_crop_x,
+        "camera_crop_y": camera_crop_y,
+        "scan_range_um": float(scan_range_um),
+        "scan_axis_overlap": scan_axis_overlap,
+        "tile_axis_overlap": tile_axis_overlap,
+        "z_axis_overlap": z_axis_overlap,
+        "angle_deg": float(config["OPM"]["angle_deg"]),
+        "coverslip_slope_x": coverslip_slope_x,
+        "coverslip_slope_y": coverslip_slope_y,
+        "mmc": mmc,
+    }
+    has_explicit_spatial_plan = mda_grid_plan is not None or bool(mda_positions_plan)
+    current_stage_position: dict[str, float] | None = None
+    if mda_grid_plan is not None:
+        stage_positions = stage_positions_from_grid(
+            mda_grid_plan=mda_grid_plan,
+            **position_kwargs,
         )
+    elif mda_positions_plan:
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            **position_kwargs,
+        )
+    else:
+        current_x, current_y = mmc.getXYPosition()
+        current_stage_position = {
+            "x": float(current_x),
+            "y": float(current_y),
+            "z": float(mmc.getZPosition()),
+        }
+        stage_positions = [dict(current_stage_position)]
+    stage_positions, _sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+        mda_z_plan=mda_z_plan,
+    )
+    if not stage_positions:
+        raise ValueError("Timelapse spatial planning produced no stage positions")
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create MDA event structure
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
 
     opm_events: list[MDAEvent] = []
 
-    # move stage to starting position
-    opm_events.append(create_stage_event(stage_positions[0]))
+    # An implicit position means "acquire exactly where the stage is now".
+    # Do not round and re-command that position. If an active sample-depth plan
+    # changed the implicit anchor, however, the derived target is a real move.
+    initial_position_changed = current_stage_position is not None and any(
+        float(stage_positions[0][axis]) != current_stage_position[axis]
+        for axis in ("x", "y", "z")
+    )
+    if has_explicit_spatial_plan or initial_position_changed:
+        opm_events.append(create_stage_event(stage_positions[0]))
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Check for optimization at start
 
     if "start" in o2o3_mode:
@@ -617,17 +2096,17 @@ def setup_timelapse(
         current_ao_event = create_ao_optimize_event(config, current_ao_dir)
         opm_events.append(current_ao_event)
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # setup np x 1C x nT x nZ mirror-based AO-OPM acquisition event structure
+
     debug(
-        "ACQUISITION SHAPE",
+        "TIMELAPSE ACQUISITION SHAPE",
         f"timepoints: {n_time_steps}",
-        f"Num scan positions: {n_scan_steps}",
-        f"Stage positions: {n_stage_positions}",
-        f"Active channels: {n_active_channels}",
-        f"Estimated loop duration (s): {estimated_loop_duration_s:.2f}",
-        f"Update AO mid loop: {update_ao_mirror_mid_loop}",
-        enabled=DEBUGGING,
+        f"num scan positions: {n_scan_steps}",
+        f"stage positions: {n_stage_positions}",
+        f"active channels: {n_active_channels}",
+        f"estimated loop duration (s): {estimated_loop_duration_s:.2f}",
+        f"update AO mid loop: {update_ao_mirror_mid_loop}",
     )
 
     for pos_idx in trange(n_stage_positions, desc="Stage positions:", leave=True):
@@ -638,12 +2117,12 @@ def setup_timelapse(
         for scan_idx in trange(
             n_scan_steps, desc="Mirror scan positions:", leave=False
         ):
-            #------------------------------------------------------------#
+            # ------------------------------------------------------------#
             # Move the image mirror to position
             daq_move_event = create_daq_move_event(mirror_voltages[scan_idx])
             opm_events.append(daq_move_event)
 
-            #------------------------------------------------------------#
+            # ------------------------------------------------------------#
             # Check for optimization per position (Stage or Mirror),
             # or update the AO mirror state
             # NOTE: Currently, the AO is running every Stage and Mirror Position
@@ -665,11 +2144,12 @@ def setup_timelapse(
                 )
                 opm_events.append(ao_mirror_update)
 
-            #------------------------------------------------------------#
+            # ------------------------------------------------------------#
             # acquire sequenced timelapse images
             # Update daq to perform a 2d scan
             opm_events.append(daq_event)
             for time_idx in trange(n_time_steps, desc="Timepoints:", leave=False):
+                timepoint_start_index = len(opm_events)
                 # Check for AO update mid loop
                 if update_ao_mirror_mid_loop and time_idx == int(n_time_steps // 2):
                     current_coeffs = AOmirror_setup.current_coeffs.copy()
@@ -679,69 +2159,65 @@ def setup_timelapse(
                     opm_events.append(ao_mirror_update)
 
                 # Create the timelapse image events
-                current_chan_idx = 0
-                for chan_idx, chan_bool in enumerate(channel_states):
-                    if chan_bool:
-                        # Create image event for current t / p / c / z
-                        image_event = MDAEvent(
-                            index=mappingproxy(
-                                {
-                                    "t": time_idx,
-                                    "p": pos_idx,
-                                    "c": current_chan_idx,
-                                    "z": scan_idx,
-                                }
-                            ),
-                            metadata=populate_opm_metadata(
-                                daq_mode="2d",
-                                mirror_voltage=mirror_voltages[scan_idx],
-                                mirror_step=scan_step_um,
-                                channel_states=channel_states,
-                                channel_exposures_ms=channel_exposures_ms,
-                                laser_powers=channel_powers,
-                                interleaved=interleaved_acq,
-                                blanking=laser_blanking,
-                                current_channel=channel_names[chan_idx],
-                                exposure_ms=channel_exposures_ms[chan_idx],
-                                camera_center_x=camera_center_x,
-                                camera_center_y=camera_center_y,
-                                camera_crop_x=camera_crop_x,
-                                camera_crop_y=camera_crop_y,
-                                offset=offset,
-                                e_to_ADU=e_to_ADU,
-                                angle_deg=config["OPM"]["angle_deg"],
-                                camera_Zstage_orientation=config["OPM"][
-                                    "camera_Zstage_orientation"
-                                ],
-                                camera_XYstage_orientation=config["OPM"][
-                                    "camera_XYstage_orientation"
-                                ],
-                                camera_mirror_orientation=config["OPM"][
-                                    "camera_mirror_orientation"
-                                ],
-                                stage_position=stage_positions[pos_idx],
-                            ),
-                        )
-                        opm_events.append(image_event)
-                        current_chan_idx += 1
+                for planned_event in iter_planned_image_events(
+                    {"c": n_active_channels}, ("c",)
+                ):
+                    current_chan_idx = planned_event.index["c"]
+                    chan_idx = active_channel_indices[current_chan_idx]
+                    image_event = create_opm_image_event(
+                        index={
+                            "t": time_idx,
+                            "p": pos_idx,
+                            "c": current_chan_idx,
+                            "z": scan_idx,
+                        },
+                        config=config,
+                        stage_position=stage_positions[pos_idx],
+                        daq_mode="2d",
+                        mirror_voltage=mirror_voltages[scan_idx],
+                        mirror_step=scan_step_um,
+                        channel_states=channel_states,
+                        channel_exposures_ms=channel_exposures_ms,
+                        laser_powers=channel_powers,
+                        interleaved=interleaved_acq,
+                        blanking=laser_blanking,
+                        current_channel=channel_names[chan_idx],
+                        exposure_ms=channel_exposures_ms[chan_idx],
+                        camera_center_x=camera_center_x,
+                        camera_center_y=camera_center_y,
+                        camera_crop_x=camera_crop_x,
+                        camera_crop_y=camera_crop_y,
+                        offset=offset,
+                        e_to_ADU=e_to_ADU,
+                    )
+                    opm_events.append(image_event)
+                apply_timepoint_timing(
+                    opm_events,
+                    timepoint_start_index,
+                    time_idx,
+                    time_interval,
+                    reset_event_timer=time_idx == 0,
+                )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Setup OPM custom handler
     # NOTE: output path needs to only have a single '.', or multiple suffixes are found!
-    if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-        indice_sizes = {
-            "t": int(np.maximum(1, n_time_steps)),
-            "p": int(n_stage_positions),
-            "c": int(np.maximum(1, n_active_channels)),
-            "z": int(np.maximum(1, n_scan_steps)),
-        }
-        handler = OPMMirrorHandler(
-            path=Path(output), indice_sizes=indice_sizes, delete_existing=True
-        )
-        info("HANDLER INDICES", f"{indice_sizes}")
-        return opm_events, handler
-    else:
-        raise Exception("Defualt handler selected, modify save path!")
+    indice_sizes = {
+        "t": int(np.maximum(1, n_time_steps)),
+        "p": int(n_stage_positions),
+        "c": int(np.maximum(1, n_active_channels)),
+        "z": int(np.maximum(1, n_scan_steps)),
+    }
+    return opm_events, create_zarr_handler(
+        output,
+        indice_sizes,
+        acquisition_order=("p", "z", "t", "c"),
+        events=opm_events,
+        config=config,
+        spatial_plan=spatial_plan,
+        max_time_chunk_size=16,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+    )
 
 
 def setup_projection(
@@ -749,7 +2225,7 @@ def setup_projection(
     config: dict,
     sequence: MDASequence,
     output: Path,
-) -> list[MDAEvent]:
+) -> tuple[list[MDAEvent], OpmDataHandler]:
     """OPM projection scan acquisition.
 
     Creates an event structure:
@@ -768,98 +2244,81 @@ def setup_projection(
 
     Returns
     -------
-    list[MDAEvent]
-        _description_
-    Handler
-        OPM zarr file saving handler
-    """
+    tuple[list[MDAEvent], OpmDataHandler]
+        Camera acquisition events and TensorStore-backed output handler.
 
+    Raises
+    ------
+    Exception
+        If neither grid nor position plans are configured.
+    ValueError
+        If exported Stage Explorer regions conflict with another spatial plan.
+    """
     AOmirror_setup = AOMirror.instance()
     # TODO: add as an option to the OPM setup config
     timepoint_interval = 6
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile acquisition settings from configuration
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Get the acquisition modes
-    opm_mode = config["acq_config"]["opm_mode"]
-    ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
-    fluidics_mode = config["acq_config"]["fluidics"]
+    acq_config = config["acq_config"]
+    daq_config = acq_config["DAQ"]
+    positions_config = acq_config["Positions"]
+    opm_mode = acq_config["opm_mode"]
+    ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
+    o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
+    fluidics_mode = acq_config["fluidics"]
 
     # Get pixel size
     pixel_size_um = np.round(float(mmc.getPixelSizeUm()), 3)  # unit: um
 
     # Get the scan range, coverslip slope and overlaps
-    coverslip_slope_x = config["acq_config"]["projection_scan"]["coverslip_slope_x"]
-    coverslip_slope_y = config["acq_config"]["projection_scan"]["coverslip_slope_y"]
-    scan_range_um = float(config["acq_config"]["projection_scan"]["scan_range_um"])
-    tile_axis_overlap = float(
-        config["acq_config"]["projection_scan"]["tile_axis_overlap"]
-    )
+    coverslip_slope_x = positions_config["coverslip_slope_x"]
+    coverslip_slope_y = positions_config["coverslip_slope_y"]
+    scan_range_um = float(daq_config["scan_range_um"])
+    tile_axis_overlap = float(positions_config["tile_axis_overlap"])
 
     # Get the camera crop values
     camera_crop_y = int(scan_range_um / pixel_size_um)
-    camera_crop_x = int(config["acq_config"]["camera_roi"]["crop_x"])
-    camera_center_y = int(config["acq_config"]["camera_roi"]["center_y"])
-    camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
+    camera_crop_x = int(acq_config["camera_roi"]["crop_x"])
+    camera_center_y = int(acq_config["camera_roi"]["center_y"])
+    camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
-    # Get channel settings
-    laser_blanking = config["acq_config"]["projection_scan"]["laser_blanking"]
-    channel_states = config["acq_config"]["projection_scan"]["channel_states"]
-    channel_powers = config["acq_config"]["projection_scan"]["channel_powers"]
-    channel_exposures_ms = config["acq_config"]["projection_scan"][
-        "channel_exposures_ms"
-    ]
-    channel_names = config["OPM"]["channel_ids"]
+    # Get channel and camera metadata settings
+    laser_blanking = daq_config["laser_blanking"]
+    channel_plan = get_channel_plan(config, "DAQ", round_active_exposures=True)
+    channel_states = channel_plan["states"]
+    channel_powers = channel_plan["powers"]
+    channel_exposures_ms = channel_plan["exposures_ms"]
+    channel_names = channel_plan["names"]
+    active_channel_indices = channel_plan["active_indices"]
+    n_active_channels = channel_plan["active_count"]
+    interleaved_acq = channel_plan["interleaved"]
+    offset, e_to_ADU = get_camera_conversion(mmc, config)
 
-    # Compile active channel settings, has length of n_active_channels
-    n_active_channels = sum(channel_states)
-    active_channel_exps = []
-    for ii, ch_state in enumerate(channel_states):
-        if ch_state:
-            active_channel_exps.append(np.round(channel_exposures_ms[ii], 2))
-        else:
-            # set not used channel powers to 0
-            channel_powers[ii] = 0
-
-    if len(set(active_channel_exps)) == 1:
-        interleaved_acq = True
-    else:
-        interleaved_acq = False
-
-    if sum(channel_powers) == 0:
-        raise Exception("All lasers set to 0!")
-
-    #----------------------------------------------------------------#
-    # try to get camera conversion factor information
-    try:
-        offset = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR OFFSET"
-        )
-        e_to_ADU = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
-        )
-    except Exception:
-        offset = 0.0
-        e_to_ADU = 1.0
-
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile mda acquisition settings from active tabs
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
     # Split apart sequence dictionary
-    sequence_dict = json.loads(sequence.model_dump_json())
-    mda_grid_plan = sequence_dict["grid_plan"]
-    mda_time_plan = sequence_dict["time_plan"]
-    mda_positions_plan = sequence_dict["stage_positions"]
-    mda_z_plan = sequence_dict["z_plan"]
+    sequence_plans = get_sequence_plans(sequence)
+    mda_grid_plan = sequence_plans["grid"]
+    mda_time_plan = sequence_plans["time"]
+    mda_positions_plan = sequence_plans["positions"]
+    mda_z_plan = sequence_plans["z"]
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Generate xyz stage positions
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or Positions plan")
+
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
     if mda_grid_plan is not None:
         stage_positions = stage_positions_from_grid(
@@ -871,24 +2330,46 @@ def setup_projection(
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
             scan_axis_overlap=tile_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
         )
     elif mda_positions_plan is not None:
-        stage_positions = []
-        for stage_pos in mda_positions_plan:
-            stage_positions.append(
-                {
-                    "x": float(stage_pos["x"]),
-                    "y": float(stage_pos["y"]),
-                    "z": float(stage_pos["z"]),
-                }
-            )
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            mda_z_plan=mda_z_plan,
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            tile_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=tile_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
+        )
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=pixel_size_um,
+        mda_z_plan=mda_z_plan,
+    )
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Define the time indexing, check for fluidics
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     if fluidics_mode != "none":
         fluidics_rounds = int(fluidics_mode)
         n_time_steps = fluidics_rounds
@@ -900,13 +2381,13 @@ def setup_projection(
         n_time_steps = 1
         time_interval = 0
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Create custom action data
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create DAQ event
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     daq_event = create_daq_event(
         mode="projection",
         channel_states=channel_states,
@@ -919,12 +2400,14 @@ def setup_projection(
         image_mirror_range_um=scan_range_um,
     )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the initial AO event data
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     ao_starting_coeffs = AOmirror_setup.current_coeffs.copy()
     ao_starting_volts = AOmirror_setup.current_voltage.copy()
 
+    ao_optimize_event = None
+    ao_grid_event = None
     if ao_mode != "none":
         # Create root directory to store AO opt.results
         if "grid" in ao_mode:
@@ -939,40 +2422,49 @@ def setup_projection(
             ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
         # Update the mirror's position array
         AOmirror_setup.n_positions = n_stage_positions
+    ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the o2o3 AF event data
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = config["O2O3-autofocus"]["crop_y"]
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Create MDA event structure, Nt/ Np / Nc
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     opm_events: list[MDAEvent] = []
 
     debug(
-        "PROJECTION ACQUISITION",
+        "PROJECTION ACQUISITION PARAMETERS",
         f"timepoints / interval: {n_time_steps} / {time_interval}",
-        f"Stage positions: {n_stage_positions}",
-        f"Active channels: {n_active_channels}",
+        f"stage positions: {n_stage_positions}",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
+        f"active channels: {n_active_channels}",
         f"o2o3 focus frequency: {o2o3_mode}",
         f"AO frequency: {ao_mode}",
         "AO starting state:",
         f"coeffs: {ao_starting_coeffs}",
         f"volts: {ao_starting_volts}",
-        enabled=DEBUGGING,
     )
-    
+
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
-        #--------------------------------------------------------------------#
+        timepoint_start_index = len(opm_events)
+        # --------------------------------------------------------------------#
         # Create events to run before acquisition
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         if time_idx == 0:
             if o2o3_mode == "once at start":
                 opm_events.append(o2o3_event)
@@ -982,51 +2474,36 @@ def setup_projection(
                 opm_events.append(
                     create_stage_event(stage_positions[n_stage_positions // 2])
                 )
-                opm_events.append(MDAEvent(**ao_optimize_event.model_dump()))
+                opm_events.append(clone_event(ao_optimize_event))
 
-            elif ao_mode == "grid at start":
-                opm_events.append(MDAEvent(**ao_grid_event.model_dump()))
+            elif ao_mode == "grid at start" and not use_per_z_ao_grid:
+                opm_events.append(clone_event(ao_grid_event))
 
             # Move stage to starting position
             opm_events.append(create_stage_event(stage_positions[0]))
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Create events to run each time-point
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Run fluidics if requested
         if fluidics_mode != "none" and time_idx != 0:
             current_fluidics_event = create_fluidics_event(fluidics_rounds, time_idx)
             opm_events.append(current_fluidics_event)
-
-        # Create timelapse pause events
-        if (mda_time_plan is not None) and (time_idx > 0) and (int(time_interval) > 0):
-            opm_events.append(
-                create_timelapse_event(time_interval, n_time_steps, time_idx)
-            )
 
         # Create autofocus event
         if o2o3_mode == "at timepoints":
             opm_events.append(o2o3_event)
 
         # Create AO optimization events
-        if time_idx % timepoint_interval == 0:
-            if ao_mode == "at timepoints":
-                current_ao_dir = ao_output_dir / Path(f"time_{time_idx}_ao_results")
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                curr_ao_opt_event.action.data["AO"]["output_path"] = current_ao_dir
-                curr_ao_opt_event.action.data["AO"]["time_idx"] = time_idx
-                opm_events.append(curr_ao_opt_event)
-
-            elif ao_mode == "grid at timepoints":
-                current_ao_dir = ao_output_dir / Path(
-                    f"time_{time_idx}_ao_grid_results"
-                )
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                curr_ao_grid_event.action.data["AO"]["output_path"] = current_ao_dir
-                curr_ao_opt_event.action.data["AO"]["time_idx"] = time_idx
-                opm_events.append(curr_ao_grid_event)
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+                optimize_dir_template="time_{time_idx}_ao_results",
+                grid_dir_template="time_{time_idx}_ao_grid_results",
+                interval=timepoint_interval,
+            )
 
         # Update the mirror state if not running optimization.
         if ao_mode == "none":
@@ -1034,10 +2511,30 @@ def setup_projection(
                 create_ao_mirror_update_event(mirror_coeffs=ao_starting_coeffs.copy())
             )
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # iterate over stage positions
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         for pos_idx in range(n_stage_positions):
+            if (
+                use_per_z_ao_grid
+                and pos_idx in ao_z_group_at_position
+                and should_run_ao_grid_z_level(
+                    ao_mode,
+                    time_idx,
+                    interval=timepoint_interval,
+                )
+            ):
+                z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                append_ao_grid_z_event(
+                    opm_events,
+                    ao_grid_event,
+                    stage_positions,
+                    position_indices,
+                    ao_output_dir,
+                    time_idx=time_idx,
+                    z_idx=z_idx,
+                )
+
             # Move stage to position
             opm_events.append(create_stage_event(stage_positions[pos_idx]))
 
@@ -1045,9 +2542,9 @@ def setup_projection(
             if o2o3_mode == "at xyz positions":
                 opm_events.append(o2o3_event)
 
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
             # AO mirror events
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
 
             # Run at xyz position optimizations
             if (ao_mode == "at xyz positions") and (time_idx == 0):
@@ -1055,33 +2552,31 @@ def setup_projection(
                     f"time_{time_idx}_pos_{pos_idx}_ao_results"
                 )
                 current_ao_dir.mkdir(exist_ok=True)
-                current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                current_ao_event = clone_event(ao_optimize_event)
                 current_ao_event.action.data["AO"]["output_path"] = current_ao_dir
                 current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                 current_ao_event.action.data["AO"]["time_idx"] = int(time_idx)
                 current_ao_event.action.data["AO"]["apply_existing"] = False
                 opm_events.append(current_ao_event)
-            
+
             # update mirror state using grid optimization
-            if (ao_mode == "grid at start") or(ao_mode == "grid at timepoints"):
-                mirror_update_event = MDAEvent(**ao_grid_event.model_dump())
-                mirror_update_event.action.data["AO"]["apply_ao_map"] = True
-                mirror_update_event.action.data["AO"]["pos_idx"] = pos_idx
-                opm_events.append(mirror_update_event)
-                
+            if (ao_mode == "grid at start") or (ao_mode == "grid at timepoints"):
+                ao_scheduler.append_position_update(opm_events, pos_idx)
+
             # update mirror state from optimized per xyz position
             if ao_mode == "at xyz positions":
-                current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
-                current_ao_event.action.data["AO"]["apply_existing"] = True
-                current_ao_event.action.data["AO"]["pos_idx"] = 0
-                opm_events.append(current_ao_event)
+                ao_scheduler.append_position_update(
+                    opm_events,
+                    pos_idx,
+                    use_position_index_for_optimize=True,
+                )
 
-            if "xyz" in ao_mode:
+            if "xyz" in ao_mode and ao_mode != "at xyz positions":
                 # Run the ao optmization at the first time-point for each position
                 if time_idx == 0:
                     current_ao_dir = ao_output_dir / Path(f"pos_{pos_idx}_ao_results")
                     current_ao_dir.mkdir(exist_ok=True)
-                    current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                    current_ao_event = clone_event(ao_optimize_event)
                     current_ao_event.action.data["AO"]["output_path"] = current_ao_dir
                     current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                     current_ao_event.action.data["AO"]["time_idx"] = int(time_idx)
@@ -1089,102 +2584,95 @@ def setup_projection(
                     opm_events.append(current_ao_event)
 
                 # Update the mirror state for at each position for all time-points
-                current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                current_ao_event = clone_event(ao_optimize_event)
                 current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                 current_ao_event.action.data["AO"]["apply_existing"] = True
                 opm_events.append(current_ao_event)
 
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
             # Handle acquiring images
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
 
             if interleaved_acq:
                 # Update daq state to sequence all channels
-                opm_events.append(MDAEvent(**daq_event.model_dump()))
+                opm_events.append(clone_event(daq_event))
 
             # Create image events
-            current_chan_idx = 0
-            for chan_idx, chan_bool in enumerate(channel_states):
-                if chan_bool:
-                    if not (interleaved_acq):
-                        # Update daq for each channel separately
-                        temp_channels = [False] * len(channel_states)
-                        temp_exposures = [0] * len(channel_exposures_ms)
-                        temp_powers = [0] * len(channel_powers)
-
-                        temp_channels[chan_idx] = True
-                        temp_exposures[chan_idx] = channel_exposures_ms[chan_idx]
-                        temp_powers[chan_idx] = channel_powers[chan_idx]
-
-                        # Create daq event for a single channel
-                        current_daq_event = MDAEvent(**daq_event.model_dump())
-                        current_daq_event.action.data["DAQ"]["channel_states"] = (
-                            temp_channels
+            for planned_event in iter_planned_image_events(
+                {"c": n_active_channels}, ("c",)
+            ):
+                current_chan_idx = planned_event.index["c"]
+                chan_idx = active_channel_indices[current_chan_idx]
+                if not interleaved_acq:
+                    # Update daq for each channel separately
+                    temp_channels, temp_powers, temp_exposures = (
+                        single_channel_settings(
+                            channel_states,
+                            channel_powers,
+                            channel_exposures_ms,
+                            chan_idx,
                         )
-                        current_daq_event.action.data["DAQ"]["channel_powers"] = (
-                            temp_powers
-                        )
-                        current_daq_event.action.data["Camera"]["exposure_channels"] = (
-                            temp_exposures
-                        )
-                        opm_events.append(current_daq_event)
-
-                    # Create image event for current t / p / c
-                    image_event = MDAEvent(
-                        index=mappingproxy(
-                            {"t": time_idx, "p": pos_idx, "c": current_chan_idx}
-                        ),
-                        metadata=populate_opm_metadata(
-                            daq_mode="projection",
-                            image_mirror_range_um=scan_range_um,
-                            channel_states=channel_states,
-                            channel_exposures_ms=channel_exposures_ms,
-                            laser_powers=channel_powers,
-                            interleaved=interleaved_acq,
-                            blanking=laser_blanking,
-                            current_channel=channel_names[chan_idx],
-                            exposure_ms=channel_exposures_ms[chan_idx],
-                            camera_center_x=camera_center_x,
-                            camera_center_y=camera_center_y,
-                            camera_crop_x=camera_crop_x,
-                            camera_crop_y=camera_crop_y,
-                            offset=offset,
-                            e_to_ADU=e_to_ADU,
-                            angle_deg=config["OPM"]["angle_deg"],
-                            camera_Zstage_orientation=config["OPM"][
-                                "camera_Zstage_orientation"
-                            ],
-                            camera_XYstage_orientation=config["OPM"][
-                                "camera_XYstage_orientation"
-                            ],
-                            camera_mirror_orientation=config["OPM"][
-                                "camera_mirror_orientation"
-                            ],
-                            stage_position=stage_positions[pos_idx],
-                        ),
                     )
-                    opm_events.append(image_event)
-                    current_chan_idx += 1
+
+                    # Create daq event for a single channel
+                    current_daq_event = clone_event(daq_event)
+                    current_daq_event.action.data["DAQ"]["channel_states"] = (
+                        temp_channels
+                    )
+                    current_daq_event.action.data["DAQ"]["channel_powers"] = temp_powers
+                    current_daq_event.action.data["Camera"]["exposure_channels"] = (
+                        temp_exposures
+                    )
+                    opm_events.append(current_daq_event)
+
+                # Create image event for current t / p / c
+                image_event = create_opm_image_event(
+                    index={"t": time_idx, "p": pos_idx, "c": current_chan_idx},
+                    config=config,
+                    stage_position=stage_positions[pos_idx],
+                    daq_mode="projection",
+                    image_mirror_range_um=scan_range_um,
+                    channel_states=channel_states,
+                    channel_exposures_ms=channel_exposures_ms,
+                    laser_powers=channel_powers,
+                    interleaved=interleaved_acq,
+                    blanking=laser_blanking,
+                    current_channel=channel_names[chan_idx],
+                    exposure_ms=channel_exposures_ms[chan_idx],
+                    camera_center_x=camera_center_x,
+                    camera_center_y=camera_center_y,
+                    camera_crop_x=camera_crop_x,
+                    camera_crop_y=camera_crop_y,
+                    offset=offset,
+                    e_to_ADU=e_to_ADU,
+                )
+                opm_events.append(image_event)
+
+        apply_timepoint_timing(
+            opm_events,
+            timepoint_start_index,
+            time_idx,
+            float(time_interval),
+        )
 
     # Save events for debugging
-    save_events_json(opm_events, Path(output).parent / "opm_events.json")
-
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Setup our OPM Engine
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # NOTE: output path needs to only have a single '.', or multiple suffixes are found!
-    if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-        indice_sizes = {
-            "t": int(np.maximum(1, n_time_steps)),
-            "p": int(np.maximum(1, n_stage_positions)),
-            "c": int(np.maximum(1, n_active_channels)),
-        }
-        handler = OPMMirrorHandler(
-            path=Path(output), indice_sizes=indice_sizes, delete_existing=True
-        )
-        return opm_events, handler
-    else:
-        raise Exception("Defualt handler selected, modify save path!")
+    indice_sizes = {
+        "t": int(np.maximum(1, n_time_steps)),
+        "p": int(np.maximum(1, n_stage_positions)),
+        "c": int(np.maximum(1, n_active_channels)),
+    }
+    return opm_events, create_zarr_handler(
+        output,
+        indice_sizes,
+        events=opm_events,
+        config=config,
+        spatial_plan=spatial_plan,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+    )
 
 
 def setup_mirrorscan(
@@ -1192,8 +2680,8 @@ def setup_mirrorscan(
     config: dict,
     sequence: MDASequence,
     output: Path,
-) -> list[MDAEvent]:
-    """Creates an OPM mirror scan acquisition
+) -> tuple[list[MDAEvent], OpmDataHandler]:
+    """Create an OPM mirror-scan acquisition.
 
     For a static mirror acquisition set image range to 0.
     When mirror scan range == 0, produces an image sequence similar to Timelapse
@@ -1213,45 +2701,49 @@ def setup_mirrorscan(
 
     Returns
     -------
-    list[MDAEvent]
-        _description_
-    Handler
-        OPM zarr file saving handler
+    tuple[list[MDAEvent], OpmDataHandler]
+        Camera acquisition events and TensorStore-backed output handler.
+
+    Raises
+    ------
+    Exception
+        If neither grid nor position plans are configured.
+    ValueError
+        If exported Stage Explorer regions conflict with another spatial plan.
     """
     AOmirror_setup = AOMirror.instance()
     OPMdaq_setup = OPMNIDAQ.instance()
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile acquisition settings from configuration
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Get the acquisition modes
-    opm_mode = config["acq_config"]["opm_mode"]
-    ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
-    fluidics_mode = config["acq_config"]["fluidics"]
+    acq_config = config["acq_config"]
+    daq_config = acq_config["DAQ"]
+    positions_config = acq_config["Positions"]
+    opm_mode = acq_config["opm_mode"]
+    ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
+    o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
+    fluidics_mode = acq_config["fluidics"]
 
     # Get the scan range, coverslip slope and overlaps
-    coverslip_slope_x = config["acq_config"]["mirror_scan"]["coverslip_slope_x"]
-    coverslip_slope_y = config["acq_config"]["mirror_scan"]["coverslip_slope_y"]
-    scan_range_um = float(config["acq_config"]["mirror_scan"]["scan_range_um"])
-    scan_step_um = float(config["acq_config"]["mirror_scan"]["scan_step_size_um"])
-    tile_axis_overlap = float(config["acq_config"]["mirror_scan"]["tile_axis_overlap"])
-    z_axis_overlap = float(config["acq_config"]["mirror_scan"]["z_axis_overlap"])
+    coverslip_slope_x = positions_config["coverslip_slope_x"]
+    coverslip_slope_y = positions_config["coverslip_slope_y"]
+    scan_range_um = float(daq_config["scan_range_um"])
+    scan_step_um = float(daq_config["scan_axis_step_um"])
+    tile_axis_overlap = float(positions_config["tile_axis_overlap"])
+    scan_axis_overlap = float(
+        positions_config.get("scan_axis_overlap", tile_axis_overlap)
+    )
+    z_axis_overlap = float(positions_config["z_axis_overlap"])
 
     # Flag for setting up a static mirror acquisition
     if scan_range_um == 0.0:
         scan_mode = "2d"
+        info("SCAN MODE", "Setting up a 2d scan mode.")
         OPMdaq_setup.set_acquisition_params(scan_type="2d")
         n_scan_steps = 1
-        info(
-            "STATIC MIRROR SCAN",
-            "Static mirror scan acquisition selected.",
-        )
     else:
-        info(
-            "MIRROR SCAN",
-            f"Mirror scan acquisition selected. Range: {scan_range_um} um, Step: {scan_step_um} um",
-        )
         scan_mode = "mirror"
         OPMdaq_setup.set_acquisition_params(
             scan_type="mirror",
@@ -1261,68 +2753,48 @@ def setup_mirrorscan(
         n_scan_steps = OPMdaq_setup.n_scan_steps
 
     # Get the camera crop values
-    camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
-    camera_crop_x = int(config["acq_config"]["camera_roi"]["crop_x"])
-    camera_center_y = int(config["acq_config"]["camera_roi"]["center_y"])
-    camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
+    camera_crop_y = int(acq_config["camera_roi"]["crop_y"])
+    camera_crop_x = int(acq_config["camera_roi"]["crop_x"])
+    camera_center_y = int(acq_config["camera_roi"]["center_y"])
+    camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
-    # Get channel settings
-    laser_blanking = config["acq_config"]["mirror_scan"]["laser_blanking"]
-    channel_states = config["acq_config"]["mirror_scan"]["channel_states"]
-    channel_powers = config["acq_config"]["mirror_scan"]["channel_powers"]
-    channel_exposures_ms = config["acq_config"]["mirror_scan"]["channel_exposures_ms"]
-    channel_names = config["OPM"]["channel_ids"]
+    # Get channel and camera metadata settings
+    laser_blanking = daq_config["laser_blanking"]
+    channel_plan = get_channel_plan(config, "DAQ", round_active_exposures=True)
+    channel_states = channel_plan["states"]
+    channel_powers = channel_plan["powers"]
+    channel_exposures_ms = channel_plan["exposures_ms"]
+    channel_names = channel_plan["names"]
+    active_channel_indices = channel_plan["active_indices"]
+    n_active_channels = channel_plan["active_count"]
+    interleaved_acq = channel_plan["interleaved"]
+    offset, e_to_ADU = get_camera_conversion(mmc, config)
 
-    # Compile active channel settings, has length of n_active_channels
-    n_active_channels = sum(channel_states)
-    active_channel_exps = []
-    for ii, ch_state in enumerate(channel_states):
-        if ch_state:
-            active_channel_exps.append(np.round(channel_exposures_ms[ii], 2))
-        else:
-            # set not used channel powers to 0
-            channel_powers[ii] = 0
-
-    if len(set(active_channel_exps)) == 1:
-        interleaved_acq = True
-    else:
-        interleaved_acq = False
-
-    if sum(channel_powers) == 0:
-        raise Exception("All lasers set to 0!")
-
-    #----------------------------------------------------------------#
-    # try to get camera conversion factor information
-    try:
-        offset = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR OFFSET"
-        )
-        e_to_ADU = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
-        )
-    except Exception:
-        offset = 0.0
-        e_to_ADU = 1.0
-
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile mda acquisition settings from active tabs
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
     # Split apart sequence dictionary
-    sequence_dict = json.loads(sequence.model_dump_json())
-    mda_grid_plan = sequence_dict["grid_plan"]
-    mda_time_plan = sequence_dict["time_plan"]
-    mda_positions_plan = sequence_dict["stage_positions"]
-    mda_z_plan = sequence_dict["z_plan"]
+    sequence_plans = get_sequence_plans(sequence)
+    mda_grid_plan = sequence_plans["grid"]
+    mda_time_plan = sequence_plans["time"]
+    mda_positions_plan = sequence_plans["positions"]
+    mda_z_plan = sequence_plans["z"]
 
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or positions plan for mirror scanning")
 
-    #----------------------------------------------------------------#
-    # Create custom action data
-    #----------------------------------------------------------------#
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
+    # Create custom action data
+    # ----------------------------------------------------------------#
+
+    # ----------------------------------------------------------------#
     # Create DAQ event
     daq_event = create_daq_event(
         mode=scan_mode,
@@ -1337,8 +2809,10 @@ def setup_mirrorscan(
         laser_blanking=laser_blanking,
     )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the AO event data
+    ao_optimize_event = None
+    ao_grid_event = None
     if ao_mode != "none":
         if "grid" in ao_mode:
             ao_output_dir = output.parent / Path(f"{output.stem}_ao_grid_results")
@@ -1348,26 +2822,27 @@ def setup_mirrorscan(
             ao_output_dir = output.parent / Path(f"{output.stem}_ao_optimize_results")
             ao_output_dir.mkdir(exist_ok=True)
             ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = config["O2O3-autofocus"]["crop_y"]
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the fluidics event data
     if fluidics_mode != "none":
         fluidics_rounds = int(fluidics_mode)
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Compile mda positions from active tabs and config
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Define the time indexing
     if fluidics_mode != "none":
         n_time_steps = fluidics_rounds
@@ -1382,20 +2857,22 @@ def setup_mirrorscan(
     if time_interval == 0:
         need_to_setup_daq = False
         if "timepoint" in ao_mode:
-            ao_mode = "start"
-            info(
-                "ADAPTIVE OPTICS",
-                "running at start"
+            ao_mode = "grid at start" if "grid" in ao_mode else "once at start"
+            warning(
+                "AO MODE UPDATED",
+                "AO mode is set to timepoint, but 0 interval was selected.",
+                "Running AO at start.",
             )
         if "timepoint" in o2o3_mode:
-            o2o3_mode = "start"
-            info(
-                "O2O3 AUTOFOCUS",
-                "running at start"
+            o2o3_mode = "once at start"
+            warning(
+                "AF MODE UPDATED",
+                "AF mode is set to timepoint, but 0 interval was selected.",
+                "Running autofocus at start.",
             )
     else:
         need_to_setup_daq = True
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Generate xyz stage positions
     if mda_grid_plan is not None:
         stage_positions = stage_positions_from_grid(
@@ -1406,70 +2883,89 @@ def setup_mirrorscan(
             camera_crop_y=camera_crop_y,
             scan_range_um=scan_range_um,
             tile_axis_overlap=tile_axis_overlap,
-            scan_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=scan_axis_overlap,
             z_axis_overlap=z_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
             coverslip_slope_x=coverslip_slope_x,
             coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
         )
     elif mda_positions_plan is not None:
-        stage_positions = []
-        for stage_pos in mda_positions_plan:
-            stage_positions.append(
-                {
-                    "x": float(stage_pos["x"]),
-                    "y": float(stage_pos["y"]),
-                    "z": float(stage_pos["z"]),
-                }
-            )
+        stage_positions = stage_positions_from_position_plan(
+            mda_positions_plan,
+            mda_z_plan=mda_z_plan,
+            opm_mode=opm_mode,
+            camera_crop_x=camera_crop_x,
+            camera_crop_y=camera_crop_y,
+            scan_range_um=scan_range_um,
+            tile_axis_overlap=tile_axis_overlap,
+            scan_axis_overlap=scan_axis_overlap,
+            z_axis_overlap=z_axis_overlap,
+            angle_deg=float(config["OPM"]["angle_deg"]),
+            coverslip_slope_x=coverslip_slope_x,
+            coverslip_slope_y=coverslip_slope_y,
+            mmc=mmc,
+        )
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+        mda_z_plan=mda_z_plan,
+    )
     n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=coverslip_slope_x,
+        coverslip_slope_y=coverslip_slope_y,
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
         ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
+    ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create MDA event structure
-    #----------------------------------------------------------------#
-    need_to_setup_stage = True
+    # ----------------------------------------------------------------#
     opm_events: list[MDAEvent] = []
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
     debug(
-        "MIRRORSCAN ACQUISITION",
-        f"  timepoints / interval: {n_time_steps} / {time_interval}",
-        f"  Stage positions: {n_stage_positions}",
-        f"  Active channels: {n_active_channels}",
-        f"  AO frequency: {ao_mode}",
-        f"  o2o3 focus frequency: {o2o3_mode}",
-        "\nMirror scan settings:",
-        f"  num scan steps: {n_scan_steps}",
-        f"  scan range (um): {scan_range_um}",
-        f"  scan step (um): {scan_step_um}",
-        f"  DAQ scan mode: {scan_mode}",
-        enabled=DEBUGGING,
+        "MIRROR SCAN ACQUISITION SETTINGS",
+        f"timepoints / interval: {n_time_steps} / {time_interval}",
+        f"stage positions: {n_stage_positions}",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
+        f"active channels: {n_active_channels}",
+        f"AO frequency: {ao_mode}",
+        f"o2o3 focus frequency: {o2o3_mode}",
+        f"num scan steps: {n_scan_steps}",
+        f"scan range (um): {scan_range_um}",
+        f"scan step (um): {scan_step_um}",
+        f"DAQ scan mode: {scan_mode}",
     )
 
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
-        #--------------------------------------------------------------------#
+        timepoint_start_index = len(opm_events)
+        # --------------------------------------------------------------------#
         # Run fluidics starting at the second timepoint if present
         if fluidics_mode != "none" and time_idx != 0:
             current_fluidics_event = create_fluidics_event(fluidics_rounds, time_idx)
             opm_events.append(current_fluidics_event)
 
-        #--------------------------------------------------------------------#
-        # Create pause events starting at the second timepoint for timelapse acq.
-        elif (
-            (mda_time_plan is not None) and (time_idx > 0) and (int(time_interval) > 0)
-        ):
-            current_timepoint_event = create_timelapse_event(
-                time_interval, n_time_steps, time_idx
-            )
-            opm_events.append(current_timepoint_event)
-
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Create events to run before acquisition
         if time_idx == 0:
             # move stage to starting position
@@ -1485,32 +2981,25 @@ def setup_mirrorscan(
 
             if "start" in o2o3_mode:
                 opm_events.append(o2o3_event)
-            if "start" in ao_mode:
+            if "start" in ao_mode and not use_per_z_ao_grid:
                 if "grid" in ao_mode:
-                    curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                    opm_events.append(ao_grid_event)
+                    curr_ao_grid_event = clone_event(ao_grid_event)
+                    opm_events.append(curr_ao_grid_event)
                 else:
-                    curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
+                    curr_ao_opt_event = clone_event(ao_optimize_event)
                     opm_events.append(curr_ao_opt_event)
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Create events to run each timepoint
         if o2o3_mode == "at timepoints":
             opm_events.append(o2o3_event)
 
-        if ao_mode == "at timepoints":
-            if "grid" in ao_mode:
-                current_ao_dir = ao_output_dir / Path(f"time_{time_idx}_ao_grid")
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                curr_ao_grid_event.action.data["AO"]["output_path"] = current_ao_dir
-                opm_events.append(curr_ao_grid_event)
-            else:
-                current_ao_dir = ao_output_dir / Path(f"time_{time_idx}_ao_optimize")
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                curr_ao_opt_event.action.data["AO"]["output_path"] = current_ao_dir
-                opm_events.append(curr_ao_opt_event)
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+            )
 
         if "none" in ao_mode and (time_interval > 0):
             ao_mirror_update_event = create_ao_mirror_update_event(
@@ -1518,32 +3007,41 @@ def setup_mirrorscan(
             )
             opm_events.append(ao_mirror_update_event)
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # iterate over stage positions
         for pos_idx in range(n_stage_positions):
+            ran_z_grid = False
+            if (
+                use_per_z_ao_grid
+                and pos_idx in ao_z_group_at_position
+                and should_run_ao_grid_z_level(ao_mode, time_idx)
+            ):
+                z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                append_ao_grid_z_event(
+                    opm_events,
+                    ao_grid_event,
+                    stage_positions,
+                    position_indices,
+                    ao_output_dir,
+                    time_idx=time_idx,
+                    z_idx=z_idx,
+                )
+                ran_z_grid = True
+
             # Move stage to position
-            if need_to_setup_stage and pos_idx != 0:
+            if (need_to_setup_stage and pos_idx != 0) or ran_z_grid:
                 stage_event = create_stage_event(stage_positions[pos_idx])
                 opm_events.append(stage_event)
 
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
             # Create mirror state update events for 'start' and 'time-point' ao modes
-            if (
-                ("start" in ao_mode)
-                or (ao_mode == "at timepoints")
-                and (time_interval > 0)
+            if ("start" in ao_mode) or ao_mode in (
+                "at timepoints",
+                "grid at timepoints",
             ):
-                if "grid" in ao_mode:
-                    current_ao_event = MDAEvent(**ao_grid_event.model_dump())
-                    current_ao_event.action.data["AO"]["apply_ao_map"] = True
-                    current_ao_event.action.data["AO"]["pos_idx"] = pos_idx
-                else:
-                    current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
-                    current_ao_event.action.data["AO"]["apply_existing"] = True
-                    current_ao_event.action.data["AO"]["pos_idx"] = 0
-                opm_events.append(current_ao_event)
+                ao_scheduler.append_position_update(opm_events, pos_idx)
 
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
             # Create 'xyz' optimization events
             if "xyz" in o2o3_mode:
                 opm_events.append(o2o3_event)
@@ -1553,162 +3051,142 @@ def setup_mirrorscan(
                 if time_idx == 0:
                     current_ao_dir = ao_output_dir / Path(f"pos_{pos_idx}_ao_results")
                     current_ao_dir.mkdir(exist_ok=True)
-                    current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                    current_ao_event = clone_event(ao_optimize_event)
                     current_ao_event.action.data["AO"]["output_path"] = current_ao_dir
                     current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                     current_ao_event.action.data["AO"]["apply_existing"] = False
                     opm_events.append(current_ao_event)
 
                 # Update the mirror state for at each position for all time-points
-                current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                current_ao_event = clone_event(ao_optimize_event)
                 current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                 current_ao_event.action.data["AO"]["apply_existing"] = True
                 opm_events.append(current_ao_event)
 
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
             # Handle acquiring images
-            #----------------------------------------------------------------#
+            # ----------------------------------------------------------------#
 
             if interleaved_acq:
                 if time_idx == 0:
                     # Update daq state to sequence all channels
-                    opm_events.append(MDAEvent(**daq_event.model_dump()))
+                    opm_events.append(clone_event(daq_event))
                 if need_to_setup_daq:
-                    opm_events.append(MDAEvent(**daq_event.model_dump()))
+                    opm_events.append(clone_event(daq_event))
 
-                # Create image event for current t / p / c / scan idx
-                for scan_idx in range(n_scan_steps):
-                    current_chan_idx = 0
-                    for chan_idx, chan_bool in enumerate(channel_states):
-                        if chan_bool:
-                            image_event = MDAEvent(
-                                index=mappingproxy(
-                                    {
-                                        "t": time_idx,
-                                        "p": pos_idx,
-                                        "c": current_chan_idx,
-                                        "z": scan_idx,
-                                    }
-                                ),
-                                metadata=populate_opm_metadata(
-                                    daq_mode=scan_mode,
-                                    image_mirror_range_um=scan_range_um,
-                                    mirror_step=scan_step_um,
-                                    channel_states=channel_states,
-                                    channel_exposures_ms=channel_exposures_ms,
-                                    laser_powers=channel_powers,
-                                    interleaved=interleaved_acq,
-                                    blanking=laser_blanking,
-                                    current_channel=channel_names[chan_idx],
-                                    exposure_ms=channel_exposures_ms[chan_idx],
-                                    camera_center_x=camera_center_x,
-                                    camera_center_y=camera_center_y,
-                                    camera_crop_x=camera_crop_x,
-                                    camera_crop_y=camera_crop_y,
-                                    offset=offset,
-                                    e_to_ADU=e_to_ADU,
-                                    angle_deg=config["OPM"]["angle_deg"],
-                                    camera_Zstage_orientation=config["OPM"][
-                                        "camera_Zstage_orientation"
-                                    ],
-                                    camera_XYstage_orientation=config["OPM"][
-                                        "camera_XYstage_orientation"
-                                    ],
-                                    camera_mirror_orientation=config["OPM"][
-                                        "camera_mirror_orientation"
-                                    ],
-                                    stage_position=stage_positions[pos_idx],
-                                ),
-                            )
-                            opm_events.append(image_event)
-                            current_chan_idx += 1
+            local_axis_order = ("z", "c") if interleaved_acq else ("c", "z")
+            active_daq_channel: int | None = None
+            active_daq_settings = (
+                channel_states,
+                channel_powers,
+                channel_exposures_ms,
+            )
+            for planned_event in iter_planned_image_events(
+                {"c": n_active_channels, "z": n_scan_steps}, local_axis_order
+            ):
+                current_chan_idx = planned_event.index["c"]
+                scan_idx = planned_event.index["z"]
+                chan_idx = active_channel_indices[current_chan_idx]
+                image_channel_states = channel_states
+                image_channel_powers = channel_powers
+                image_channel_exposures = channel_exposures_ms
 
-            elif not interleaved_acq:
-                # iterate of active channels then acquire scan position
-                current_chan_idx = 0
-                for chan_idx, chan_bool in enumerate(channel_states):
-                    if chan_bool:
-                        # Need a custom daq event for each channel
-                        temp_channels = [False] * len(channel_states)
-                        temp_exposures = [0] * len(channel_exposures_ms)
-                        temp_powers = [0] * len(channel_powers)
-                        temp_channels[chan_idx] = True
-                        temp_exposures[chan_idx] = channel_exposures_ms[chan_idx]
-                        temp_powers[chan_idx] = channel_powers[chan_idx]
+                if not interleaved_acq and current_chan_idx != active_daq_channel:
+                    active_daq_settings = single_channel_settings(
+                        channel_states,
+                        channel_powers,
+                        channel_exposures_ms,
+                        chan_idx,
+                    )
+                    (
+                        image_channel_states,
+                        image_channel_powers,
+                        image_channel_exposures,
+                    ) = active_daq_settings
+                    current_daq_event = clone_event(daq_event)
+                    current_daq_event.action.data["DAQ"]["channel_states"] = (
+                        image_channel_states
+                    )
+                    current_daq_event.action.data["DAQ"]["channel_powers"] = (
+                        image_channel_powers
+                    )
+                    current_daq_event.action.data["Camera"]["exposure_channels"] = (
+                        image_channel_exposures
+                    )
+                    opm_events.append(current_daq_event)
+                    active_daq_channel = current_chan_idx
+                elif not interleaved_acq:
+                    (
+                        image_channel_states,
+                        image_channel_powers,
+                        image_channel_exposures,
+                    ) = active_daq_settings
 
-                        # Create daq event for a single channel
-                        current_daq_event = MDAEvent(**daq_event.model_dump())
-                        current_daq_event.action.data["DAQ"]["channel_states"] = (
-                            temp_channels
-                        )
-                        current_daq_event.action.data["DAQ"]["channel_powers"] = (
-                            temp_powers
-                        )
-                        current_daq_event.action.data["Camera"]["exposure_channels"] = (
-                            temp_exposures
-                        )
-                        opm_events.append(current_daq_event)
+                image_event = create_opm_image_event(
+                    index={
+                        "t": time_idx,
+                        "p": pos_idx,
+                        "c": current_chan_idx,
+                        "z": scan_idx,
+                    },
+                    config=config,
+                    stage_position=stage_positions[pos_idx],
+                    daq_mode=scan_mode,
+                    image_mirror_range_um=scan_range_um,
+                    mirror_step=scan_step_um,
+                    channel_states=image_channel_states,
+                    channel_exposures_ms=image_channel_exposures,
+                    laser_powers=image_channel_powers,
+                    interleaved=interleaved_acq,
+                    blanking=laser_blanking,
+                    current_channel=channel_names[chan_idx],
+                    exposure_ms=channel_exposures_ms[chan_idx],
+                    camera_center_x=camera_center_x,
+                    camera_center_y=camera_center_y,
+                    camera_crop_x=camera_crop_x,
+                    camera_crop_y=camera_crop_y,
+                    offset=offset,
+                    e_to_ADU=e_to_ADU,
+                )
+                opm_events.append(image_event)
 
-                        # now acquire mirror scan with a single channel
-                        # Create image event for current t / p / c / scan idx
-                        for scan_idx in range(n_scan_steps):
-                            image_event = MDAEvent(
-                                index=mappingproxy(
-                                    {
-                                        "t": time_idx,
-                                        "p": pos_idx,
-                                        "c": current_chan_idx,
-                                        "z": scan_idx,
-                                    }
-                                ),
-                                metadata=populate_opm_metadata(
-                                    daq_mode=scan_mode,
-                                    image_mirror_range_um=scan_range_um,
-                                    mirror_step=scan_step_um,
-                                    channel_states=temp_channels,
-                                    channel_exposures_ms=temp_exposures,
-                                    laser_powers=temp_powers,
-                                    interleaved=interleaved_acq,
-                                    blanking=laser_blanking,
-                                    current_channel=channel_names[chan_idx],
-                                    exposure_ms=channel_exposures_ms[chan_idx],
-                                    camera_center_x=camera_center_x,
-                                    camera_center_y=camera_center_y,
-                                    camera_crop_x=camera_crop_x,
-                                    camera_crop_y=camera_crop_y,
-                                    offset=offset,
-                                    e_to_ADU=e_to_ADU,
-                                    angle_deg=config["OPM"]["angle_deg"],
-                                    camera_Zstage_orientation=config["OPM"][
-                                        "camera_Zstage_orientation"
-                                    ],
-                                    camera_XYstage_orientation=config["OPM"][
-                                        "camera_XYstage_orientation"
-                                    ],
-                                    camera_mirror_orientation=config["OPM"][
-                                        "camera_mirror_orientation"
-                                    ],
-                                    stage_position=stage_positions[pos_idx],
-                                ),
-                            )
-                            opm_events.append(image_event)
-                            current_chan_idx += 1
-    print(f"Total number of events: {len(opm_events)}")
-    # Check if path ends if .zarr. If so, use our OutputHandler
-    if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-        indice_sizes = {
-            "t": int(np.maximum(1, n_time_steps)),
-            "p": int(np.maximum(1, n_stage_positions)),
-            "c": int(np.maximum(1, n_active_channels)),
-            "z": int(np.maximum(1, n_scan_steps)),
-        }
-        handler = OPMMirrorHandler(
-            path=Path(output), indice_sizes=indice_sizes, delete_existing=True
+        apply_timepoint_timing(
+            opm_events,
+            timepoint_start_index,
+            time_idx,
+            float(time_interval),
         )
-        info("HANDLER INDICES", f"{indice_sizes}")
-        return opm_events, handler
-    else:
-        raise Exception("Defualt handler selected, modify save path!")
+
+    # Check if path ends if .zarr. If so, use our OutputHandler
+    indice_sizes = {
+        "t": int(np.maximum(1, n_time_steps)),
+        "p": int(np.maximum(1, n_stage_positions)),
+        "c": int(np.maximum(1, n_active_channels)),
+        "z": int(np.maximum(1, n_scan_steps)),
+    }
+    camera_acquisition_order = (
+        ("t", "p", "z", "c") if interleaved_acq else ("t", "p", "c", "z")
+    )
+    use_temporal_chunks = (
+        n_time_steps > 100
+        and n_active_channels == 1
+        and 5 <= n_scan_steps <= 10
+    )
+    return opm_events, create_zarr_handler(
+        output,
+        indice_sizes,
+        acquisition_order=camera_acquisition_order,
+        events=opm_events,
+        config=config,
+        spatial_plan=spatial_plan,
+        max_time_chunk_size=16 if use_temporal_chunks else 1,
+        time_chunk_concurrency=(
+            n_stage_positions * n_active_channels * n_scan_steps
+            if use_temporal_chunks
+            else None
+        ),
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+    )
 
 
 def setup_stagescan(
@@ -1716,12 +3194,12 @@ def setup_stagescan(
     config: dict,
     sequence: MDASequence,
     output: Path,
-) -> list[MDAEvent]:
-    """Setup an OPM stage scan acquisition
+) -> tuple[list[MDAEvent], OpmDataHandler]:
+    """Set up an OPM stage-scan acquisition.
 
     TODO: add logic to allow for non-interleaved acquisitions
 
-    t / p / c / z
+    t / p / z / c
 
     Parameters
     ----------
@@ -1736,118 +3214,109 @@ def setup_stagescan(
 
     Returns
     -------
-    list[MDAEvent]
-        _description_
-    Handler
-        OPM zarr file saving handler
-    """
+    tuple[list[MDAEvent], OpmDataHandler]
+        Camera acquisition events and TensorStore-backed output handler.
 
+    Raises
+    ------
+    Exception
+        If neither grid nor position plans are configured.
+    ValueError
+        If spatial plans conflict, exported positions cannot define a scan, or the
+        transposed grid does not define a nonzero physical X scan span.
+    """
     AOmirror_setup = AOMirror.instance()
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile acquisition settings from configuration
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Get the acquisition modes
-    opm_mode = config["acq_config"]["opm_mode"]
-    ao_mode = config["acq_config"]["AO"]["ao_mode"]
-    o2o3_mode = config["acq_config"]["O2O3-autofocus"]["o2o3_mode"]
-    fluidics_mode = config["acq_config"]["fluidics"]
+    acq_config = config["acq_config"]
+    daq_config = acq_config["DAQ"]
+    positions_config = acq_config["Positions"]
+    stage_config = acq_config["stage_scan"]
+    ao_mode = normalize_ao_mode(acq_config["AO"]["ao_mode"])
+    o2o3_mode = normalize_autofocus_mode(acq_config["o2o3_mode"])
+    fluidics_mode = acq_config["fluidics"]
 
     # Get the camera crop values
-    camera_crop_y = int(config["acq_config"]["camera_roi"]["crop_y"])
-    camera_crop_x = int(config["acq_config"]["camera_roi"]["crop_x"])
-    camera_center_y = int(config["acq_config"]["camera_roi"]["center_y"])
-    camera_center_x = int(config["acq_config"]["camera_roi"]["center_x"])
+    camera_crop_y = int(acq_config["camera_roi"]["crop_y"])
+    camera_crop_x = int(acq_config["camera_roi"]["crop_x"])
+    camera_center_y = int(acq_config["camera_roi"]["center_y"])
+    camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
-    # Get pixel size and deskew Y-scale factor
+    # Get pixel size and the oblique camera contribution in laboratory axes.
     pixel_size_um = np.round(float(mmc.getPixelSizeUm()), 3)  # unit: um
-    opm_angle_scale = np.sin((np.pi / 180.0) * float(config["OPM"]["angle_deg"]))
+    angle_deg = float(config["OPM"]["angle_deg"])
+    camera_scan_extent_um, camera_z_extent_um = oblique_camera_extents_um(
+        camera_crop_y, pixel_size_um, angle_deg
+    )
 
     # Get the stage scan range, coverslip slope, and maximum CS dz change
-    coverslip_slope = float(config["acq_config"]["stage_scan"]["coverslip_slope_x"])
-    scan_axis_max_range = float(
-        config["acq_config"]["stage_scan"]["stage_scan_range_um"]
-    )
-    coverslip_max_dz = float(config["acq_config"]["stage_scan"]["coverslip_max_dz"])
+    coverslip_slope = float(positions_config["coverslip_slope_x"])
+    coverslip_slope_y = float(positions_config["coverslip_slope_y"])
+    scan_axis_max_range = float(stage_config["max_stage_scan_range_um"])
+    coverslip_max_dz = float(positions_config["coverslip_max_dz"])
 
     # Get the tile overlap settings
-    tile_axis_overlap = float(config["acq_config"]["stage_scan"]["tile_axis_overlap"])
-    scan_axis_step_um = float(config["acq_config"]["stage_scan"]["scan_step_size_um"])
-    scan_tile_overlap_um = camera_crop_y * opm_angle_scale * pixel_size_um + float(
-        config["acq_config"]["stage_scan"]["scan_axis_overlap_um"]
-    )
-    scan_tile_overlap_mm = scan_tile_overlap_um / 1000.0
+    tile_axis_overlap = float(positions_config["tile_axis_overlap"])
+    scan_axis_step_um = float(daq_config["scan_axis_step_um"])
+    configured_scan_overlap_um = float(positions_config["scan_axis_overlap_um"])
 
     # Get the excess start / end
-    excess_start_images = int(config["acq_config"]["stage_scan"]["excess_start_frames"])
-    excess_end_images = int(config["acq_config"]["stage_scan"]["excess_end_frames"])
+    excess_start_images = int(stage_config["excess_start_frames"])
+    excess_end_images = int(stage_config["excess_end_frames"])
 
-    #----------------------------------------------------------------#
-    # Get channel settings
-    laser_blanking = config["acq_config"][opm_mode + "_scan"]["laser_blanking"]
-    channel_states = config["acq_config"][opm_mode + "_scan"]["channel_states"]
-    channel_powers = config["acq_config"][opm_mode + "_scan"]["channel_powers"]
-    channel_exposures_ms = config["acq_config"][opm_mode + "_scan"][
-        "channel_exposures_ms"
-    ]
-    channel_names = config["OPM"]["channel_ids"]
-
-    n_active_channels = sum(channel_states)
-    active_channel_names = [_n for _, _n in zip(channel_states, channel_names) if _]
-    active_channel_exps = []
-    for ii, ch_state in enumerate(channel_states):
-        if ch_state:
-            active_channel_exps.append(np.round(channel_exposures_ms[ii], 2))
-        else:
-            # set not used channel powers to 0
-            channel_powers[ii] = 0
-
-    # Interleave only available if all channels have the same exposure.
-    if len(set(active_channel_exps)) == 1:
-        interleaved_acq = True
-    else:
-        interleaved_acq = False
-        # TODO
-
-    if sum(channel_powers) == 0:
-        raise Exception("All lasers set to 0!")
+    # ----------------------------------------------------------------#
+    # Get channel and camera metadata settings
+    laser_blanking = daq_config["laser_blanking"]
+    channel_plan = get_channel_plan(config, "DAQ", round_active_exposures=True)
+    channel_states = channel_plan["states"]
+    channel_powers = channel_plan["powers"]
+    channel_exposures_ms = channel_plan["exposures_ms"]
+    active_channel_indices = channel_plan["active_indices"]
+    n_active_channels = channel_plan["active_count"]
+    active_channel_names = channel_plan["active_names"]
+    active_channel_exps = channel_plan["active_exposures_ms"]
+    interleaved_acq = channel_plan["interleaved"]
+    if not interleaved_acq:
+        warning(
+            "STAGE SCAN CHANNELS",
+            "Stage scan currently assumes interleaved acquisition.",
+            "Active channels do not all have the same exposure.",
+        )
 
     # Get the exposure, assumes equal exposures
     exposure_ms = np.round(active_channel_exps[0], 2)
     exposure_s = np.round(exposure_ms / 1000.0, 2)
 
-    #----------------------------------------------------------------#
-    # try to get camera conversion factor information
-    try:
-        offset = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR OFFSET"
-        )
-        e_to_ADU = mmc.getProperty(
-            config["Camera"]["camera_id"], "CONVERSION FACTOR COEFF"
-        )
-    except Exception:
-        offset = 0.0
-        e_to_ADU = 1.0
+    offset, e_to_ADU = get_camera_conversion(mmc, config)
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Compile mda acquisition settings from active tabs
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
 
     # Split apart sequence dictionary
-    sequence_dict = json.loads(sequence.model_dump_json())
-    mda_grid_plan = sequence_dict["grid_plan"]
-    mda_positions_plan = sequence_dict["stage_positions"]
-    mda_time_plan = sequence_dict["time_plan"]
-    mda_z_plan = sequence_dict["z_plan"]
+    sequence_plans = get_sequence_plans(sequence)
+    mda_grid_plan = sequence_plans["grid"]
+    mda_positions_plan = sequence_plans["positions"]
+    mda_time_plan = sequence_plans["time"]
+    mda_z_plan = sequence_plans["z"]
 
     if (mda_grid_plan is None) and (mda_positions_plan is None):
         raise Exception("Must select MDA grid or positions plan for stage scanning")
 
-    #----------------------------------------------------------------#
-    # Create custom action data
-    #----------------------------------------------------------------#
+    if mda_grid_plan is not None and position_plan_has_regions(mda_positions_plan):
+        raise ValueError(
+            "A top-level MDA grid cannot be combined with Stage Explorer ROI "
+            "regions. Re-export the ROIs or disable the Grid tab."
+        )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
+    # Create custom action data
+    # ----------------------------------------------------------------#
+
+    # ----------------------------------------------------------------#
     # Create DAQ event
     daq_event = create_daq_event(
         mode="stage",
@@ -1860,8 +3329,10 @@ def setup_stagescan(
         laser_blanking=laser_blanking,
     )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the AO event data
+    ao_optimize_event = None
+    ao_grid_event = None
     if ao_mode != "none":
         if "grid" in ao_mode:
             ao_output_dir = output.parent / Path(f"{output.stem}_ao_grid_results")
@@ -1872,26 +3343,27 @@ def setup_stagescan(
             ao_output_dir.mkdir(exist_ok=True)
             ao_optimize_event = create_ao_optimize_event(config, ao_output_dir)
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the o2o3 AF event data
     if o2o3_mode != "none":
-        af_camera_crop_y = config["acq_config"]["O2O3-autofocus"]["roi_crop_y"]
+        af_camera_crop_y = config["O2O3-autofocus"]["crop_y"]
         o2o3_event = create_o2o3_autofocus_event(
             exposure_ms=config["O2O3-autofocus"]["exposure_ms"],
             camera_center=[camera_center_x, camera_center_y],
             camera_crop=[camera_crop_x, af_camera_crop_y],
+            camera_id=config["Camera"]["camera_id"],
         )
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create the fluidics event data
     if fluidics_mode != "none":
         fluidics_rounds = int(fluidics_mode)
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Compile mda positions from active tabs, and config
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Define the time indexing
     if fluidics_mode != "none":
         n_time_steps = fluidics_rounds
@@ -1903,22 +3375,63 @@ def setup_stagescan(
         n_time_steps = 1
         time_interval = 0
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Generate xyz stage positions
     stage_positions = []
+    region_coverslip_plane: CoverslipPlane | None = None
 
     if mda_grid_plan is None:
-        info(
-            "NO GRID PLAN",
-            "Stage scanning requires an MDA grid plan.",
-        )
-        return None, None
+        spatial_items = parse_mda_position_plan(mda_positions_plan)
+        regions = [
+            item for item in spatial_items if isinstance(item, StageExplorerRegion)
+        ]
+        literal_positions = [
+            item for item in spatial_items if isinstance(item, LiteralStagePosition)
+        ]
+        if literal_positions:
+            raise ValueError(
+                "Stage mode requires ROI regions because literal positions do not "
+                "define a physical X scan start and end. In Stage Explorer, export "
+                "using 'ROIs with Grid Sub-Sequence'."
+            )
+        if len(regions) != 1:
+            raise ValueError(
+                "Stage mode currently supports exactly one rectangular Stage Explorer "
+                f"ROI per acquisition; received {len(regions)}."
+            )
 
-    # grab grid plan extents
-    min_y_pos = mda_grid_plan["bottom"]
-    max_y_pos = mda_grid_plan["top"]
-    min_x_pos = mda_grid_plan["left"]
-    max_x_pos = mda_grid_plan["right"]
+        region = regions[0]
+        region_coverslip_plane = region.coverslip_plane
+        # Feed the Stage Explorer region into the established transposed-grid stage
+        # planner.  Only this adapter is new: all scan tiling, physical-X ASI setup,
+        # exposure calculation, and speed restoration below remain unchanged.
+        mda_grid_plan = {
+            "bottom": region.x_min,
+            "top": region.x_max,
+            "left": region.y_min,
+            "right": region.y_max,
+        }
+        if mda_z_plan is not None:
+            raise ValueError(
+                "A top-level MDA Z plan cannot be combined with a Stage Explorer ROI "
+                "in stage mode. Export the ROI at the required Z position or disable "
+                "the Z tab."
+            )
+        mda_z_plan = {"bottom": region.z, "top": region.z}
+
+    # The application maps the camera-oriented grid controls onto this
+    # microscope's transposed stage axes: top/bottom stores physical X and
+    # left/right stores physical Y.  ASI still scans its physical first axis.
+    grid_bottom = float(mda_grid_plan["bottom"])
+    grid_top = float(mda_grid_plan["top"])
+    grid_left = float(mda_grid_plan["left"])
+    grid_right = float(mda_grid_plan["right"])
+    range_x_um = np.round(np.abs(grid_top - grid_bottom), 2)
+    range_y_um = np.round(np.abs(grid_right - grid_left), 2)
+    min_x_pos = min(grid_bottom, grid_top)
+    max_x_pos = max(grid_bottom, grid_top)
+    min_y_pos = min(grid_left, grid_right)
+    max_y_pos = max(grid_left, grid_right)
 
     if mda_z_plan is not None:
         max_z_pos = float(mda_z_plan["top"])
@@ -1927,9 +3440,20 @@ def setup_stagescan(
         min_z_pos = mmc.getZPosition()
         max_z_pos = mmc.getZPosition()
 
-    # Set grid axes ranges
-    range_x_um = np.round(np.abs(max_x_pos - min_x_pos), 2)
-    range_y_um = np.round(np.abs(max_y_pos - min_y_pos), 2)
+    if region_coverslip_plane is not None:
+        coverslip_slope = region_coverslip_plane.slope_x
+        coverslip_slope_y = region_coverslip_plane.slope_y
+        anchor_z = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
+        min_z_pos = anchor_z
+        max_z_pos = anchor_z
+
+    if range_x_um <= 0:
+        raise ValueError(
+            "Stage scan range is zero. On this microscope, mark distinct "
+            "top and bottom grid bounds to define the physical X scan span."
+        )
+
+    # Set the remaining grid-axis range
     range_z_um = np.round(np.abs(max_z_pos - min_z_pos), 2)
 
     # Define coverslip bounds, to offset Z positions
@@ -1937,11 +3461,9 @@ def setup_stagescan(
     cs_max_pos = cs_min_pos + range_x_um * coverslip_slope
     cs_range_um = np.round(np.abs(cs_max_pos - cs_min_pos), 2)
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Calculate tile steps / range
-    z_axis_step_max = (
-        camera_crop_y * pixel_size_um * opm_angle_scale * (1 - tile_axis_overlap)
-    )
+    z_axis_step_max = camera_z_extent_um * (1 - tile_axis_overlap)
     tile_axis_step_max = camera_crop_x * pixel_size_um * (1 - tile_axis_overlap)
 
     # Check if the coverslip slope determines the max scan range
@@ -1953,75 +3475,82 @@ def setup_stagescan(
     # Correct directions for stage moves
     if min_z_pos > max_z_pos:
         z_axis_step_max *= -1
-    if min_x_pos > max_x_pos:
-        min_x_pos, max_x_pos = max_x_pos, min_x_pos
-
     debug(
-        "XYZ STAGE SCAN POSITION SETTINGS",
-        f"Scan start: {min_x_pos}",
-        f"Scan end: {max_x_pos}",
-        f"Tile start: {min_y_pos}",
-        f"Tile end: {max_y_pos}",
-        f"Z position min: {min_z_pos}",
-        f"Z position max: {max_z_pos}",
-        f"Coverslip slope: {coverslip_slope}",
-        f"Coverslip low: {cs_min_pos}",
-        f"Coverslip high: {cs_max_pos}",
-        f"Max scan range (CS used?: {coverslip_slope != 0}): {scan_axis_max_range}",
-        enabled=DEBUGGING,
+        "XYZ STAGE SCAN POSITIONS",
+        f"native grid bounds (T/B/L/R): "
+        f"{grid_top}/{grid_bottom}/{grid_left}/{grid_right}",
+        f"scan start: {min_x_pos}",
+        f"scan end: {max_x_pos}",
+        f"tile start: {min_y_pos}",
+        f"tile end: {max_y_pos}",
+        f"z position min: {min_z_pos}",
+        f"z position max: {max_z_pos}",
+        f"coverslip slope (x/y): {coverslip_slope}/{coverslip_slope_y}",
+        f"coverslip low: {cs_min_pos}",
+        f"coverslip high: {cs_max_pos}",
+        f"max scan range (CS used? {coverslip_slope != 0}): {scan_axis_max_range}",
     )
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Calculate scan axis tile locations, units: mm and s
 
-    # Break scan range up using max scan range
-    if scan_axis_max_range >= range_x_um:
-        n_scan_positions = 1
-        scan_tile_length_um = range_x_um
-    else:
-        # Round up so that the scan length is never longer than the max scan range
-        n_scan_positions = int(np.ceil(range_x_um / (scan_axis_max_range)))
-        scan_tile_length_um = np.round(
-            (range_x_um / n_scan_positions)
-            + (n_scan_positions - 1) * (scan_tile_overlap_um / n_scan_positions),
-            2,
-        )
+    # Deskewing spreads every camera plane along laboratory X.  Preserve the
+    # requested fully sampled overlap by adding that scan-direction camera
+    # footprint to the raw trajectory overlap.
+    (
+        scan_axis_start_pos_um,
+        scan_axis_end_pos_um,
+        scan_tile_overlap_um,
+        camera_scan_overlap_um,
+    ) = split_stage_scan_bounds(
+        min_x_pos,
+        max_x_pos,
+        scan_axis_max_range,
+        configured_scan_overlap_um,
+        camera_crop_y,
+        pixel_size_um,
+        angle_deg,
+    )
+    n_scan_positions = len(scan_axis_start_pos_um)
+    scan_tile_length_um = float(scan_axis_end_pos_um[0] - scan_axis_start_pos_um[0])
     scan_axis_step_mm = scan_axis_step_um / 1000.0
-    scan_axis_start_mm = min_x_pos / 1000.0
-    scan_axis_end_mm = max_x_pos / 1000.0
-    scan_tile_length_mm = np.round(scan_tile_length_um / 1000.0, 2)
-
-    # Initialize scan position start/end arrays with the scan start / end values
-    scan_axis_start_pos_mm = np.full(n_scan_positions, scan_axis_start_mm)
-    scan_axis_end_pos_mm = np.full(n_scan_positions, scan_axis_end_mm)
-    for ii in range(n_scan_positions):
-        scan_axis_start_pos_mm[ii] = scan_axis_start_mm + ii * (
-            scan_tile_length_mm - scan_tile_overlap_mm
-        )
-        scan_axis_end_pos_mm[ii] = scan_axis_start_pos_mm[ii] + scan_tile_length_mm
-
-    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_mm, 2)
-    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_mm, 2)
+    # ASI positions are expressed in millimetres, but the grid and scan step are
+    # specified in micrometres.  Retain six decimal places here so converting to
+    # millimetres does not quantize coordinates to the previous 10 um increments.
+    scan_tile_length_mm = np.round(scan_tile_length_um / 1000.0, 6)
+    scan_axis_start_pos_mm = np.round(scan_axis_start_pos_um / 1000.0, 6)
+    scan_axis_end_pos_mm = np.round(scan_axis_end_pos_um / 1000.0, 6)
     scan_tile_length_w_overlap_mm = np.round(
-        np.abs(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0]), 2
+        np.abs(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0]), 6
     )
     scan_axis_positions = np.rint(
         scan_tile_length_w_overlap_mm / scan_axis_step_mm
     ).astype(int)
     scan_axis_speed = np.round(scan_axis_step_mm / exposure_s / n_active_channels, 5)
     scan_tile_sizes = [
-        np.round(np.abs(scan_axis_end_pos_mm[ii] - scan_axis_start_pos_mm[ii]), 2)
+        np.round(np.abs(scan_axis_end_pos_mm[ii] - scan_axis_start_pos_mm[ii]), 6)
         for ii in range(len(scan_axis_end_pos_mm))
     ]
     n_scan_axis_indices = (
         scan_axis_positions + int(excess_start_images) + int(excess_end_images)
     )
     # Check for scan speed actual settings
-    mmc.setProperty(mmc.getXYStageDevice(), "MotorSpeedX-S(mm/s)", scan_axis_speed)
-    mmc.waitForDevice(mmc.getXYStageDevice())
-    actual_speed_x = float(
-        mmc.getProperty(mmc.getXYStageDevice(), "MotorSpeedX-S(mm/s)")
-    )
+    xy_stage = mmc.getXYStageDevice()
+    if mmc.hasProperty(xy_stage, "MotorSpeedX-S(mm/s)"):
+        speed_property = "MotorSpeedX-S(mm/s)"
+        original_speed_x = mmc.getProperty(xy_stage, speed_property)
+        try:
+            mmc.setProperty(xy_stage, speed_property, scan_axis_speed)
+            mmc.waitForDevice(xy_stage)
+            actual_speed_x = float(mmc.getProperty(xy_stage, speed_property))
+        finally:
+            # Event generation must not leave the physical stage at scan speed.
+            # In particular, no MDA teardown occurs if planning later returns no
+            # events or raises an exception.
+            mmc.setProperty(xy_stage, speed_property, original_speed_x)
+            mmc.waitForDevice(xy_stage)
+    else:
+        actual_speed_x = float(scan_axis_speed)
     actual_exposure = np.round(
         scan_axis_step_mm / actual_speed_x / n_active_channels, 5
     )
@@ -2036,26 +3565,27 @@ def setup_stagescan(
     test_scan_length = scan_tile_length_mm == scan_tile_length_w_overlap_mm
     test_tile_sizes = np.allclose(scan_tile_sizes, scan_tile_sizes[0])
     debug(
-        "SCAN-AXIS CALCULATED PARAMETERS",
-        f"Number scan tiles: {n_scan_positions}",
-        f"Tile length um: {scan_tile_length_um}",
-        f"Tile overlap um: {scan_tile_overlap_um}",
-        f"Tile length mm: {scan_tile_length_mm}",
-        f"Tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
-        f"Does scan tile w/ overlap equal scan tile length?: {test_scan_length}",
-        f"Step size (mm): {scan_axis_step_mm}",
-        f"Exposure: {exposure_s}",
-        f"Number of active channels: {n_active_channels}",
-        f"Scan axis speed (mm/s): {scan_axis_speed}",
-        "Stage scan positions, units: mm",
-        f"Scan axis start positions: {scan_axis_start_pos_mm}.",
-        f"Scan axis end positions: {scan_axis_end_pos_mm}.",
-        f"Number of scan positions: {scan_axis_positions}",
-        f"Are all scan tiles the same size: {test_tile_sizes}",
-        enabled=DEBUGGING,
+        "SCAN AXIS CALCULATED PARAMETERS",
+        f"number scan tiles: {n_scan_positions}",
+        f"tile length um: {scan_tile_length_um}",
+        f"configured extra overlap um: {configured_scan_overlap_um}",
+        f"camera scan-direction footprint um: {camera_scan_overlap_um}",
+        f"effective trajectory overlap um: {scan_tile_overlap_um}",
+        f"tile length mm: {scan_tile_length_mm}",
+        f"tile length with overlap (mm): {scan_tile_length_w_overlap_mm}",
+        f"scan tile with overlap equals scan tile length: {test_scan_length}",
+        f"step size (mm): {scan_axis_step_mm}",
+        f"exposure: {exposure_s}",
+        f"number of active channels: {n_active_channels}",
+        f"scan axis speed (mm/s): {scan_axis_speed}",
+        "stage scan positions, units: mm",
+        f"scan axis start positions: {scan_axis_start_pos_mm}",
+        f"scan axis end positions: {scan_axis_end_pos_mm}",
+        f"number of scan positions: {scan_axis_positions}",
+        f"all scan tiles the same size: {test_tile_sizes}",
     )
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Generate tile axis positions
     n_tile_positions = int(np.ceil(range_y_um / tile_axis_step_max)) + 1
     tile_axis_positions = np.round(
@@ -2068,14 +3598,13 @@ def setup_stagescan(
 
     debug(
         "TILE AXIS POSITIONS",
-        "Tile axis positions units: um",
-        f"Tile axis positions: {tile_axis_positions}",
-        f"Num tile axis positions: {n_tile_positions}",
-        f"Tile axis step: {tile_axis_step}",
-        enabled=DEBUGGING,
+        "units: um",
+        f"tile axis positions: {tile_axis_positions}",
+        f"num tile axis positions: {n_tile_positions}",
+        f"tile axis step: {tile_axis_step}",
     )
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Generate z axis positions, ignoring coverslip slope
     n_z_positions = int(np.ceil(np.abs(range_z_um / z_axis_step_max))) + 1
     z_positions = np.round(np.linspace(min_z_pos, max_z_pos, n_z_positions), 2)
@@ -2089,79 +3618,100 @@ def setup_stagescan(
 
     debug(
         "Z AXIS POSITIONS",
-        "Z axis positions, units: um",
-        f"Z axis positions: {z_positions}",
-        f"Z axis range: {range_z_um} um",
-        f"Z axis step: {z_axis_step_um} um",
-        f"Num z axis positions: {n_z_positions}",
-        f"Z offset per x-scan-tile: {dz_per_scan_tile} um",
-        f"Z axis step max: {z_axis_step_max}",
-        enabled=DEBUGGING,
+        "units: um",
+        f"z axis positions: {z_positions}",
+        f"z axis range: {range_z_um} um",
+        f"z axis step: {z_axis_step_um} um",
+        f"num z axis positions: {n_z_positions}",
+        f"z offset per x-scan-tile: {dz_per_scan_tile} um",
+        f"z axis step max: {z_axis_step_max}",
     )
 
-    #--------------------------------------------------------------------#
+    # --------------------------------------------------------------------#
     # Generate stage positions
-    n_stage_positions = n_scan_positions * n_tile_positions * n_z_positions
-    stage_positions = []
-    for z_idx in range(n_z_positions):
-        for scan_idx in range(n_scan_positions):
-            for tile_idx in range(n_tile_positions):
-                stage_positions.append(
-                    {
-                        "x": float(
-                            np.round(scan_axis_start_pos_mm[scan_idx] * 1000, 2)
-                        ),
-                        "y": float(np.round(tile_axis_positions[tile_idx], 2)),
-                        "z": float(
-                            np.round(
-                                z_positions[z_idx] + dz_per_scan_tile * scan_idx, 2
-                            )
-                        ),
-                    }
+    stage_positions = compose_stage_positions(
+        scan_axis_start_pos_mm * 1000,
+        tile_axis_positions,
+        z_positions,
+        z_offset_per_scan_um=dz_per_scan_tile,
+    )
+    if region_coverslip_plane is not None:
+        scan_reference_z_um = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
+        for position in stage_positions:
+            position["z"] = float(
+                np.round(
+                    region_coverslip_plane.z_at(position["x"], position["y"]), 2
                 )
+            )
+            position["scan_reference_z_um"] = float(scan_reference_z_um)
+    elif coverslip_slope_y != 0:
+        for position in stage_positions:
+            position["z"] = float(
+                np.round(
+                    position["z"]
+                    + coverslip_slope_y * (position["y"] - min_y_pos),
+                    2,
+                )
+            )
+
+    stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
+        stage_positions,
+        config=config,
+        camera_crop_y=camera_crop_y,
+        pixel_size_um=pixel_size_um,
+        mda_z_plan=sequence_plans["z"],
+    )
+    n_stage_positions = len(stage_positions)
+    spatial_plan = resolved_spatial_plan_summary(
+        mda_positions_plan=mda_positions_plan,
+        stage_positions=stage_positions,
+        coverslip_slope_x=float(positions_config["coverslip_slope_x"]),
+        coverslip_slope_y=float(positions_config["coverslip_slope_y"]),
+        ao_mode=ao_mode,
+        config=config,
+    )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
         ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
+    ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
+    ao_z_groups = stage_position_z_groups(stage_positions)
+    use_per_z_ao_grid = "grid" in ao_mode and len(ao_z_groups) > 1
+    ao_z_group_at_position = {
+        position_indices[0]: (z_idx, position_indices)
+        for z_idx, position_indices in enumerate(ao_z_groups)
+    }
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Create MDA event structure
-    #----------------------------------------------------------------#
-    need_to_setup_stage = True
+    # ----------------------------------------------------------------#
     opm_events: list[MDAEvent] = []
 
-    #----------------------------------------------------------------#
+    # ----------------------------------------------------------------#
     # Setup Nt / Np / Nc / Nz mirror scan acquisition
     debug(
-        "ACQUISITION SHAPE VALUES",
+        "STAGE SCAN ACQUISITION SHAPE",
+        f"sample depth levels (um): {sample_depths_um.tolist()}",
         f"timepoints / interval: {n_time_steps} / {time_interval}",
-        f"Stage positions: {n_stage_positions}",
-        f"Scan positions: {n_scan_axis_indices}",
-        f"Active channels: {n_active_channels}",
-        f"Excess frames (S/E): {excess_start_images}/{excess_end_images}",
+        f"stage positions: {n_stage_positions}",
+        f"scan positions: {n_scan_axis_indices}",
+        f"active channels: {n_active_channels}",
+        f"excess frames (S/E): {excess_start_images}/{excess_end_images}",
         f"AO frequency: {ao_mode}",
         f"o2o3 focus frequency: {o2o3_mode}",
-        enabled=DEBUGGING,
     )
 
     for time_idx in trange(n_time_steps, desc="Timepoints:", leave=True):
-        #--------------------------------------------------------------------#
+        timepoint_start_index = len(opm_events)
+        # --------------------------------------------------------------------#
         # Run fluidics starting at the second timepoint if present
         if fluidics_mode != "none" and time_idx != 0:
             current_fluidics_event = create_fluidics_event(fluidics_rounds, time_idx)
             opm_events.append(current_fluidics_event)
 
-        #--------------------------------------------------------------------#
-        # Create pause events starting at the second timepoint for timelapse acq.
-        elif (mda_time_plan is not None) and (time_idx > 0) and (time_interval > 0):
-            current_timepoint_event = create_timelapse_event(
-                time_interval, n_time_steps, time_idx
-            )
-            opm_events.append(current_timepoint_event)
-
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Create events to run before acquisition
         if time_idx == 0:
             # move stage to starting position
@@ -2171,34 +3721,25 @@ def setup_stagescan(
             # Create 'start' optimization events
             if "start" in o2o3_mode:
                 opm_events.append(o2o3_event)
-            if "start" in ao_mode:
+            if "start" in ao_mode and not use_per_z_ao_grid:
                 if "grid" in ao_mode:
-                    curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                    opm_events.append(ao_grid_event)
+                    curr_ao_grid_event = clone_event(ao_grid_event)
+                    opm_events.append(curr_ao_grid_event)
                 else:
-                    curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
+                    curr_ao_opt_event = clone_event(ao_optimize_event)
                     opm_events.append(curr_ao_opt_event)
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # Create events to run each timepoint
         if o2o3_mode == "at timepoints":
             opm_events.append(o2o3_event)
 
-        if ao_mode == "at timepoints":
-            if "grid" in ao_mode:
-                current_ao_dir = ao_output_dir / Path(f"time_{time_idx}_ao_grid")
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_grid_event = MDAEvent(**ao_grid_event.model_dump())
-                curr_ao_grid_event.action.data["AO"]["output_path"] = current_ao_dir
-                curr_ao_grid_event.action.data["AO"]["time_idx"] = time_idx
-                opm_events.append(curr_ao_grid_event)
-            else:
-                current_ao_dir = ao_output_dir / Path(f"time_{time_idx}_ao_optimize")
-                current_ao_dir.mkdir(exist_ok=True)
-                curr_ao_opt_event = MDAEvent(**ao_optimize_event.model_dump())
-                curr_ao_opt_event.action.data["AO"]["output_path"] = current_ao_dir
-                curr_ao_opt_event.action.data["AO"]["time_idx"] = time_idx
-                opm_events.append(curr_ao_opt_event)
+        if not (use_per_z_ao_grid and ao_mode == "grid at timepoints"):
+            ao_scheduler.append_timepoint_event(
+                opm_events,
+                time_idx,
+                ao_output_dir if ao_mode != "none" else output.parent,
+            )
 
         if "none" in ao_mode and (time_interval > 0):
             ao_mirror_update_event = create_ao_mirror_update_event(
@@ -2206,40 +3747,52 @@ def setup_stagescan(
             )
             opm_events.append(ao_mirror_update_event)
 
-        #--------------------------------------------------------------------#
+        # --------------------------------------------------------------------#
         # iterate over stage positions
         pos_idx = 0
-        for z_idx in trange(n_z_positions, desc="Z-axis-tiles:", leave=False):
+        for z_idx in trange(
+            n_z_positions * len(sample_depths_um),
+            desc="Z-axis-tiles:",
+            leave=False,
+        ):
             for scan_idx in trange(
                 n_scan_positions, desc="Scan-axis-tiles:", leave=False
             ):
                 for tile_idx in trange(
                     n_tile_positions, desc="Tile-axis-tiles:", leave=False
                 ):
-                    #----------------------------------------------------------------#
+                    if (
+                        use_per_z_ao_grid
+                        and pos_idx in ao_z_group_at_position
+                        and should_run_ao_grid_z_level(ao_mode, time_idx)
+                    ):
+                        ao_z_idx, position_indices = ao_z_group_at_position[pos_idx]
+                        append_ao_grid_z_event(
+                            opm_events,
+                            ao_grid_event,
+                            stage_positions,
+                            position_indices,
+                            ao_output_dir,
+                            time_idx=time_idx,
+                            z_idx=ao_z_idx,
+                        )
+
+                    # ----------------------------------------------------------------#
                     # Move stage to position
                     current_stage_event = create_stage_event(stage_positions[pos_idx])
                     opm_events.append(current_stage_event)
 
-                    #----------------------------------------------------------------#
+                    # ----------------------------------------------------------------#
                     # Create mirror state update events for 'start' and 'time-point' AO
                     # NOTE: Update mirror every time-point and stage-position
                     # NOTE: for single position optimization, only refer to pos_idx==0,
                     #       Currently not filling the entire position array!
-                    if ("start" in ao_mode) or (ao_mode == "at timepoints"):
-                        if "grid" in ao_mode:
-                            current_ao_event = MDAEvent(**ao_grid_event.model_dump())
-                            current_ao_event.action.data["AO"]["apply_ao_map"] = True
-                            current_ao_event.action.data["AO"]["pos_idx"] = pos_idx
-                        else:
-                            current_ao_event = MDAEvent(
-                                **ao_optimize_event.model_dump()
-                            )
-                            current_ao_event.action.data["AO"]["apply_existing"] = True
-                            current_ao_event.action.data["AO"]["pos_idx"] = 0
-                        opm_events.append(current_ao_event)
+                    if ("start" in ao_mode) or (
+                        ao_mode in ("at timepoints", "grid at timepoints")
+                    ):
+                        ao_scheduler.append_position_update(opm_events, pos_idx)
 
-                    #----------------------------------------------------------------#
+                    # ----------------------------------------------------------------#
                     # Create 'xyz' optimization events
                     if "xyz" in o2o3_mode:
                         opm_events.append(o2o3_event)
@@ -2251,9 +3804,7 @@ def setup_stagescan(
                                 f"pos_{pos_idx}_ao_results"
                             )
                             current_ao_dir.mkdir(exist_ok=True)
-                            current_ao_event = MDAEvent(
-                                **ao_optimize_event.model_dump()
-                            )
+                            current_ao_event = clone_event(ao_optimize_event)
                             current_ao_event.action.data["AO"]["output_path"] = (
                                 current_ao_dir
                             )
@@ -2262,115 +3813,174 @@ def setup_stagescan(
                             opm_events.append(current_ao_event)
 
                         # Update the mirror state for at each position and timepoint
-                        current_ao_event = MDAEvent(**ao_optimize_event.model_dump())
+                        current_ao_event = clone_event(ao_optimize_event)
                         current_ao_event.action.data["AO"]["pos_idx"] = int(pos_idx)
                         current_ao_event.action.data["AO"]["apply_existing"] = True
                         opm_events.append(current_ao_event)
 
-                    #----------------------------------------------------------------#
+                    # ----------------------------------------------------------------#
                     # Handle acquiring images
-                    #----------------------------------------------------------------#
+                    # ----------------------------------------------------------------#
                     # TODO: edit logic to include non-interleaved acq
                     opm_events.append(daq_event)
 
                     # Set ASI controller for stage scanning and Camera for external Trig
+                    raw_scan_start_mm = float(stage_positions[pos_idx]["x"]) / 1000.0
+                    raw_scan_length_mm = float(
+                        scan_axis_end_pos_mm[scan_idx]
+                        - scan_axis_start_pos_mm[scan_idx]
+                    )
                     current_asi_setup_event = create_asi_scan_setup_event(
-                        start_mm=float(scan_axis_start_pos_mm[scan_idx]),
-                        end_mm=float(scan_axis_end_pos_mm[scan_idx]),
+                        start_mm=raw_scan_start_mm,
+                        end_mm=raw_scan_start_mm + raw_scan_length_mm,
                         speed_mm_s=float(scan_axis_speed),
+                        progress={
+                            "time_index": int(time_idx),
+                            "time_count": int(n_time_steps),
+                            "position_index": int(pos_idx),
+                            "position_count": int(n_stage_positions),
+                            "z_level_index": int(z_idx),
+                            "z_level_count": int(
+                                n_z_positions * len(sample_depths_um)
+                            ),
+                            "x_um": float(stage_positions[pos_idx]["x"]),
+                            "y_um": float(stage_positions[pos_idx]["y"]),
+                            "z_um": float(stage_positions[pos_idx]["z"]),
+                        },
                     )
                     opm_events.append(current_asi_setup_event)
 
-                    # Create image events
+                    # The DAQ fixes physical camera-frame arrival order: every
+                    # scan plane contains all enabled OPM channels.  Native MDA
+                    # c/z ordering must not alter this hardware sequence.
                     for scan_axis_idx in range(n_scan_axis_indices):
                         for chan_idx in range(n_active_channels):
+                            source_chan_idx = active_channel_indices[chan_idx]
                             end_excess_idx = scan_axis_positions + excess_start_images
                             if scan_axis_idx < excess_start_images:
                                 is_excess_image = True
-                            elif scan_axis_idx > end_excess_idx:
+                            elif scan_axis_idx >= end_excess_idx:
                                 is_excess_image = True
                             else:
                                 is_excess_image = False
-                            image_event = MDAEvent(
-                                index=mappingproxy(
-                                    {
-                                        "t": time_idx,
-                                        "p": pos_idx,
-                                        "c": chan_idx,
-                                        "z": scan_axis_idx,
-                                    }
-                                ),
-                                metadata={
-                                    "DAQ": {
-                                        "mode": "stage",
-                                        "scan_axis_step_um": float(scan_axis_step_um),
-                                        "channel_states": channel_states,
-                                        "exposure_channels_ms": channel_exposures_ms,
-                                        "interleaved": True,
-                                        "laser_powers": channel_powers,
-                                        "blanking": laser_blanking,
-                                        "current_channel": active_channel_names[
-                                            chan_idx
-                                        ],
-                                    },
-                                    "Camera": {
-                                        "exposure_ms": float(
-                                            channel_exposures_ms[chan_idx]
-                                        ),
-                                        "camera_center_x": camera_center_x
-                                        - int(camera_crop_x // 2),
-                                        "camera_center_y": camera_center_y
-                                        - int(camera_crop_y // 2),
-                                        "camera_crop_x": int(camera_crop_x),
-                                        "camera_crop_y": int(camera_crop_y),
-                                        "offset": float(offset),
-                                        "e_to_ADU": float(e_to_ADU),
-                                    },
-                                    "OPM": {
-                                        "angle_deg": float(config["OPM"]["angle_deg"]),
-                                        "camera_Zstage_orientation": str(
-                                            config["OPM"]["camera_Zstage_orientation"]
-                                        ),
-                                        "camera_XYstage_orientation": str(
-                                            config["OPM"]["camera_XYstage_orientation"]
-                                        ),
-                                        "camera_mirror_orientation": str(
-                                            config["OPM"]["camera_mirror_orientation"]
-                                        ),
-                                        "excess_scan_positions": int(
-                                            excess_start_images
-                                        ),
-                                        "excess_scan_end_positions": int(
-                                            excess_end_images
-                                        ),
-                                        "excess_scan_start_positions": int(
-                                            excess_start_images
-                                        ),
-                                    },
-                                    "Stage": {
-                                        "x_pos": stage_positions[pos_idx]["x"]
-                                        + (scan_axis_idx * scan_axis_step_um),
-                                        "y_pos": stage_positions[pos_idx]["y"],
-                                        "z_pos": stage_positions[pos_idx]["z"],
-                                        "excess_image": is_excess_image,
-                                    },
+                            image_event = create_stage_scan_image_event(
+                                index={
+                                    "t": time_idx,
+                                    "p": pos_idx,
+                                    "c": chan_idx,
+                                    "z": scan_axis_idx,
                                 },
+                                config=config,
+                                stage_position=stage_positions[pos_idx],
+                                scan_axis_idx=scan_axis_idx,
+                                scan_axis_step_um=scan_axis_step_um,
+                                channel_states=channel_states,
+                                channel_exposures_ms=channel_exposures_ms,
+                                laser_powers=channel_powers,
+                                laser_blanking=laser_blanking,
+                                current_channel=active_channel_names[chan_idx],
+                                exposure_ms=channel_exposures_ms[source_chan_idx],
+                                camera_center_x=camera_center_x,
+                                camera_center_y=camera_center_y,
+                                camera_crop_x=camera_crop_x,
+                                camera_crop_y=camera_crop_y,
+                                offset=offset,
+                                e_to_ADU=e_to_ADU,
+                                excess_start_images=excess_start_images,
+                                excess_end_images=excess_end_images,
+                                is_excess_image=is_excess_image,
                             )
                             opm_events.append(image_event)
                     pos_idx = pos_idx + 1
 
+        apply_timepoint_timing(
+            opm_events,
+            timepoint_start_index,
+            time_idx,
+            float(time_interval),
+        )
+
     # Check if path ends if .zarr. If so, use our OutputHandler
-    if len(Path(output).suffixes) == 1 and Path(output).suffix == ".zarr":
-        indice_sizes = {
-            "t": int(np.maximum(1, n_time_steps)),
-            "p": int(np.maximum(1, n_stage_positions)),
-            "c": int(np.maximum(1, n_active_channels)),
-            "z": int(np.maximum(1, n_scan_axis_indices)),
-        }
-        handler = OPMMirrorHandler(
-            path=Path(output), indice_sizes=indice_sizes, delete_existing=True
-        )        
-        info("HANDLER INDICES", f"{indice_sizes}")
-        return opm_events, handler
-    else:
-        raise Exception("Defualt handler selected, modify save path!")
+    indice_sizes = {
+        "t": int(np.maximum(1, n_time_steps)),
+        "p": int(np.maximum(1, n_stage_positions)),
+        "c": int(np.maximum(1, n_active_channels)),
+        "z": int(np.maximum(1, n_scan_axis_indices)),
+    }
+    return opm_events, create_zarr_handler(
+        output,
+        indice_sizes,
+        acquisition_order=("t", "p", "z", "c"),
+        events=opm_events,
+        config=config,
+        spatial_plan=spatial_plan,
+        pixel_size_um=float(mmc.getPixelSizeUm()),
+    )
+
+
+class OPMEventBuilder:
+    """Build events with the mode-specific setup functions.
+
+    Parameters
+    ----------
+    mmc : CMMCorePlus
+        Active Micro-Manager core.
+    config : dict
+        OPM configuration.
+    sequence : MDASequence
+        Sequence from the MDA widget.
+    """
+
+    def __init__(self, mmc: CMMCorePlus, config: dict, sequence: MDASequence) -> None:
+        """Initialize an OPM event builder.
+
+        Parameters
+        ----------
+        mmc : CMMCorePlus
+            Active Micro-Manager core.
+        config : dict
+            OPM configuration.
+        sequence : MDASequence
+            Sequence from the MDA widget.
+        """
+        self.mmc = mmc
+        self.config = config
+        self.sequence = sequence
+
+    def build(self, output: Path, mode: str | None = None):
+        """Build events for a requested or configured mode.
+
+        Parameters
+        ----------
+        output : Path
+            Acquisition output path.
+        mode : str or None
+            Acquisition mode, or ``None`` to use configuration.
+
+        Returns
+        -------
+        tuple[list[MDAEvent], OpmDataHandler]
+            Acquisition events and output handler.
+
+        Raises
+        ------
+        ValueError
+            If the acquisition mode is unknown.
+        """
+        mode = mode or self.config["acq_config"]["opm_mode"]
+        # ``mode`` is the acquisition the caller selected and therefore must
+        # also be the mode published in the manifest and OME-Zarr metadata.
+        # Work on an isolated snapshot so a stale widget/controller config
+        # cannot label mirror data as stage data, and planning cannot mutate
+        # the caller's live configuration.
+        config = deepcopy(self.config)
+        config["acq_config"]["opm_mode"] = mode
+        if "timelapse" in mode:
+            return setup_timelapse(self.mmc, config, self.sequence, output)
+        if "projection" in mode:
+            return setup_projection(self.mmc, config, self.sequence, output)
+        if "mirror" in mode:
+            return setup_mirrorscan(self.mmc, config, self.sequence, output)
+        if "stage" in mode:
+            return setup_stagescan(self.mmc, config, self.sequence, output)
+        raise ValueError(f"Unknown OPM event builder mode: {mode}")

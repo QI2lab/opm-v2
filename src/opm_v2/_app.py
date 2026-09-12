@@ -1,0 +1,2448 @@
+"""Launch the OPM Micro-Manager GUI using an application controller."""
+
+from __future__ import annotations
+
+import json
+from copy import deepcopy
+from datetime import datetime
+from functools import partial
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from typing import Literal
+from weakref import WeakKeyDictionary
+
+import numpy as np
+import useq
+from ome_writers import AcquisitionSettings
+from pymmcore_gui import MicroManagerGUI, WidgetAction, create_mmgui
+from pymmcore_gui._qt.QtAds import DockWidgetArea
+from pymmcore_gui._qt.QtCore import QEvent, QObject, Qt, QTimer
+from pymmcore_gui._qt.QtWidgets import (
+    QApplication,
+    QMessageBox,
+    QTabBar,
+)
+from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
+from pymmcore_plus import CMMCorePlus
+from pymmcore_plus.core import DeviceProperty
+from pymmcore_widgets import StageExplorerCalibrationControls
+
+from opm_v2._update_config_widget import OPMSettingsV2
+from opm_v2.engine.debug_printing import debug, info, warning
+from opm_v2.engine.opm_custom_events import STAGE_MOVE_SPEED_METADATA_KEY
+from opm_v2.engine.opm_engine import OPMEngineV2
+from opm_v2.engine.setup_events import (
+    OPMEventBuilder,
+    setup_optimizenow,
+)
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.hardware.ElveFlow import OB1Controller
+from opm_v2.hardware.mock_nidaq import MockOPMNIDAQ
+from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.hardware.PicardShutter import PicardShutter
+from opm_v2.utils.coverslip import (
+    COVERSLIP_METADATA_KEY,
+    CoverslipPlane,
+    fit_coverslip_plane,
+)
+
+DEBUGGING = True
+DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
+MIN_PROJECTION_EXPOSURE = 50  # ms
+DEFUALT_PROJECTION_EXPOSURE = 150
+OPM_WIDGET_KEY = "opm.settings"
+OPM_PREVIEW_INTERVAL_MS = 250
+LIVE_DISPLAY_INTERVAL_MS = 33
+MAX_LIVE_FRAMES_PER_TICK = 64
+
+
+class _BoundedLivePreviewTimer(QObject):
+    """Drain a finite camera-buffer snapshot on each live-preview tick."""
+
+    def __init__(self, preview) -> None:
+        parent = preview if isinstance(preview, QObject) else None
+        super().__init__(parent)
+        self._preview = preview
+
+    def eventFilter(self, watched, event) -> bool:
+        """Replace the upstream unbounded live-buffer drain loop.
+
+        Returns
+        -------
+        bool
+            Whether this filter consumed the timer event.
+        """
+        preview = self._preview
+        if (
+            watched is not preview
+            or event.type() != QEvent.Type.Timer
+            or event.timerId() != getattr(preview, "_timer_id", None)
+        ):
+            return False
+
+        core = getattr(preview, "_mmc", None)
+        if core is None:
+            return True
+
+        try:
+            frame_count = min(
+                max(0, int(core.getRemainingImageCount())),
+                MAX_LIVE_FRAMES_PER_TICK,
+            )
+            latest = None
+            for _ in range(frame_count):
+                latest = core.popNextImage()
+            if latest is not None:
+                preview.append(latest)
+        except Exception as exc:
+            warning("LIVE PREVIEW WARNING", f"Camera buffer read failed: {exc}")
+        return True
+
+
+def _disconnect_system_configuration_callback(mmc: CMMCorePlus, callback) -> None:
+    """Disconnect an action callback even if Qt has deleted the core signaler."""
+    try:
+        mmc.events.systemConfigurationLoaded.disconnect(callback)
+    except (RuntimeError, TypeError):
+        # During QApplication teardown the C++ QCoreSignaler may be destroyed
+        # before its QAction children.  There is then no live signal to disconnect.
+        pass
+
+
+def _initialize_snap_action_safely(action: QCoreAction) -> None:
+    """Initialize the upstream Snap action with deletion-safe cleanup."""
+    mmc = action.mmc
+
+    def _on_load() -> None:
+        action.setEnabled(bool(mmc.getCameraDevice()))
+
+    mmc.events.systemConfigurationLoaded.connect(_on_load)
+    action.destroyed.connect(
+        lambda: _disconnect_system_configuration_callback(mmc, _on_load)
+    )
+    _on_load()
+
+
+def _initialize_live_action_safely(action: QCoreAction) -> None:
+    """Initialize the upstream Live action with deletion-safe cleanup."""
+    mmc = action.mmc
+    action.setAutoRepeat(False)
+
+    def _on_load() -> None:
+        action.setEnabled(bool(mmc.getCameraDevice()))
+
+    mmc.events.systemConfigurationLoaded.connect(_on_load)
+    action.destroyed.connect(
+        lambda: _disconnect_system_configuration_callback(mmc, _on_load)
+    )
+
+    def _on_change() -> None:
+        action.setChecked(mmc.isSequenceRunning())
+
+    mmc.events.sequenceAcquisitionStarted.connect(_on_change)
+    mmc.events.continuousSequenceAcquisitionStarted.connect(_on_change)
+    mmc.events.sequenceAcquisitionStopped.connect(_on_change)
+    _on_load()
+
+
+def _install_safe_core_action_initializers() -> None:
+    """Replace two unsafe pymmcore-gui teardown hooks before actions are created."""
+    ActionInfo.for_key(CoreAction.SNAP).on_created = _initialize_snap_action_safely
+    ActionInfo.for_key(
+        CoreAction.TOGGLE_LIVE
+    ).on_created = _initialize_live_action_safely
+
+
+def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
+    """Return camera FOV extents in physical stage-world X and Y.
+
+    Returns
+    -------
+    tuple[float, float]
+        Axis-aligned physical stage X and Y extents in micrometers.
+    """
+    return stage_explorer.camera_fov_size_um()
+
+
+def _stage_explorer_display_footprint_w_h(
+    stage_explorer,
+) -> tuple[float, float]:
+    """Return the footprint shown inside Stage Explorer ROI overlays.
+
+    Preview, projection, and stage operation retain the affine-transformed camera
+    footprint.  During an active mirror acquisition, physical stage X is replaced
+    with the configured symmetric mirror sweep; physical stage Y still comes from
+    the acquisition camera ROI.
+
+    Returns
+    -------
+    tuple[float, float]
+        Physical stage-world X and Y footprint in micrometers.
+    """
+    camera_footprint = stage_explorer.camera_fov_size_um()
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is None:
+        return camera_footprint
+
+    acq_config = controller.config["acq_config"]
+    if (
+        not controller._opm_scan_footprint_active
+        or "mirror" not in str(acq_config["opm_mode"]).casefold()
+    ):
+        return camera_footprint
+
+    scan_range_um = float(acq_config["DAQ"]["scan_range_um"])
+    if scan_range_um <= 0:
+        return camera_footprint
+
+    camera_roi = acq_config["camera_roi"]
+    crop_x = float(camera_roi["crop_x"])
+    crop_y = float(camera_roi["crop_y"])
+    _world_x, world_y = stage_explorer.pixel_rect_size_um(crop_x, crop_y)
+    if world_y <= 0:
+        return camera_footprint
+    return scan_range_um, float(world_y)
+
+
+def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
+    """Refresh ROI cells using the active OPM acquisition footprint."""
+    display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
+    stage_explorer.set_display_fov_size_um(display_footprint)
+
+    overlap = stage_explorer.roi_manager.scan_overlap
+    mode = stage_explorer.roi_manager.scan_mode
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is not None:
+        acq_config = controller.config["acq_config"]
+        if (
+            controller._opm_scan_footprint_active
+            and "mirror" in str(acq_config["opm_mode"]).casefold()
+        ):
+            positions = acq_config["Positions"]
+            tile_overlap = float(positions["tile_axis_overlap"])
+            scan_overlap = float(positions.get("scan_axis_overlap", tile_overlap))
+            # OPM configuration stores overlaps as fractions, while useq and
+            # Stage Explorer express GridFromEdges overlap in percent.
+            overlap = (100.0 * scan_overlap, 100.0 * tile_overlap)
+    stage_explorer.roi_manager.set_scan_options(overlap, mode)
+    stage_explorer.set_blending_overlap(overlap)
+
+
+def _position_with_coverslip_plane(
+    position: useq.AbsolutePosition, plane: CoverslipPlane | None
+) -> useq.AbsolutePosition:
+    """Attach a selected ROI's coverslip plane to its nested sequence.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position carrying the plane in nested sequence metadata.
+    """
+    if plane is None:
+        return position
+    sequence = position.sequence or useq.MDASequence()
+    metadata = dict(sequence.metadata)
+    metadata[COVERSLIP_METADATA_KEY] = plane.to_metadata()
+    return position.model_copy(
+        update={"sequence": sequence.model_copy(update={"metadata": metadata})}
+    )
+
+
+def _position_on_coverslip_plane(
+    position: useq.AbsolutePosition, plane: CoverslipPlane | None
+) -> useq.AbsolutePosition:
+    """Apply a plane directly to an exported literal XY position.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position with its predicted Z coordinate.
+    """
+    if plane is None or position.x is None or position.y is None:
+        return position
+    return position.model_copy(update={"z": plane.z_at(position.x, position.y)})
+
+
+def _stage_explorer_controller(stage_explorer):
+    """Return the OPM controller attached to a Stage Explorer instance.
+
+    Returns
+    -------
+    OPMAppController or None
+        Attached application controller when available.
+    """
+    return getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+
+
+def _coverslip_planes_by_roi(
+    stage_explorer,
+) -> WeakKeyDictionary[object, CoverslipPlane]:
+    """Return Explorer-owned calibration state keyed by upstream ROI identity.
+
+    Returns
+    -------
+    WeakKeyDictionary
+        Coverslip planes associated with live upstream ROI objects.
+    """
+    planes = getattr(stage_explorer, "_opm_coverslip_planes_by_roi", None)
+    if planes is None:
+        planes = WeakKeyDictionary()
+        stage_explorer._opm_coverslip_planes_by_roi = planes
+    return planes
+
+
+def _coverslip_plane_for_roi(stage_explorer, roi) -> CoverslipPlane | None:
+    """Return the plane calibrated for one Stage Explorer ROI.
+
+    Returns
+    -------
+    CoverslipPlane or None
+        Plane associated with the ROI, when it has been calibrated.
+    """
+    return _coverslip_planes_by_roi(stage_explorer).get(roi)
+
+
+def _update_coverslip_point_visual(stage_explorer) -> None:
+    """Show the active coverslip focus points on the Explorer canvas."""
+    controls = getattr(stage_explorer, "_opm_calibration_controls", None)
+    if controls is not None:
+        controls.set_points(stage_explorer._opm_coverslip_points)
+
+
+def _restore_coverslip_live_mode(stage_explorer) -> None:
+    """Restore the Micro-Manager live-mode preset used before calibration."""
+    previous = stage_explorer._opm_coverslip_previous_live_preset
+    stage_explorer._opm_coverslip_previous_live_preset = None
+    if not previous:
+        return
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        return
+    mmc = controller.mmc
+    presets = set(mmc.getAvailableConfigs("OPM-live-mode"))
+    if previous in presets and mmc.getCurrentConfig("OPM-live-mode") != previous:
+        mmc.setConfig("OPM-live-mode", previous)
+        mmc.waitForConfig("OPM-live-mode", previous)
+
+
+def _start_coverslip_calibration(stage_explorer) -> None:
+    """Begin point collection in the non-projection Standard live mode."""
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        return
+    if controller.mmc.mda.is_running():
+        controller.warning(
+            "COVERSLIP PLANE", "Cannot calibrate during an active acquisition"
+        )
+        return
+    if stage_explorer._opm_coverslip_target_roi is not None:
+        controller.warning(
+            "COVERSLIP PLANE",
+            "Finish or clear the active coverslip calibration first",
+        )
+        return
+    selected = stage_explorer.roi_manager.selected_rois()
+    if len(selected) != 1:
+        controller.warning(
+            "COVERSLIP PLANE", "Select exactly one Stage Explorer ROI first"
+        )
+        return
+
+    mmc = controller.mmc
+    if "OPM-live-mode" not in set(mmc.getAvailableConfigGroups()):
+        controller.warning(
+            "COVERSLIP PLANE",
+            "The Micro-Manager OPM-live-mode config group is unavailable",
+        )
+        return
+    presets = set(mmc.getAvailableConfigs("OPM-live-mode"))
+    if "Standard" not in presets:
+        controller.warning(
+            "COVERSLIP PLANE",
+            "The OPM-live-mode config group has no Standard preset",
+        )
+        return
+
+    previous = mmc.getCurrentConfig("OPM-live-mode")
+    if previous != "Standard":
+        mmc.setConfig("OPM-live-mode", "Standard")
+        mmc.waitForConfig("OPM-live-mode", "Standard")
+
+    stage_explorer._opm_coverslip_previous_live_preset = previous
+    stage_explorer._opm_coverslip_target_roi = selected[0]
+    stage_explorer._opm_coverslip_points = []
+    _update_coverslip_point_visual(stage_explorer)
+    controller.info(
+        "COVERSLIP PLANE CALIBRATION",
+        "OPM live mode: Standard",
+        "Use Live view, focus the sample Z stage, then add at least three XYZ points",
+    )
+
+
+def _add_coverslip_focus_point(stage_explorer) -> None:
+    """Record the current physical sample-stage XYZ position."""
+    controller = _stage_explorer_controller(stage_explorer)
+    roi = stage_explorer._opm_coverslip_target_roi
+    if controller is None or roi is None:
+        if controller is not None:
+            controller.warning("COVERSLIP PLANE", "Start a coverslip calibration first")
+        return
+    x_um, y_um = controller.mmc.getXYPosition()
+    z_um = controller.mmc.getZPosition()
+    point = (float(x_um), float(y_um), float(z_um))
+    if not roi.contains(point[:2]):
+        controller.warning(
+            "COVERSLIP PLANE",
+            f"Current XY position {point[:2]} is outside the selected ROI",
+        )
+        return
+    stage_explorer._opm_coverslip_points.append(point)
+    _update_coverslip_point_visual(stage_explorer)
+    controller.info(
+        "COVERSLIP FOCUS POINT",
+        f"Point {len(stage_explorer._opm_coverslip_points)}: "
+        f"X={point[0]:.2f}, Y={point[1]:.2f}, Z={point[2]:.2f} um",
+    )
+
+
+def _fit_coverslip_calibration(stage_explorer) -> None:
+    """Fit and attach the active focus points to the selected ROI."""
+    controller = _stage_explorer_controller(stage_explorer)
+    roi = stage_explorer._opm_coverslip_target_roi
+    if controller is None or roi is None:
+        if controller is not None:
+            controller.warning("COVERSLIP PLANE", "Start a coverslip calibration first")
+        return
+    try:
+        plane = fit_coverslip_plane(stage_explorer._opm_coverslip_points)
+    except ValueError as exc:
+        controller.warning("COVERSLIP PLANE", str(exc))
+        return
+    _coverslip_planes_by_roi(stage_explorer)[roi] = plane
+    left, top, right, bottom = roi.bbox()
+    corner_z = [
+        plane.z_at(x_um, y_um) for x_um in (left, right) for y_um in (top, bottom)
+    ]
+    stage_explorer._opm_coverslip_target_roi = None
+    _restore_coverslip_live_mode(stage_explorer)
+    controller.info(
+        "COVERSLIP PLANE APPLIED",
+        f"Slope X/Y: {plane.slope_x:.6f} / {plane.slope_y:.6f}",
+        f"Fit RMS: {plane.rms_error_um:.3f} um",
+        f"ROI predicted Z range: {min(corner_z):.2f} to {max(corner_z):.2f} um",
+    )
+
+
+def _clear_coverslip_calibration(stage_explorer) -> None:
+    """Clear point collection and any plane attached to selected ROIs."""
+    controller = _stage_explorer_controller(stage_explorer)
+    targets = stage_explorer.roi_manager.selected_rois()
+    if not targets and stage_explorer._opm_coverslip_target_roi is not None:
+        targets = [stage_explorer._opm_coverslip_target_roi]
+    planes_by_roi = _coverslip_planes_by_roi(stage_explorer)
+    for roi in targets:
+        planes_by_roi.pop(roi, None)
+    stage_explorer._opm_coverslip_target_roi = None
+    stage_explorer._opm_coverslip_points = []
+    _update_coverslip_point_visual(stage_explorer)
+    _restore_coverslip_live_mode(stage_explorer)
+    if controller is not None:
+        controller.info("COVERSLIP PLANE CLEARED")
+
+
+def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
+    """Add coverslip-plane calibration actions to one Explorer toolbar."""
+    _coverslip_planes_by_roi(stage_explorer)
+    if hasattr(stage_explorer, "_opm_calibration_controls"):
+        return
+    stage_explorer._opm_coverslip_points = []
+    stage_explorer._opm_coverslip_target_roi = None
+    stage_explorer._opm_coverslip_previous_live_preset = None
+    controls = StageExplorerCalibrationControls(stage_explorer)
+    controls.startRequested.connect(
+        lambda: _start_coverslip_calibration(stage_explorer)
+    )
+    controls.addPointRequested.connect(
+        lambda: _add_coverslip_focus_point(stage_explorer)
+    )
+    controls.fitRequested.connect(lambda: _fit_coverslip_calibration(stage_explorer))
+    controls.clearRequested.connect(
+        lambda: _clear_coverslip_calibration(stage_explorer)
+    )
+    stage_explorer._opm_calibration_controls = controls
+
+
+def _configure_live_preview(preview_dock) -> None:
+    """Keep live-frame display non-reentrant and bounded per timer tick."""
+    preview = preview_dock.widget() if preview_dock is not None else None
+    if preview is not None and hasattr(preview, "process_events_on_update"):
+        preview.process_events_on_update = False
+    if (
+        preview is not None
+        and hasattr(preview, "installEventFilter")
+        and not hasattr(preview, "_opm_bounded_timer_filter")
+    ):
+        timer_filter = _BoundedLivePreviewTimer(preview)
+        preview.installEventFilter(timer_filter)
+        preview._opm_bounded_timer_filter = timer_filter
+
+
+def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
+    """Return one selected ROI as a physical Stage Explorer region.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position containing the selected rectangular ROI grid.
+
+    Raises
+    ------
+    ValueError
+        If a single-FOV ROI is not rectangular.
+    """
+    if type(roi).__name__ != "RectangleROI":
+        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
+    controller = _stage_explorer_controller(stage_explorer)
+    z_position = controller.mmc.getZPosition() if controller is not None else None
+    positions = stage_explorer.positions_from_rois(
+        [roi],
+        preserve_regions=True,
+        z_pos=z_position,
+        transform=partial(
+            _transform_stage_explorer_position,
+            stage_explorer=stage_explorer,
+        ),
+    )
+    if not positions:
+        raise ValueError("The selected Stage Explorer ROI produced no positions.")
+    return positions[0]
+
+
+def _transform_stage_explorer_position(
+    position: useq.AbsolutePosition, roi, *, stage_explorer
+) -> useq.AbsolutePosition:
+    """Apply an ROI's OPM coverslip model to a generic widget position.
+
+    Returns
+    -------
+    useq.AbsolutePosition
+        Position with the selected ROI's coverslip model applied.
+    """
+    plane = _coverslip_plane_for_roi(stage_explorer, roi)
+    if position.sequence and position.sequence.grid_plan:
+        return _position_with_coverslip_plane(position, plane)
+    return _position_on_coverslip_plane(position, plane)
+
+
+def _equalize_stage_explorer_xy_speed(mmc: CMMCorePlus) -> float | None:
+    """Set the Stage Explorer X point-move speed equal to the Y speed.
+
+    Stage scanning temporarily gives X a scan-specific speed.  Interactive
+    Explorer moves are ordinary XY point moves and should use the Y-axis move
+    speed on both axes.
+
+    Returns
+    -------
+    float or None
+        Equalized point-move speed, or ``None`` when the ASI properties are not
+        available.
+    """
+    xy_stage = mmc.getXYStageDevice()
+    if not xy_stage:
+        return None
+    x_property = "MotorSpeedX-S(mm/s)"
+    y_property = "MotorSpeedY-S(mm/s)"
+    if not mmc.hasProperty(xy_stage, y_property):
+        return None
+
+    point_move_speed = float(mmc.getProperty(xy_stage, y_property))
+    if mmc.hasProperty(xy_stage, x_property):
+        mmc.setProperty(xy_stage, x_property, point_move_speed)
+    return point_move_speed
+
+
+def _stage_explorer_accelerated_speeds(mmc: CMMCorePlus) -> dict[str, float]:
+    """Return four times the common XY speed for an Explorer preview.
+
+    Returns
+    -------
+    dict[str, float]
+        Equal per-axis accelerated speeds in millimeters per second.
+    """
+    xy_stage = mmc.getXYStageDevice()
+    point_move_speed = _equalize_stage_explorer_xy_speed(mmc)
+    if not xy_stage or point_move_speed is None:
+        return {}
+
+    speed_keys = {
+        "MotorSpeedX-S(mm/s)": "move_speed_x_mm_s",
+        "MotorSpeedY-S(mm/s)": "move_speed_y_mm_s",
+    }
+    accelerated: dict[str, float] = {}
+    for property_name, event_key in speed_keys.items():
+        if mmc.hasProperty(xy_stage, property_name):
+            speed_property = DeviceProperty(
+                xy_stage,
+                property_name,
+                mmc,
+            )
+            speed = 4.0 * point_move_speed
+            has_limits = speed_property.hasLimits()
+            if type(has_limits) is bool and has_limits:
+                lower, upper = speed_property.range()
+                speed = min(max(speed, float(lower)), float(upper))
+            numeric_allowed = []
+            for value in speed_property.allowedValues():
+                try:
+                    numeric_allowed.append(float(value))
+                except (TypeError, ValueError):
+                    continue
+            if numeric_allowed:
+                at_or_below = [value for value in numeric_allowed if value <= speed]
+                speed = max(at_or_below) if at_or_below else min(numeric_allowed)
+            accelerated[event_key] = speed
+
+    return accelerated
+
+
+def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
+    """Return the active preview preset without changing MM config state.
+
+    The OPM hardware configuration defines a normal config group named
+    ``Channel`` but does not necessarily designate it as MMCore's special
+    channel group.  Prefer the designation when present, then fall back to the
+    explicitly defined ``Channel`` group used by the Config Groups widget.
+
+    Returns
+    -------
+    tuple[str, str]
+        Config group name and the preset matching its current device state.
+
+    Raises
+    ------
+    ValueError
+        If no channel group exists or its current device state matches no preset.
+    """
+    available_groups = set(mmc.getAvailableConfigGroups())
+    designated_group = mmc.getChannelGroup()
+    if designated_group and designated_group in available_groups:
+        channel_group = designated_group
+    elif "Channel" in available_groups:
+        channel_group = "Channel"
+    else:
+        raise ValueError(
+            "No Micro-Manager channel config group is available for the preview"
+        )
+
+    channel_preset = mmc.getCurrentConfig(channel_group)
+    if not channel_preset:
+        raise ValueError(
+            f"Select a preset in the Micro-Manager {channel_group!r} config group "
+            "before scanning an ROI"
+        )
+    return channel_group, channel_preset
+
+
+def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
+    """Return settings that must remain compatible within one preview mosaic.
+
+    Returns
+    -------
+    tuple
+        Hashable projection, channel, camera, and calibration settings.
+
+    Raises
+    ------
+    RuntimeError
+        If the explorer is not connected to an OPM controller.
+    """
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        raise RuntimeError("Stage Explorer has no OPM controller")
+
+    mmc = controller.mmc
+    channel_group, channel_preset = _stage_explorer_channel_preset(mmc)
+    daq = controller.opm_nidaq
+    return (
+        "opm-stage-explorer",
+        str(daq.scan_type),
+        tuple(bool(state) for state in daq.channel_states),
+        None if daq.exposure_ms is None else float(daq.exposure_ms),
+        (
+            None
+            if daq.image_mirror_range_um is None
+            else float(daq.image_mirror_range_um)
+        ),
+        channel_group,
+        channel_preset,
+        mmc.getCameraDevice(),
+        tuple(mmc.getROI()),
+        int(mmc.getImageWidth()),
+        int(mmc.getImageHeight()),
+        float(mmc.getPixelSizeUm()),
+        tuple(float(value) for value in mmc.getPixelSizeAffine()),
+        tuple(
+            float(value)
+            for value in _stage_explorer_display_footprint_w_h(stage_explorer)
+        ),
+    )
+
+
+def _prepare_stage_explorer_blended_preview(stage_explorer) -> None:
+    """Arm the active preview and select a compatible blending session.
+
+    Raises
+    ------
+    RuntimeError
+        If the explorer is not connected to an OPM controller.
+    """
+    controller = _stage_explorer_controller(stage_explorer)
+    if controller is None:
+        raise RuntimeError("Stage Explorer has no OPM controller")
+    controller.prepare_stage_explorer_preview()
+    stage_explorer.begin_blending_session(
+        _stage_explorer_blending_session_key(stage_explorer)
+    )
+
+
+def _stage_explorer_scratch_output(controller) -> AcquisitionSettings:
+    """Create an application-owned disk-backed Stage Explorer output.
+
+    Each preview receives a unique child directory so enabling overwrite can
+    never remove the configured parent or another scan.  Keeping the temporary
+    directory object on the controller retains the data for the lifetime of the
+    GUI and schedules best-effort cleanup when the process exits.
+
+    Parameters
+    ----------
+    controller : OPMAppController
+        Active application controller containing the OPM configuration.
+
+    Returns
+    -------
+    AcquisitionSettings
+        Scratch settings backed by the configured directory.
+
+    Raises
+    ------
+    RuntimeError
+        If the configured scratch parent cannot be created.
+    """
+    configured_parent = controller.config.get("OPM", {}).get(
+        "stage_explorer_scratch_dir"
+    )
+    if not configured_parent:
+        return AcquisitionSettings(format="scratch")
+
+    scratch_parent = Path(configured_parent).expanduser()
+    try:
+        scratch_parent.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise RuntimeError(
+            f"Could not create Stage Explorer scratch directory: {scratch_parent}"
+        ) from exc
+
+    scratch_dir = TemporaryDirectory(
+        prefix="opm_stage_explorer_",
+        dir=scratch_parent,
+        ignore_cleanup_errors=True,
+    )
+    retained_dirs = getattr(controller, "_stage_explorer_scratch_dirs", None)
+    if retained_dirs is None:
+        retained_dirs = []
+        controller._stage_explorer_scratch_dirs = retained_dirs
+    retained_dirs.append(scratch_dir)
+    return AcquisitionSettings(
+        root_path=scratch_dir.name,
+        format="scratch",
+        overwrite=True,
+    )
+
+
+def _scan_stage_explorer_roi(stage_explorer) -> None:
+    """Scan the selected ROI with the active Micro-Manager channel preset."""
+    controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    if controller is None:
+        return
+    if controller.mmc.mda.is_running():
+        return
+    selected_rois = stage_explorer.roi_manager.selected_rois()
+    if not selected_rois:
+        return
+
+    try:
+        position = _stage_explorer_region_position(stage_explorer, selected_rois[0])
+    except ValueError as exc:
+        controller.warning("STAGE EXPLORER PREVIEW", str(exc))
+        return
+
+    try:
+        channel_group, channel_preset = _stage_explorer_channel_preset(controller.mmc)
+
+        accelerated = _stage_explorer_accelerated_speeds(controller.mmc)
+        metadata = {STAGE_MOVE_SPEED_METADATA_KEY: accelerated}
+        sequence = useq.MDASequence(
+            metadata=metadata,
+            stage_positions=(position,),
+        )
+        controller.info(
+            "STAGE EXPLORER PREVIEW",
+            f"Channel preset: {channel_group}/{channel_preset}",
+            f"Accelerated stage speeds: {accelerated}",
+            "Output: preview only (not saved)",
+        )
+        controller.data_handler = None
+        controller.suspend_live_preview_for_mda()
+        _prepare_stage_explorer_blended_preview(stage_explorer)
+        stage_explorer.set_mda_capture_active(True)
+        scratch_output = _stage_explorer_scratch_output(controller)
+        controller.info(
+            "STAGE EXPLORER STORAGE",
+            f"Disk-backed scratch: {scratch_output.root_path}",
+        )
+        controller._opm_mda_thread = controller.mmc.run_mda(
+            sequence, output=scratch_output
+        )
+    except ValueError as exc:
+        controller.warning("STAGE EXPLORER PREVIEW", str(exc))
+    except Exception:
+        stage_explorer.set_mda_capture_active(False)
+        controller.opm_nidaq.clear_tasks()
+        controller.restore_live_preview_after_mda(force=True)
+        raise
+
+
+def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None:
+    """Configure one GUI-owned Stage Explorer through its public widget API."""
+    if stage_explorer is None or mda_widget is None:
+        return
+    if getattr(stage_explorer, "_opm_integration_configured", False):
+        return
+    stage_explorer._opm_controller = getattr(
+        stage_explorer.window(), "opm_controller", None
+    )
+    controller = stage_explorer._opm_controller
+    if controller is None:
+        return
+
+    if controller.mmc.isSequenceRunning() is True:
+        was_polling = bool(stage_explorer.poll_stage_position)
+        if controller._stage_explorer_polling_was_enabled is None:
+            controller._stage_explorer_polling_was_enabled = was_polling
+        if was_polling:
+            stage_explorer.poll_stage_position = False
+    try:
+        _equalize_stage_explorer_xy_speed(controller.mmc)
+    except Exception as exc:
+        controller.warning(
+            "STAGE EXPLORER MOVE SPEED",
+            f"Could not set X point-move speed equal to Y: {exc}",
+            "Upstream double-click movement remains available.",
+        )
+
+    stage_explorer.set_scan_handler(_scan_stage_explorer_roi)
+    stage_explorer.set_snap_lifecycle(
+        prepare=lambda: _prepare_stage_explorer_blended_preview(stage_explorer),
+        cleanup=controller.opm_nidaq.clear_tasks,
+    )
+    stage_explorer.set_roi_position_transform(
+        partial(
+            _transform_stage_explorer_position,
+            stage_explorer=stage_explorer,
+        )
+    )
+    stage_explorer.interactionError.connect(
+        lambda exc: controller.warning("STAGE EXPLORER", str(exc))
+    )
+    stage_explorer.mda_frame_updates_enabled = not controller._opm_acquisition_active
+    stage_explorer.blending_enabled = True
+    _install_stage_explorer_coverslip_controls(stage_explorer)
+
+    def _on_send_to_mda(_positions: list, _clear: bool) -> None:
+        # Exported positions own the spatial plan.  Leaving the global Grid tab
+        # active would make useq clear X/Y and would cause the OPM builders to ignore
+        # the exported regions.
+        mda_widget.tab_wdg.setChecked(mda_widget.grid_plan, False)
+        mda_widget.tab_wdg.setChecked(mda_widget.stage_positions, True)
+
+    stage_explorer.sendToMDARequested.connect(_on_send_to_mda)
+    stage_explorer._opm_integration_configured = True
+    _refresh_stage_explorer_display_footprint(stage_explorer)
+
+
+def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
+    """Create the registered OPM widget for a Micro-Manager window.
+
+    Parameters
+    ----------
+    parent : MicroManagerGUI
+        Window that owns the widget and its OPM controller.
+
+    Returns
+    -------
+    OPMSettingsV2
+        OPM settings widget managed by pymmcore-gui.
+    """
+    controller: OPMAppController = parent.opm_controller
+    return OPMSettingsV2(controller.config_path, parent=parent)
+
+
+def _ensure_opm_widget_registered() -> None:
+    """Register the OPM settings widget with pymmcore-gui exactly once."""
+    _install_safe_core_action_initializers()
+    try:
+        WidgetActionInfo.for_key(OPM_WIDGET_KEY)
+    except KeyError:
+        WidgetActionInfo(
+            key=OPM_WIDGET_KEY,
+            text="OPM Settings",
+            create_widget=_create_opm_settings_widget,
+            dock_area=DockWidgetArea.LeftDockWidgetArea,
+        )
+
+
+def enhance_main_window(main_window: MicroManagerGUI) -> OPMSettingsV2:
+    """Create and attach the OPM dock using pymmcore-gui widget APIs.
+
+    Parameters
+    ----------
+    main_window : MicroManagerGUI
+        Main window receiving the OPM settings dock.
+
+    Returns
+    -------
+    OPMSettingsV2
+        Attached OPM settings widget.
+    """
+    _ensure_opm_widget_registered()
+    widget = main_window.get_widget(OPM_WIDGET_KEY)
+    opm_dock = main_window.get_dock_widget(OPM_WIDGET_KEY)
+    try:
+        mda_dock = main_window.get_dock_widget(WidgetAction.MDA_WIDGET)
+    except Exception:
+        mda_dock = None
+    else:
+        if opm_dock.dockAreaWidget() is not mda_dock.dockAreaWidget():
+            main_window.dock_manager.addDockWidgetTabToArea(
+                opm_dock, mda_dock.dockAreaWidget()
+            )
+        mda_dock.raise_()
+    return widget
+
+
+class ConfigStore:
+    """Provide a reloadable wrapper around an OPM JSON configuration.
+
+    Parameters
+    ----------
+    path : Path
+        Path to the JSON configuration file.
+    """
+
+    def __init__(self, path: Path) -> None:
+        """Create a config store and immediately load the JSON file.
+
+        Parameters
+        ----------
+        path : Path
+            Path to the JSON configuration file.
+        """
+        self.path = Path(path)
+        self.data: dict = {}
+        self.reload()
+
+    def reload(self) -> dict:
+        """Reload the JSON configuration in place.
+
+        Returns
+        -------
+        dict
+            Shared configuration dictionary updated from disk.
+        """
+        with open(self.path) as config_file:
+            new_config = json.load(config_file)
+        self.data.clear()
+        self.data.update(new_config)
+        return self.data
+
+    def replace(self, config: dict) -> dict:
+        """Replace the active configuration with an isolated GUI snapshot.
+
+        Parameters
+        ----------
+        config : dict
+            Configuration emitted by the OPM settings widget.
+
+        Returns
+        -------
+        dict
+            Shared controller dictionary updated in place.
+        """
+        self.data.clear()
+        self.data.update(deepcopy(config))
+        return self.data
+
+
+class _WindowCloseFilter(QObject):
+    """Run OPM teardown before Micro-Manager resets its hardware core."""
+
+    def __init__(self, controller: OPMAppController, parent: MicroManagerGUI) -> None:
+        super().__init__(parent)
+        self._controller = controller
+
+    def eventFilter(self, watched, event) -> bool:
+        """Defer a close event until any active acquisition stops safely.
+
+        Returns
+        -------
+        bool
+            Whether this filter consumed the event.
+        """
+        if event.type() == QEvent.Type.Close:
+            if not self._controller.request_shutdown():
+                event.ignore()
+                return True
+        return super().eventFilter(watched, event)
+
+
+class OPMAppController:
+    """Manage MMGUI, OPM hardware, live-state updates, and MDA execution.
+
+    Parameters
+    ----------
+    config_path : Path
+        Path to the OPM JSON configuration file.
+    """
+
+    debug = staticmethod(partial(debug, enabled=DEBUGGING))
+    info = staticmethod(info)
+    warning = staticmethod(warning)
+
+    def __init__(
+        self,
+        config_path: Path = DEFAULT_CONFIG_PATH,
+        *,
+        mmcore=None,
+        mm_config: Path | str | Literal[False] | None = None,
+        exec_app: bool = True,
+        simulate_hardware: bool | None = None,
+    ) -> None:
+        """Load configuration and prepare placeholders for app-owned objects.
+
+        Heavy GUI and hardware objects are initialized later by ``run()`` so the
+        controller can be constructed without immediately touching hardware.
+
+        Parameters
+        ----------
+        config_path : Path
+            Path to the OPM JSON configuration file.
+        mmcore : CMMCorePlus or None
+            Existing core instance to reuse, or ``None`` to use MMGUI's instance.
+        mm_config : Path, str, False, or None
+            Micro-Manager configuration passed to ``create_mmgui``. ``False``
+            preserves the state of a supplied core.
+        exec_app : bool
+            Whether to enter the Qt application event loop.
+        simulate_hardware : bool or None
+            Override for external OPM hardware simulation.
+        """
+        self.config_store = ConfigStore(config_path)
+        self.config = self.config_store.data
+        self.config_path = self.config_store.path
+        self._provided_mmcore = mmcore
+        self._mm_config = mm_config
+        self._exec_app = exec_app
+        configured_simulation = bool(
+            self.config.get("OPM", {}).get("simulate_hardware", False)
+        )
+        self.simulate_hardware = (
+            configured_simulation
+            if simulate_hardware is None
+            else bool(simulate_hardware)
+        )
+
+        self.win = None
+        self.mmc = None
+        self.mda_widget = None
+        self.opm_settings_widget = None
+        self.opm_ao_mirror = None
+        self.opm_nidaq = None
+        self.opm_picard_shutter = None
+        self.ob1_controller = None
+        self.opm_engine = None
+        self.data_handler = None
+        self._picard_state_timer = None
+        self._mda_preview_timer = None
+        self._mda_state_timer = None
+        self._opm_preview_last_frame = -1
+        self._stage_explorer_polling_was_enabled: bool | None = None
+        self._stage_explorer_scratch_dirs: list[TemporaryDirectory] = []
+        self._opm_mda_thread = None
+        self._suspended_live_preview = None
+        self._live_action_was_enabled = None
+        self._opm_acquisition_active = False
+        self._opm_scan_footprint_active = False
+        self._updating_live_state = False
+        self._window_close_filter = None
+        self._shutdown_poll_timer = None
+        self._shutdown_requested = False
+        self._shutdown_in_progress = False
+        self._shutdown_complete = False
+        self.bootstrap_complete = False
+
+    def run(self) -> MicroManagerGUI:
+        """Create the GUI, schedule OPM bootstrap, and optionally start Qt.
+
+        Returns
+        -------
+        MicroManagerGUI
+            Configured Micro-Manager main window.
+        """
+        self.create_gui()
+        QTimer.singleShot(0, partial(self._schedule_extension_step_two))
+        if self._exec_app and (app := QApplication.instance()) is not None:
+            app.exec()
+            # Normal window closes are intercepted before the event loop exits.
+            # Keep this as a fallback for a programmatic QApplication.quit().
+            self.request_shutdown()
+        return self.win
+
+    def _schedule_extension_step_two(self) -> None:
+        """Wait one more event-loop turn for pymmcore-gui layout restoration."""
+        QTimer.singleShot(0, self.finish_bootstrap)
+
+    def finish_bootstrap(self) -> None:
+        """Attach OPM UI and hardware after pymmcore-gui restores its layout."""
+        self.initialize_hardware()
+        self.opm_settings_widget = enhance_main_window(self.win)
+        self.opm_engine = OPMEngineV2(
+            self.mmc,
+            self.config_path,
+            simulate_hardware=self.simulate_hardware,
+            config=self.config,
+            post_teardown=self.prepare_live_preview_after_mda,
+        )
+        self.mmc.register_mda_engine(self.opm_engine)
+        self.connect_signals()
+        self.bootstrap_complete = True
+
+    def create_gui(self) -> None:
+        """Create Micro-Manager GUI using its public bootstrap and widget APIs."""
+        _ensure_opm_widget_registered()
+        mm_config = self._mm_config
+        if mm_config is None:
+            mm_config = (
+                False
+                if self._provided_mmcore is not None
+                else Path(self.config["OPM"]["mm_config_path"])
+            )
+        self.win = create_mmgui(
+            mm_config=mm_config,
+            mmcore=self._provided_mmcore,
+            exec_app=False,
+        )
+        self.mmc = self.win.mmcore
+        self.win.opm_controller = self
+        self._window_close_filter = _WindowCloseFilter(self, self.win)
+        self.win.installEventFilter(self._window_close_filter)
+
+        self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
+        self.disable_native_mda_channels()
+        self.configure_transposed_mda_grid_bounds()
+
+        if DEBUGGING:
+            self.mmc.enableDebugLog(True)
+
+        self.debug(
+            "GUI CREATED",
+            f"MM config: {mm_config}",
+        )
+
+    def _acquisition_is_running(self) -> bool:
+        """Return whether an MDA runner or its application-owned thread is active.
+
+        Returns
+        -------
+        bool
+            Whether acquisition work still prevents safe resource teardown.
+        """
+        runner_active = bool(self.mmc is not None and self.mmc.mda.is_running())
+        thread_active = bool(
+            self._opm_mda_thread is not None and self._opm_mda_thread.is_alive()
+        )
+        return runner_active or thread_active
+
+    def _stop_app_timers(self) -> None:
+        """Stop periodic GUI callbacks before owned resources are released."""
+        for timer in (
+            self._picard_state_timer,
+            self._mda_preview_timer,
+            self._mda_state_timer,
+        ):
+            if timer is not None:
+                timer.stop()
+
+    def request_shutdown(self) -> bool:
+        """Request safe application shutdown.
+
+        Returns
+        -------
+        bool
+            ``True`` when the window may close now. ``False`` while an active
+            acquisition is being canceled; the window will close automatically
+            after its worker thread exits.
+        """
+        if self._shutdown_complete:
+            return True
+
+        self._shutdown_requested = True
+        self._stop_app_timers()
+        if self._acquisition_is_running():
+            if self.opm_engine is not None:
+                self.opm_engine.request_safe_stop()
+            if self.mmc is not None:
+                self.mmc.mda.cancel()
+            self.info(
+                "OPM SHUTDOWN WAITING",
+                "Canceling the active acquisition at a safe event boundary.",
+                "The window will close automatically after hardware teardown.",
+            )
+            self._start_shutdown_polling()
+            return False
+
+        self.shutdown()
+        return True
+
+    def _start_shutdown_polling(self) -> None:
+        """Poll without blocking the GUI until the acquisition thread exits."""
+        if self._shutdown_poll_timer is None:
+            self._shutdown_poll_timer = QTimer(self.win)
+            self._shutdown_poll_timer.setInterval(100)
+            self._shutdown_poll_timer.timeout.connect(self._continue_shutdown)
+        if not self._shutdown_poll_timer.isActive():
+            self._shutdown_poll_timer.start()
+
+    def _continue_shutdown(self) -> None:
+        """Finish a deferred shutdown once acquisition cleanup has returned."""
+        if self._acquisition_is_running():
+            return
+        if self._shutdown_poll_timer is not None:
+            self._shutdown_poll_timer.stop()
+        self.shutdown()
+        if self.win is not None:
+            QTimer.singleShot(0, self.win.close)
+
+    def _cleanup(self, label: str, callback) -> None:
+        """Run one best-effort shutdown operation without skipping later ones."""
+        try:
+            callback()
+        except Exception as exc:
+            self.warning("OPM SHUTDOWN WARNING", f"{label}: {exc}")
+
+    def shutdown(self) -> None:
+        """Release every application-owned resource exactly once."""
+        if self._shutdown_complete or self._shutdown_in_progress:
+            return
+        if self._acquisition_is_running():
+            self.request_shutdown()
+            return
+
+        self._shutdown_in_progress = True
+        self.info("OPM SHUTDOWN", "Releasing application resources.")
+        try:
+            self._stop_app_timers()
+            if self._shutdown_poll_timer is not None:
+                self._shutdown_poll_timer.stop()
+
+            if self.mmc is not None and self.mmc.isSequenceRunning():
+                self._cleanup(
+                    "stop live camera sequence",
+                    self.mmc.stopSequenceAcquisition,
+                )
+            if self.data_handler is not None:
+                self._cleanup("close acquisition writer", self.data_handler.close)
+                self.data_handler = None
+            if self.opm_nidaq is not None:
+                self._cleanup("clear NI-DAQ tasks", self.opm_nidaq.clear_tasks)
+            if self.opm_picard_shutter is not None:
+                self._cleanup(
+                    "close Picard shutter",
+                    self.opm_picard_shutter.shutDown,
+                )
+            if (
+                self.ob1_controller is not None
+                and self.ob1_controller.board is not None
+            ):
+                self._cleanup("close OB1 controller", self.ob1_controller.close_board)
+            if self.opm_ao_mirror is not None:
+                self._cleanup("disconnect AO mirror", self.opm_ao_mirror.disconnect)
+
+            scratch_count = len(self._stage_explorer_scratch_dirs)
+            if scratch_count:
+                self.info(
+                    "OPM SHUTDOWN",
+                    f"Removing {scratch_count} Stage Explorer scratch dataset(s).",
+                )
+            while self._stage_explorer_scratch_dirs:
+                scratch_dir = self._stage_explorer_scratch_dirs.pop()
+                self._cleanup(
+                    f"remove Stage Explorer scratch data {scratch_dir.name}",
+                    scratch_dir.cleanup,
+                )
+
+            AOMirror.reset_instance()
+            OPMNIDAQ.reset_instance()
+            PicardShutter.reset_instance()
+            OB1Controller.reset_instance()
+            self._opm_mda_thread = None
+            self.info("OPM SHUTDOWN COMPLETE", "Application resources released.")
+        finally:
+            self._shutdown_in_progress = False
+            self._shutdown_complete = True
+
+    def disable_native_mda_channels(self) -> None:
+        """Disable native MDA channels because OPM settings own channel setup."""
+        tabs = self.mda_widget.tab_wdg
+        channels = tabs.channels
+        channel_index = tabs.indexOf(channels)
+        explanation = "Configure acquisition channels in OPM Settings."
+
+        tabs.setChecked(channels, False)
+        channels.setEnabled(False)
+        tabs.setTabText(channel_index, "Channels (use OPM Settings)")
+        tabs.setTabToolTip(channel_index, explanation)
+        tabs.setTabEnabled(channel_index, False)
+
+        channel_checkbox = tabs.tabBar().tabButton(
+            channel_index, QTabBar.ButtonPosition.LeftSide
+        )
+        if channel_checkbox is not None:
+            channel_checkbox.setChecked(False)
+            channel_checkbox.setEnabled(False)
+            channel_checkbox.setToolTip(explanation)
+
+    def configure_transposed_mda_grid_bounds(self) -> None:
+        """Map camera-oriented grid controls onto the physical XY stage axes."""
+        grid_widget = self.mda_widget.grid_plan
+        bounds_control = getattr(grid_widget, "_core_xy_bounds", None)
+        if bounds_control is None:
+            self.warning(
+                "MDA GRID AXIS MAPPING",
+                "Could not find the native XY bounds control.",
+            )
+            return
+
+        button_mapping = {
+            "btn_top": (True, None),
+            "btn_bottom": (False, None),
+            "btn_left": (None, True),
+            "btn_right": (None, False),
+            "btn_top_left": (True, True),
+            "btn_top_right": (True, False),
+            "btn_bottom_left": (False, True),
+            "btn_bottom_right": (False, False),
+        }
+        for button_name, (top, left) in button_mapping.items():
+            button = getattr(bounds_control, button_name)
+            try:
+                button.clicked.disconnect()
+            except (RuntimeError, TypeError):
+                pass
+            button.clicked.connect(
+                partial(
+                    self._mark_or_visit_transposed_grid_bound,
+                    bounds_control,
+                    top=top,
+                    left=left,
+                )
+            )
+
+        self.debug(
+            "MDA GRID AXIS MAPPING",
+            "Top/bottom records physical X (ASI fast axis).",
+            "Left/right records physical Y (tile axis).",
+        )
+
+    def _mark_or_visit_transposed_grid_bound(
+        self,
+        bounds_control,
+        _checked: bool = False,
+        *,
+        top: bool | None = None,
+        left: bool | None = None,
+    ) -> None:
+        """Mark or visit one camera-oriented bound using swapped stage axes."""
+        xy_stage = self.mmc.getXYStageDevice()
+        current_x = float(self.mmc.getXPosition(xy_stage))
+        current_y = float(self.mmc.getYPosition(xy_stage))
+
+        if bounds_control.go_middle.isChecked():
+            target_x = (
+                current_x
+                if top is None
+                else float(
+                    bounds_control.top.value() if top else bounds_control.bottom.value()
+                )
+            )
+            target_y = (
+                current_y
+                if left is None
+                else float(
+                    bounds_control.left.value()
+                    if left
+                    else bounds_control.right.value()
+                )
+            )
+            self.mmc.setXYPosition(xy_stage, target_x, target_y)
+            self.mmc.waitForDevice(xy_stage)
+            return
+
+        if top is not None:
+            (bounds_control.top if top else bounds_control.bottom).setValue(current_x)
+        if left is not None:
+            (bounds_control.left if left else bounds_control.right).setValue(current_y)
+
+        self.debug(
+            "MDA GRID BOUND UPDATED",
+            f"top / bottom (physical X): "
+            f"{bounds_control.top.value()} / {bounds_control.bottom.value()}",
+            f"left / right (physical Y): "
+            f"{bounds_control.left.value()} / {bounds_control.right.value()}",
+        )
+
+    def initialize_hardware(self) -> None:
+        """Instantiate OPM hardware controllers and put them in startup states."""
+        # ------------------------------------------------------------------------------#
+        # AO mirror
+        # ------------------------------------------------------------------------------#
+
+        self.opm_ao_mirror = AOMirror(
+            wfc_config_file_path=Path(self.config["AOMirror"]["wfc_config_path"]),
+            haso_config_file_path=Path(self.config["AOMirror"]["haso_config_path"]),
+            interaction_matrix_file_path=Path(
+                self.config["AOMirror"]["wfc_correction_path"]
+            ),
+            system_flat_file_path=Path(self.config["AOMirror"]["wfc_flat_path"]),
+            n_modes=32,
+            n_positions=1,
+            modes_to_ignore=[],
+            simulate=self.simulate_hardware,
+        )
+        self.opm_ao_mirror.apply_system_flat_voltage()
+
+        self.debug(
+            "AO MIRROR INITIALIZED",
+            f"System flat: {self.config['AOMirror']['wfc_flat_path']}",
+            "Startup state: system flat voltage applied",
+        )
+
+        # ------------------------------------------------------------------------------#
+        # NIDAQ
+        # ------------------------------------------------------------------------------#
+
+        daq_type = MockOPMNIDAQ if self.simulate_hardware else OPMNIDAQ
+        self.opm_nidaq = daq_type(
+            name=str(self.config["NIDAQ"]["name"]),
+            scan_type=str(self.config["NIDAQ"]["scan_type"]),
+            exposure_ms=float(self.config["Camera"]["exposure_ms"]),
+            laser_blanking=bool(self.config["acq_config"]["DAQ"]["laser_blanking"]),
+            image_mirror_calibration=float(
+                str(self.config["NIDAQ"]["image_mirror_calibration"])
+            ),
+            projection_mirror_calibration=float(
+                str(self.config["NIDAQ"]["projection_mirror_calibration"])
+            ),
+            image_mirror_neutral_v=float(
+                str(self.config["NIDAQ"]["image_mirror_neutral_v"])
+            ),
+            projection_mirror_neutral_v=float(
+                str(self.config["NIDAQ"]["projection_mirror_neutral_v"])
+            ),
+            image_mirror_step_um=float(
+                str(self.config["NIDAQ"]["image_mirror_step_um"])
+            ),
+            verbose=bool(self.config["NIDAQ"]["verbose"]),
+        )
+        self.opm_nidaq.reset()
+
+        self.debug(
+            "NIDAQ INITIALIZED",
+            f"Name: {self.config['NIDAQ']['name']}",
+        )
+
+        # ------------------------------------------------------------------------------#
+        # O2-O3 laser shutter
+        # ------------------------------------------------------------------------------#
+
+        self.opm_picard_shutter = PicardShutter(
+            int(self.config["O2O3-autofocus"]["shutter_id"]),
+            verbose=True,
+            simulate=self.simulate_hardware,
+        )
+        self.opm_picard_shutter.closeShutter()
+
+        self.debug(
+            "O2-O3 SHUTTER INITIALIZED",
+            f"Shutter id: {self.config['O2O3-autofocus']['shutter_id']}",
+            "Startup state: closed",
+        )
+
+        # ------------------------------------------------------------------------------#
+        # Fluidics
+        # ------------------------------------------------------------------------------#
+
+        if bool(self.config["OPM"].get("fluidics_enabled", False)):
+            self.ob1_controller = OB1Controller(
+                port=str(self.config["OB1"]["port"]),
+                to_OB1_pin=int(self.config["OB1"]["to_OB1_pin"]),
+                from_OB1_pin=int(self.config["OB1"]["from_OB1_pin"]),
+                simulate=self.simulate_hardware,
+            )
+            self.debug("FLUIDICS INITIALIZED", "OB1 controller enabled")
+        else:
+            self.debug("FLUIDICS SKIPPED", "config['OPM']['fluidics_enabled'] is false")
+
+    def connect_signals(self) -> None:
+        """Connect Micro-Manager and OPM widget signals to controller methods."""
+        self.opm_settings_widget.settings_changed.connect(self.update_config_snapshot)
+        self.opm_settings_widget.run_requested.connect(self.run_opm_acquisition)
+        self.opm_settings_widget.stop_requested.connect(self.request_opm_stop)
+        self.opm_settings_widget.picard_shutter_requested.connect(
+            self.set_picard_shutter_open
+        )
+        self.mmc.mda.events.sequenceFinished.connect(self._on_mda_sequence_finished)
+        self.mmc.mda.events.sequenceStarted.connect(self._on_mda_sequence_started)
+        self.mmc.mda.events.sequenceFinished.connect(
+            self.opm_settings_widget.set_acquisition_idle
+        )
+        self.sync_picard_shutter_button()
+        self._picard_state_timer = QTimer(self.win)
+        self._picard_state_timer.setInterval(100)
+        self._picard_state_timer.timeout.connect(self.sync_picard_shutter_button)
+        self._picard_state_timer.start()
+
+        # The OPM writer owns its live data stream rather than registering as
+        # pymmcore-plus's native sink.  Attach that stream to the MDA viewer as
+        # soon as its first frame establishes the array shape.
+        self._mda_preview_timer = QTimer(self.win)
+        self._mda_preview_timer.setInterval(OPM_PREVIEW_INTERVAL_MS)
+        self._mda_preview_timer.timeout.connect(self.sync_opm_mda_preview)
+        self._mda_preview_timer.start()
+
+        # Keep post-MDA live-state recovery responsive independently of the much
+        # slower, intentionally throttled NDV data refresh.
+        self._mda_state_timer = QTimer(self.win)
+        self._mda_state_timer.setInterval(50)
+        self._mda_state_timer.timeout.connect(self.sync_live_button_state)
+        self._mda_state_timer.timeout.connect(self.restore_live_preview_after_mda)
+        self._mda_state_timer.timeout.connect(
+            self.sync_stage_explorer_acquisition_footprint
+        )
+        self._mda_state_timer.start()
+
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        if viewers_manager is not None:
+            viewers_manager.previewViewerCreated.connect(_configure_live_preview)
+            _configure_live_preview(viewers_manager._current_image_preview)
+
+        stage_explorer_action = self.win.get_action(WidgetAction.STAGE_EXPLORER)
+        stage_explorer_action.triggered.connect(
+            self._schedule_stage_explorer_configuration
+        )
+        self._schedule_stage_explorer_configuration()
+
+        # Changes to the mm config
+        self.mmc.events.configSet.connect(self.update_live_state)
+        self.update_live_state()
+
+        # Changes to the selected AO mirror state
+        self.opm_settings_widget.widgets["AO"][
+            "mirror_state"
+        ].currentIndexChanged.connect(self.update_ao_mirror_state)
+
+        # Connect live preview
+        self.mmc.events.continuousSequenceAcquisitionStarting.connect(
+            self.setup_preview_mode_callback
+        )
+        self.mmc.events.continuousSequenceAcquisitionStarted.connect(
+            self._on_live_sequence_started
+        )
+        self.mmc.events.exposureChanged.connect(
+            self._schedule_live_preview_refresh_interval
+        )
+        self.mmc.events.sequenceAcquisitionStopped.connect(
+            self._on_live_sequence_stopped
+        )
+
+        self.debug(
+            "SIGNALS CONNECTED",
+            "OPM settings -> in-memory acquisition snapshot",
+            "OPM run button -> OPM acquisition",
+            "OPM STOP button -> cooperative software-boundary stop",
+            "Picard shutter button -> O2-O3 shutter state",
+            "mmc.events.configSet -> update_live_state",
+            "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
+            "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
+            "Live start/stop -> suspend/restore Stage Explorer polling",
+        )
+
+    def sync_opm_mda_preview(self, force: bool = False) -> None:
+        """Attach and periodically refresh the OPM stream in the MDA viewer.
+
+        Parameters
+        ----------
+        force : bool
+            Refresh even when no additional frame has arrived. Used to leave the
+            viewer synchronized with the completed acquisition.
+        """
+        if not self._opm_acquisition_active and not force:
+            return
+        handler = self.data_handler
+        if handler is None:
+            return
+
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        viewer = getattr(viewers_manager, "_active_mda_viewer", None)
+        if viewer is None:
+            return
+
+        if viewer.data_wrapper is None:
+            view = handler.get_view()
+            if view is None:
+                return
+
+            viewer.data = view
+            self.info(
+                "OPM MDA PREVIEW READY",
+                "Displaying the complete dimensional OPM acquisition",
+                f"Refresh interval: {OPM_PREVIEW_INTERVAL_MS} ms",
+            )
+
+        wrapper = viewer.data_wrapper
+        if wrapper is None:
+            return
+
+        frame_count, latest_index = handler.get_preview_state()
+        if not force and frame_count <= self._opm_preview_last_frame:
+            return
+
+        try:
+            current_index = viewer.display_model.current_index
+            current_index.update(
+                (axis, index)
+                for axis, index in latest_index.items()
+                if axis in current_index
+            )
+            wrapper.data_changed.emit()
+        except Exception:
+            # The user may close the viewer between the timer lookup and refresh.
+            return
+        self._opm_preview_last_frame = frame_count
+
+    def _set_mda_follow_acquisition(self, enabled: bool) -> None:
+        """Enable or disable pymmcore-gui's per-frame NDV refresh callback."""
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        if viewers_manager is not None:
+            viewers_manager._follow_acquisition = enabled
+
+    def _set_stage_explorer_frame_updates(self, enabled: bool) -> None:
+        """Use the widget's idempotent MDA frame subscription property."""
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is None:
+            return
+        _connect_stage_explorer_to_mda(explorer, self.mda_widget)
+        explorer.mda_frame_updates_enabled = enabled
+
+    def _set_stage_explorer_position_polling(self, enabled: bool) -> None:
+        """Suspend Explorer's serial position queries during an OPM acquisition."""
+        if enabled:
+            previous = self._stage_explorer_polling_was_enabled
+            if previous is None:
+                return
+            self._stage_explorer_polling_was_enabled = None
+        elif self._stage_explorer_polling_was_enabled is not None:
+            return
+
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is None:
+            return
+
+        if enabled:
+            if bool(explorer.poll_stage_position) != previous:
+                explorer.poll_stage_position = previous
+            return
+
+        previous = bool(explorer.poll_stage_position)
+        self._stage_explorer_polling_was_enabled = previous
+        if previous:
+            explorer.poll_stage_position = False
+
+    def _on_live_sequence_started(self) -> None:
+        """Stop Stage Explorer hardware polling while Live owns the camera loop."""
+        if not self.mmc.mda.is_running():
+            self._set_stage_explorer_position_polling(False)
+            self._schedule_live_preview_refresh_interval()
+
+    def _schedule_live_preview_refresh_interval(self, *_args) -> None:
+        """Apply throttling after upstream preview slots finish starting timers."""
+        QTimer.singleShot(0, self._set_live_preview_refresh_interval)
+
+    def _set_live_preview_refresh_interval(self, *_args) -> None:
+        """Coalesce fast camera frames into a responsive native Live display."""
+        if (
+            not self.mmc.isSequenceRunning()
+            or self.mmc.mda.is_running()
+            or self._opm_acquisition_active
+        ):
+            return
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        preview_dock = getattr(viewers_manager, "_current_image_preview", None)
+        preview = preview_dock.widget() if preview_dock is not None else None
+        if preview is None or not hasattr(preview, "_timer_id"):
+            return
+
+        exposure_ms = max(1, int(round(float(self.mmc.getExposure()))))
+        interval_ms = max(LIVE_DISPLAY_INTERVAL_MS, exposure_ms)
+        timer_id = preview._timer_id
+        if timer_id is not None:
+            preview.killTimer(timer_id)
+        preview._timer_id = preview.startTimer(
+            interval_ms,
+            Qt.TimerType.PreciseTimer,
+        )
+        preview._opm_refresh_interval_ms = interval_ms
+
+    def _on_live_sequence_stopped(self, _camera_label: str | None = None) -> None:
+        """Release Live resources and restore Explorer polling."""
+        if self.opm_nidaq is not None:
+            try:
+                if self.opm_nidaq.running():
+                    self.opm_nidaq.stop_waveform_playback()
+                self.opm_nidaq.clear_tasks()
+            except Exception as exc:
+                self.warning("LIVE STOP WARNING", f"DAQ cleanup failed: {exc}")
+        try:
+            self.mmc.clearCircularBuffer()
+        except RuntimeError as exc:
+            self.warning("LIVE STOP WARNING", f"Camera buffer cleanup failed: {exc}")
+        if not self.mmc.mda.is_running() and not self._opm_acquisition_active:
+            self._set_stage_explorer_position_polling(True)
+
+    def sync_live_button_state(self) -> None:
+        """Clear a stale live-button highlight after an MDA camera sequence."""
+        if self.mmc.mda.is_running() or self.mmc.isSequenceRunning():
+            return
+
+        live_action = self.win.get_action(CoreAction.TOGGLE_LIVE)
+        if live_action.isChecked():
+            live_action.setChecked(False)
+
+    def suspend_live_preview_for_mda(self) -> None:
+        """Prevent the live preview timer from consuming MDA camera frames."""
+        if self.mmc.isSequenceRunning():
+            self.mmc.stopSequenceAcquisition()
+
+        live_action = self.win.get_action(CoreAction.TOGGLE_LIVE)
+        self._live_action_was_enabled = live_action.isEnabled()
+        live_action.setChecked(False)
+        live_action.setEnabled(False)
+        viewers_manager = getattr(self.win, "_viewers_manager", None)
+        preview_dock = getattr(viewers_manager, "_current_image_preview", None)
+        preview = preview_dock.widget() if preview_dock is not None else None
+        if preview is None:
+            return
+
+        preview._on_streaming_stop()
+        try:
+            self.mmc.events.sequenceAcquisitionStarted.disconnect(
+                preview._on_streaming_start
+            )
+        except (RuntimeError, TypeError):
+            return
+        self._suspended_live_preview = preview
+
+    def restore_live_preview_after_mda(self, force: bool = False) -> None:
+        """Reconnect a suspended live preview after the OPM MDA thread exits."""
+        if not force and (
+            self._opm_mda_thread is None or self._opm_mda_thread.is_alive()
+        ):
+            return
+
+        preview = self._suspended_live_preview
+        if preview is not None:
+            self.mmc.events.sequenceAcquisitionStarted.connect(
+                preview._on_streaming_start
+            )
+        if self._live_action_was_enabled is not None:
+            self.win.get_action(CoreAction.TOGGLE_LIVE).setEnabled(
+                self._live_action_was_enabled
+            )
+        self._suspended_live_preview = None
+        self._live_action_was_enabled = None
+        self._opm_mda_thread = None
+
+    def set_picard_shutter_open(self, is_open: bool) -> None:
+        """Apply a Picard shutter state requested by the settings widget.
+
+        Parameters
+        ----------
+        is_open : bool
+            Whether the user requested the shutter to be open.
+        """
+        if self.opm_picard_shutter is None:
+            self.opm_settings_widget.set_picard_shutter_open(False)
+            return
+
+        try:
+            if is_open:
+                self.opm_picard_shutter.openShutter()
+            else:
+                self.opm_picard_shutter.closeShutter()
+        finally:
+            self.sync_picard_shutter_button()
+
+        self.debug(
+            "PICARD SHUTTER UPDATED",
+            f"State: {self.opm_picard_shutter.state}",
+        )
+
+    def sync_picard_shutter_button(self) -> None:
+        """Reflect the current Picard shutter state in the settings widget."""
+        if self.opm_settings_widget is None or self.opm_picard_shutter is None:
+            return
+        state_name = str(self.opm_picard_shutter.state).rsplit(".", maxsplit=1)[-1]
+        is_open = state_name.casefold() == "open"
+        if self.opm_settings_widget.picard_shutter_button.isChecked() != is_open:
+            self.opm_settings_widget.set_picard_shutter_open(is_open)
+
+    def update_config_snapshot(self, config: dict) -> None:
+        """Accept an immutable-at-dispatch snapshot from the OPM widget.
+
+        Parameters
+        ----------
+        config : dict
+            Complete OPM configuration represented by current GUI controls.
+        """
+        self.config_store.replace(config)
+        if self.opm_engine is not None:
+            self.opm_engine.set_config(self.config)
+        # An inactive Explorer always uses the physical camera FOV, so ordinary
+        # settings edits cannot change its footprint.  Retiling every ROI on
+        # each spin-box update is especially expensive for a 128-pixel crop.
+        if self._opm_scan_footprint_active:
+            self.refresh_stage_explorer_footprint()
+
+    def refresh_stage_explorer_footprint(self) -> None:
+        """Refresh an existing Explorer without creating its dock implicitly."""
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is not None:
+            _connect_stage_explorer_to_mda(explorer, self.mda_widget)
+            _refresh_stage_explorer_display_footprint(explorer)
+
+    def _schedule_stage_explorer_configuration(self, *_args) -> None:
+        """Configure an Explorer after pymmcore-gui has created its dock."""
+        QTimer.singleShot(0, self._configure_stage_explorer)
+
+    def _configure_stage_explorer(self) -> None:
+        """Attach OPM behavior through the public Stage Explorer API."""
+        try:
+            explorer = self.win.get_widget(WidgetAction.STAGE_EXPLORER, create=False)
+        except (KeyError, RuntimeError):
+            return
+        if explorer is not None:
+            _connect_stage_explorer_to_mda(explorer, self.mda_widget)
+
+    def update_live_state(self, device_name=None, property_name=None) -> None:
+        """Apply one non-reentrant live camera and DAQ configuration update."""
+        if getattr(self, "_updating_live_state", False):
+            self.debug(
+                "LIVE STATE SKIPPED",
+                "A camera/DAQ configuration update is already in progress.",
+            )
+            return
+        self._updating_live_state = True
+        try:
+            self._update_live_state_once(device_name, property_name)
+        finally:
+            self._updating_live_state = False
+
+    def _update_live_state_once(self, device_name=None, property_name=None) -> None:
+        """Apply live camera, DAQ, and channel state after MM config changes.
+
+        The callback may temporarily stop continuous sequence acquisition while
+        the DAQ waveform and camera settings are updated, then restart preview.
+
+        Parameters
+        ----------
+        device_name : str or None
+            Micro-Manager device that emitted the configuration change.
+        property_name : str or None
+            Device property that changed.
+        """
+        daq_config = self.config["acq_config"]["DAQ"]
+        camera_roi = self.config["acq_config"]["camera_roi"]
+
+        # Ignore shutter signals
+        if device_name == self.mmc.getShutterDevice() and property_name == "State":
+            return
+
+        self.debug(
+            "LIVE STATE TRIGGERED",
+            f"Device name: {device_name}",
+            f"Property name: {property_name}",
+        )
+
+        if "OPM-live-mode" not in set(self.mmc.getLoadedDevices()):
+            self.debug(
+                "LIVE STATE SKIPPED",
+                "The active Micro-Manager configuration has no OPM-live-mode device.",
+            )
+            return
+
+        # ------------------------------------------------------------------------------#
+        # OPM live modes
+        # ------------------------------------------------------------------------------#
+
+        opm_mode = self.mmc.getProperty("OPM-live-mode", "Label")
+        if opm_mode == "0-Standard":
+            scan_type = "2d"
+        elif opm_mode == "1-Projection":
+            scan_type = "projection"
+        else:
+            self.warning("UNKNOWN LIVE MODE", f"OPM-live-mode: {opm_mode}")
+            return
+
+        # ------------------------------------------------------------------------------#
+        # Update the DAQ state
+        # ------------------------------------------------------------------------------#
+
+        # Stop / restart live preview
+        restart_sequence = False
+        if self.mmc.isSequenceRunning():
+            self.mmc.stopSequenceAcquisition()
+            restart_sequence = True
+
+        # Stop the DAQ playback
+        if self.opm_nidaq.running():
+            self.opm_nidaq.stop_waveform_playback()
+
+        # Get the current camera exposure
+        exposure_ms = round(
+            float(self.mmc.getProperty(self.config["Camera"]["camera_id"], "Exposure")),
+            1,
+        )
+
+        # Get the current active laser channel, limits to one channel at a time
+        image_mirror_range_um = np.round(
+            float(self.mmc.getProperty("ImageGalvoMirrorRange", "Position")),
+            0,
+        )
+
+        # Create the channel states list needed for the DAQ waveform
+        active_channel_id = self.mmc.getProperty("Laser", "Label")
+        channel_states = [
+            active_channel_id == channel_id
+            for channel_id in self.config["OPM"]["channel_ids"]
+        ]
+
+        # Define the y cropping and check for valid exposures
+        if scan_type == "projection":
+            crop_y = int(image_mirror_range_um / self.mmc.getPixelSizeUm())
+            if exposure_ms < MIN_PROJECTION_EXPOSURE:
+                self.warning(
+                    "PROJECTION EXPOSURE TOO LOW",
+                    f"Requested exposure: {exposure_ms} ms",
+                    f"Defualting to {DEFUALT_PROJECTION_EXPOSURE}ms",
+                )
+                exposure_ms = DEFUALT_PROJECTION_EXPOSURE
+        else:
+            crop_y = int(self.mmc.getProperty("ImageCameraCrop", "Label"))
+
+        # Set the acquisition parameters
+        self.opm_nidaq.set_acquisition_params(
+            scan_type=scan_type,
+            channel_states=channel_states,
+            image_mirror_range_um=image_mirror_range_um,
+            exposure_ms=exposure_ms,
+            laser_blanking=daq_config["laser_blanking"],
+        )
+
+        # ------------------------------------------------------------------------------#
+        # Update the Camera state
+        # ------------------------------------------------------------------------------#
+
+        # Set / check camera ROI
+        if crop_y != self.mmc.getROI()[-1]:
+            self.mmc.clearROI()
+            self.mmc.waitForDevice(str(self.config["Camera"]["camera_id"]))
+            self.mmc.setROI(
+                int(camera_roi["center_x"] - camera_roi["crop_x"] // 2),
+                int(camera_roi["center_y"] - crop_y // 2),
+                int(camera_roi["crop_x"]),
+                crop_y,
+            )
+            self.mmc.waitForDevice(str(self.config["Camera"]["camera_id"]))
+
+            self.debug("CAMERA ROI UPDATED", f"Crop Y: {crop_y}")
+
+        # Set / check camera exposure
+        if self.mmc.getExposure() != exposure_ms:
+            self.mmc.setProperty(
+                str(self.config["Camera"]["camera_id"]),
+                "Exposure",
+                exposure_ms,
+            )
+            self.mmc.waitForDevice(str(self.config["Camera"]["camera_id"]))
+            self.debug("CAMERA EXPOSURE UPDATED", f"Exposure: {exposure_ms} ms")
+
+        self.debug(
+            "LIVE STATE APPLIED",
+            f"Sequence was running: {restart_sequence}",
+            f"Scan type: {scan_type}",
+            f"Channel states: {channel_states}",
+            f"Image mirror range: {image_mirror_range_um} um",
+            f"Exposure: {exposure_ms} ms",
+            f"Laser blanking: {daq_config['laser_blanking']}",
+        )
+
+        # Start live preview
+        if restart_sequence:
+            self.mmc.startContinuousSequenceAcquisition()
+            self.debug("LIVE PREVIEW RESTARTED")
+
+    def update_ao_mirror_state(self) -> None:
+        """Apply the AO mirror state selected in the OPM settings widget."""
+        ao_mirror_state = self.config["acq_config"]["AO"]["mirror_state"]
+
+        if "system" in ao_mirror_state:
+            self.opm_ao_mirror.apply_system_flat_voltage()
+        elif "optimized" in ao_mirror_state:
+            self.opm_ao_mirror.apply_optimized_voltage()
+        elif "factory" in ao_mirror_state:
+            self.opm_ao_mirror.apply_factory_flat_voltage()
+        elif "zeros" in ao_mirror_state:
+            self.opm_ao_mirror.apply_zeros_voltage()
+
+        self.debug("AO MIRROR STATE UPDATED", f"Mirror state: {ao_mirror_state}")
+
+    def setup_preview_mode_callback(self) -> None:
+        """Program the OPM NIDAQ waveform before continuous preview starts."""
+        # A stopped sequence may leave frames in MMCore's circular buffer.  If
+        # retained, the GUI preview drains that backlog synchronously on restart.
+        self.mmc.clearCircularBuffer()
+        if self.opm_nidaq.running():
+            self.opm_nidaq.stop_waveform_playback()
+
+        self.update_live_state()
+        if any(self.opm_nidaq.channel_states):
+            if not self.opm_nidaq.programmed():
+                self.opm_nidaq.clear_tasks()
+                self.opm_nidaq.generate_waveforms()
+                self.opm_nidaq.program_daq_waveforms()
+                self.debug(
+                    "PREVIEW DAQ REPROGRAMMED",
+                    f"Channel states: {self.opm_nidaq.channel_states}",
+                )
+            else:
+                self.debug("PREVIEW DAQ ALREADY PREPARED")
+            self.opm_nidaq.start_waveform_playback()
+
+    def prepare_stage_explorer_preview(self) -> None:
+        """Arm the current config-group waveform for an Explorer MDA.
+
+        Raises
+        ------
+        RuntimeError
+            If the active Micro-Manager channel preset produces no DAQ channel
+            or if the waveform cannot be programmed or started.
+        """
+        if self.opm_nidaq.running():
+            self.opm_nidaq.stop_waveform_playback()
+
+        # This reads the live Micro-Manager device properties: Channel, camera
+        # exposure, image-galvo range, and OPM-live-mode.  It deliberately does
+        # not use the OPM acquisition widget's channel/power/exposure arrays.
+        self.update_live_state()
+        if not any(self.opm_nidaq.channel_states):
+            raise RuntimeError(
+                "The active Micro-Manager Channel preset enables no OPM laser"
+            )
+
+        self.opm_nidaq.clear_tasks()
+        self.opm_nidaq.generate_waveforms()
+        self.opm_nidaq.program_daq_waveforms()
+        if not self.opm_nidaq.programmed():
+            raise RuntimeError("Could not program the Stage Explorer preview DAQ")
+
+        self.opm_nidaq.start_waveform_playback()
+        if not self.opm_nidaq.running():
+            raise RuntimeError("Could not start the Stage Explorer preview DAQ")
+
+        self.debug(
+            "STAGE EXPLORER PREVIEW DAQ ARMED",
+            f"Scan type: {self.opm_nidaq.scan_type}",
+            f"Channel states: {self.opm_nidaq.channel_states}",
+            f"Exposure: {self.opm_nidaq.exposure_ms} ms",
+            f"Image mirror range: {self.opm_nidaq.image_mirror_range_um} um",
+        )
+
+    def prepare_live_preview_after_mda(self) -> None:
+        """Prepare stopped live-preview DAQ tasks on the MDA worker thread."""
+        self.update_live_state()
+        if not any(self.opm_nidaq.channel_states):
+            return
+
+        self.opm_nidaq.clear_tasks()
+        self.opm_nidaq.generate_waveforms()
+        self.opm_nidaq.program_daq_waveforms()
+        if self.opm_nidaq.programmed():
+            self.debug(
+                "LIVE PREVIEW DAQ PREPARED",
+                "Waveform is stopped and ready for the next Live request.",
+            )
+
+    def run_opm_acquisition(self) -> None:
+        """Prepare the standard MDA plan and dispatch it through OPM controls."""
+        # Capture the visible controls synchronously at the Run boundary.  The
+        # normal settings-changed signal also keeps this snapshot current, but
+        # acquisition dispatch must never rely on a queued signal when choosing
+        # between hardware-incompatible mirror and stage plans.
+        self.update_config_snapshot(self.opm_settings_widget.value())
+        output = self.mda_widget.prepare_mda()
+        if output is False:
+            return
+        self.custom_execute_mda(output)
+
+    def request_opm_stop(self) -> None:
+        """Request an OPM stop at the next software-controlled command."""
+        if not self._opm_acquisition_active or self.opm_engine is None:
+            self.opm_settings_widget.set_acquisition_idle()
+            return
+        if not self.opm_engine.request_safe_stop():
+            return
+
+        self.opm_settings_widget.set_stop_pending()
+        self.info(
+            "OPM STOP REQUESTED",
+            "The active hardware-triggered event will finish.",
+            "Stopping before the next software-controlled command.",
+        )
+
+    def _on_mda_sequence_started(self, *_args) -> None:
+        """Disable pymmcore-gui's per-frame NDV updates for an OPM sequence."""
+        if not self._opm_acquisition_active:
+            return
+        # NDVViewersManager enables follow mode while constructing each new MDA
+        # viewer.  This callback is connected after the manager, so turn it off
+        # again before the first camera frame can enqueue a GUI refresh.
+        self._set_mda_follow_acquisition(False)
+        self._set_stage_explorer_frame_updates(False)
+        self._set_stage_explorer_position_polling(False)
+        self._opm_preview_last_frame = -1
+        self._opm_scan_footprint_active = False
+        self.refresh_stage_explorer_footprint()
+
+    def sync_stage_explorer_acquisition_footprint(self) -> None:
+        """Show the mirror scan footprint after setup has produced an image.
+
+        O2-O3 autofocus and AO setup run before the camera acquisition and do
+        not write frames to the OPM data handler.  Waiting for its first saved
+        frame therefore keeps the projection preview footprint visible through
+        both setup operations and switches the ROI only when imaging begins.
+        """
+        if (
+            self._opm_scan_footprint_active
+            or not self._opm_acquisition_active
+            or self.data_handler is None
+        ):
+            return
+        frame_count, _current_index = self.data_handler.get_preview_state()
+        if frame_count <= 0:
+            return
+        self._opm_scan_footprint_active = True
+        self.refresh_stage_explorer_footprint()
+
+    def _on_mda_sequence_finished(self, *_args) -> None:
+        """Clear cooperative-stop state after any OPM MDA completion."""
+        if not self._opm_acquisition_active:
+            return
+        self.sync_opm_mda_preview(force=True)
+        self._set_mda_follow_acquisition(True)
+        self._set_stage_explorer_frame_updates(True)
+        self._set_stage_explorer_position_polling(True)
+        self._opm_acquisition_active = False
+        self._opm_scan_footprint_active = False
+        self.refresh_stage_explorer_footprint()
+        if self.opm_engine is not None:
+            self.opm_engine.clear_safe_stop()
+
+    def custom_execute_mda(self, output: Path | str | None) -> None:
+        """Build and run OPM events from the current in-memory GUI snapshot.
+
+        Parameters
+        ----------
+        output : Path, str, or None
+            Requested MDA output or ``"memory"`` for an in-memory acquisition.
+        """
+        opm_mode = self.config["acq_config"]["opm_mode"]
+        ao_mode = self.config["acq_config"]["AO"]["ao_mode"]
+        o2o3_mode = self.config["acq_config"]["o2o3_mode"]
+        fluidics_mode = self.config["acq_config"]["fluidics"]
+        optimize_now = ("now" in ao_mode) or ("now" in o2o3_mode)
+
+        if optimize_now:
+            immediate_actions = []
+            if "now" in o2o3_mode:
+                immediate_actions.append("O2-O3")
+            if "now" in ao_mode:
+                immediate_actions.append("AO")
+            self.info(
+                "OPTIMIZE NOW OVERRIDES ACQUISITION",
+                f"Only optimizing {' and '.join(immediate_actions)}",
+                "No OPM images will be acquired",
+            )
+
+        if output == "memory":
+            print("No output path supplied")
+            output = None
+
+        output = Path(output) if isinstance(output, str) else output
+        self.info(
+            "OPM ACQUISITION",
+            f"Output: {output}",
+            f"Optimize now: {optimize_now}",
+        )
+        if not optimize_now and not output:
+            self.warning(
+                "ACQUISITION NOT STARTED",
+                "Must set acquisition path to execute acquisition",
+            )
+            return
+
+        if output:
+            output = self.timestamped_output_path(output)
+
+        if ("none" not in fluidics_mode) and not optimize_now:
+            if not self.confirm_fluidics_ready():
+                return
+            self.info("FLUIDICS ACCEPTED", "ESI sequence confirmed by user")
+
+        self.debug(
+            "OPM ACQUISITION SETTINGS",
+            f"OPM mode: {opm_mode}",
+            f"AO mode: {ao_mode}",
+            f"O2O3 mode: {o2o3_mode}",
+            f"Fluidics mode: {fluidics_mode}",
+            f"Output path: {output}",
+        )
+
+        opm_events, handler = self.create_opm_events(optimize_now, opm_mode, output)
+        self.data_handler = handler
+        if handler is not None:
+            handler.set_finish_reason_getter(lambda: self.mmc.mda.status.finish_reason)
+            self.opm_engine.set_tile_retry_prepare(handler.prepare_tile_retry)
+        else:
+            self.opm_engine.set_tile_retry_prepare(None)
+
+        if opm_events is None:
+            self.warning("ACQUISITION NOT STARTED", "OPM events are empty")
+            return
+
+        self.debug(
+            "OPM EVENTS READY",
+            f"Event count: {len(opm_events)}",
+            f"Handler: {handler}",
+            "Engine: OPMEngineV2",
+        )
+        self.opm_engine.set_config(self.config)
+        self.suspend_live_preview_for_mda()
+        self.opm_engine.clear_safe_stop()
+        # Disable follow mode before dispatch as well as in sequenceStarted.  The
+        # latter is required because pymmcore-gui enables it while creating the
+        # new viewer.
+        self._set_mda_follow_acquisition(False)
+        self._set_stage_explorer_frame_updates(False)
+        self._set_stage_explorer_position_polling(False)
+        self._opm_preview_last_frame = -1
+        self._opm_scan_footprint_active = False
+        self._opm_acquisition_active = True
+        self.opm_settings_widget.set_acquisition_running(True)
+        try:
+            self._opm_mda_thread = self.mmc.run_mda(opm_events, output=handler)
+        except Exception:
+            self._opm_acquisition_active = False
+            self._opm_scan_footprint_active = False
+            self._set_mda_follow_acquisition(True)
+            self._set_stage_explorer_frame_updates(True)
+            self._set_stage_explorer_position_polling(True)
+            self.refresh_stage_explorer_footprint()
+            self.opm_engine.clear_safe_stop()
+            self.opm_settings_widget.set_acquisition_idle()
+            self.restore_live_preview_after_mda(force=True)
+            raise
+
+    def timestamped_output_path(self, output: Path) -> Path:
+        """Create a timestamped OPM acquisition output path.
+
+        Parameters
+        ----------
+        output : Path
+            User-selected output path.
+
+        Returns
+        -------
+        Path
+            Output path inside a newly created timestamped directory.
+        """
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        output_name = output.name
+        if output_name.endswith(".ome.zarr"):
+            parent_stem = output_name.removesuffix(".ome.zarr")
+        else:
+            parent_stem = output.stem
+        new_dir = output.parent / Path(f"{timestamp}_{parent_stem}")
+        new_dir.mkdir(exist_ok=True)
+        return new_dir / Path(output.name)
+
+    def confirm_fluidics_ready(self) -> bool:
+        """Ask whether the external ESI/fluidics sequence is ready.
+
+        Returns
+        -------
+        bool
+            ``True`` when the user confirms readiness.
+        """
+        response = QMessageBox.information(
+            self.mda_widget,
+            "!WARNING! ESI MUST BE RUNNING!",
+            "IS ESI SEQUENCE LOADED AND STARTED?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.Cancel,
+        )
+        return response is QMessageBox.StandardButton.Yes
+
+    def create_opm_events(
+        self,
+        optimize_now: bool,
+        opm_mode: str,
+        output: Path | None,
+    ):
+        """Build custom OPM events for the selected acquisition mode.
+
+        Parameters
+        ----------
+        optimize_now : bool
+            Whether to build immediate optimization events.
+        opm_mode : str
+            Selected OPM acquisition mode.
+        output : Path or None
+            Acquisition output path.
+
+        Returns
+        -------
+        tuple
+            Event list and output handler, or ``(None, None)`` when no valid
+            acquisition can be built.
+        """
+        if optimize_now:
+            return setup_optimizenow(mmc=self.mmc, config=self.config)
+
+        if not output:
+            return None, None
+
+        positions_selected = self.mda_widget.tab_wdg.isChecked(
+            self.mda_widget.stage_positions
+        )
+        grid_selected = self.mda_widget.tab_wdg.isChecked(self.mda_widget.grid_plan)
+        sequence = self.mda_widget.value()
+        if "timelapse" in opm_mode and not positions_selected and not grid_selected:
+            # Core MDAWidget inserts the current XYZ as a synthetic position when
+            # its Positions tab is disabled. Preserve the user's actual spatial
+            # selection so the timelapse planner can use the current position
+            # without issuing a redundant stage command.
+            sequence = sequence.replace(stage_positions=())
+        supported_modes = ("timelapse", "stage", "mirror", "projection")
+        if not any(mode in opm_mode for mode in supported_modes):
+            self.warning("UNKNOWN OPM ACQUISITION MODE", f"OPM mode: {opm_mode}")
+            return None, None
+        opm_events, handler = OPMEventBuilder(self.mmc, self.config, sequence).build(
+            output=output, mode=opm_mode
+        )
+
+        self.opm_ao_mirror.output_path = output.parents[0]
+        return opm_events, handler
+
+
+def launch_opm_app(
+    *,
+    config_path: Path | str = DEFAULT_CONFIG_PATH,
+    mm_config: Path | str | Literal[False] | None = None,
+    mmcore=None,
+    exec_app: bool = True,
+    simulate_hardware: bool | None = None,
+) -> MicroManagerGUI:
+    """Launch pymmcore-gui and attach OPM after layout restoration.
+
+    Parameters
+    ----------
+    config_path : Path or str
+        OPM JSON configuration path.
+    mm_config : Path, str, False, or None
+        Micro-Manager configuration passed to ``create_mmgui``.
+    mmcore : CMMCorePlus or None
+        Existing core instance to reuse.
+    exec_app : bool
+        Whether to enter the Qt event loop.
+    simulate_hardware : bool or None
+        Override for external hardware simulation.
+
+    Returns
+    -------
+    MicroManagerGUI
+        Configured Micro-Manager main window.
+    """
+    controller = OPMAppController(
+        Path(config_path),
+        mmcore=mmcore,
+        mm_config=mm_config,
+        exec_app=exec_app,
+        simulate_hardware=simulate_hardware,
+    )
+    return controller.run()
+
+
+def main(config_path: Path | str | None = None) -> int:
+    """Run the Micro-Manager GUI with the OPM controller.
+
+    Parameters
+    ----------
+    config_path : Path, str, or None
+        OPM JSON configuration path.
+
+    Returns
+    -------
+    int
+        Process exit status.
+    """
+    launch_opm_app(config_path=config_path or DEFAULT_CONFIG_PATH)
+    return 0
+
+
+if __name__ == "__main__":
+    main()

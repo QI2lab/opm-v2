@@ -87,6 +87,9 @@ celerybeat-schedule
 
 # virtualenv
 .venv
+.uv-cache/
+.pytest_tmp/
+pytest_workspace/
 venv/
 ENV/
 
@@ -129,3 +132,8 @@ src/opm_v2/hardware/*.json
 *.png
 *.tiff
 src/opm_v2/hardware/wfc_position_files
+.localappdata/
+.agents/
+.codex/
+.conda/
+archived_configs/

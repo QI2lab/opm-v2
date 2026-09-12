@@ -1,0 +1,537 @@
+"""Integrate the OPM data handler with its TensorStore backend."""
+
+from __future__ import annotations
+
+import json
+from itertools import product
+from pathlib import Path
+from threading import Event, Thread
+
+import numpy as np
+import pytest
+from useq import MDAEvent, MDASequence
+
+from opm_v2.engine.opm_custom_events import TILE_RETRY_ATTEMPT_METADATA_KEY
+from opm_v2.handlers.opm_data_handler import OpmDataHandler
+
+
+@pytest.mark.parametrize(
+    "acquisition_order",
+    [
+        ("t", "p", "c", "z"),
+        ("t", "p", "z", "c"),
+    ],
+)
+def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
+    workspace_tmp_path,
+    read_tensorstore_array,
+    acquisition_order,
+) -> None:
+    """Verify pixels and all metadata survive both supported frame orders.
+
+    Parameters
+    ----------
+    workspace_tmp_path : Path
+        Workspace-local directory for the OME-Zarr output.
+    read_tensorstore_array : Callable
+        Fixture materializing arrays through TensorStore.
+    acquisition_order : tuple[str, ...]
+        Indexed frame-arrival order under test.
+    """
+    output = workspace_tmp_path / "projection.ome.zarr"
+    index_sizes = {"t": 1, "p": 2, "c": 2, "z": 2}
+    semantic_events = [
+        MDAEvent(
+            index={"p": position, "c": channel},
+            metadata={
+                "DAQ": {
+                    "current_channel": ("405nm", "561nm")[channel],
+                    "image_mirror_step_um": 1.5,
+                },
+                "Stage": {
+                    "x_pos": position * 10.0,
+                    "y_pos": position * 20.0,
+                    "z_pos": 3.0,
+                },
+            },
+        )
+        for position in range(2)
+        for channel in range(2)
+    ]
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes=index_sizes,
+        delete_existing=True,
+        acquisition_order=acquisition_order,
+        events=semantic_events,
+        acquisition_metadata={
+            "acq_config": {
+                "opm_mode": "projection",
+                "DAQ": {"laser_blanking": np.bool_(True)},
+            },
+            "output": Path("configured/output"),
+        },
+    )
+    sequence = MDASequence()
+    summary_metadata = {
+        "image_infos": [
+            {
+                "width": 4,
+                "height": 3,
+                "dtype": "uint16",
+                "pixel_size_um": 0.2,
+            }
+        ],
+        "experiment": {
+            "name": "metadata-round-trip",
+            "output_path": Path("configured/output"),
+            "numpy_scalar": np.int64(7),
+            "numpy_array": np.asarray([1.25, 2.5], dtype=np.float32),
+            "tuple_value": ("projection", np.bool_(True)),
+        },
+    }
+    expected_summary_metadata = {
+        "image_infos": [
+            {
+                "width": 4,
+                "height": 3,
+                "dtype": "uint16",
+                "pixel_size_um": 0.2,
+            }
+        ],
+        "experiment": {
+            "name": "metadata-round-trip",
+            "output_path": str(Path("configured/output")),
+            "numpy_scalar": 7,
+            "numpy_array": [1.25, 2.5],
+            "tuple_value": ["projection", True],
+        },
+    }
+    expected_frames_by_position = {0: [], 1: []}
+    try:
+        handler.sequenceStarted(sequence, summary_metadata)
+
+        axis_ranges = {axis: range(index_sizes[axis]) for axis in acquisition_order}
+        for coordinates in product(*(axis_ranges[axis] for axis in acquisition_order)):
+            index = dict(zip(acquisition_order, coordinates, strict=True))
+            position = index["p"]
+            channel = index["c"]
+            plane = index["z"]
+            value = 100 * position + 10 * channel + plane
+            event_metadata = {
+                "DAQ": {
+                    "mode": "projection",
+                    "channel_states": [True, True, False, False, False],
+                    "channel_power": np.float32(10.0 + channel),
+                },
+                "Camera": {
+                    "name": "DemoCamera",
+                    "shape": np.asarray([3, 4], dtype=np.int64),
+                },
+                "OPM": {"angle_deg": np.float64(30.0)},
+            }
+            expected_event_metadata = {
+                "DAQ": {
+                    "mode": "projection",
+                    "channel_states": [True, True, False, False, False],
+                    "channel_power": 10.0 + channel,
+                },
+                "Camera": {"name": "DemoCamera", "shape": [3, 4]},
+                "OPM": {"angle_deg": 30.0},
+            }
+            event = MDAEvent(
+                index=index,
+                exposure=10.0 + channel,
+                metadata=event_metadata,
+            )
+            frame_meta = {
+                "runner_time_ms": float(value),
+                "exposure_ms": 10.0 + channel,
+                "position": {
+                    "x": float(position * 10),
+                    "y": float(position * 20),
+                    "z": float(plane),
+                },
+            }
+            handler.frameReady(
+                np.full((3, 4), value, dtype=np.uint16),
+                event,
+                frame_meta,
+            )
+            if index == {"t": 0, "p": 0, "c": 0, "z": 0}:
+                assert handler.get_view().shape == (1, 2, 2, 2, 3, 4)
+                assert handler.get_preview_state() == (1, index)
+            expected_frames_by_position[position].append({
+                "event_index": index,
+                "delta_t": value / 1000.0,
+                "exposure_time": (10.0 + channel) / 1000.0,
+                "position_x": float(position * 10),
+                "position_y": float(position * 20),
+                "position_z": float(plane),
+                "event_metadata": expected_event_metadata,
+                "storage_index": [0, channel, plane],
+            })
+    finally:
+        handler.sequenceFinished(sequence)
+
+    position_zero = read_tensorstore_array(output / "0" / "0")
+    position_one = read_tensorstore_array(output / "1" / "0")
+    assert position_zero.shape == (1, 2, 2, 3, 4)
+    assert position_one.shape == (1, 2, 2, 3, 4)
+    assert np.all(position_zero[0, 1, 1] == 11)
+    assert np.all(position_one[0, 1, 1] == 111)
+
+    root_metadata = json.loads((output / "zarr.json").read_text())
+    assert root_metadata["attributes"]["opm_v2"] == {
+        "index_sizes": index_sizes,
+        "acquisition_order": list(acquisition_order),
+        "summary_metadata": expected_summary_metadata,
+        "configuration": {
+            "acq_config": {
+                "opm_mode": "projection",
+                "DAQ": {"laser_blanking": True},
+            },
+            "output": str(Path("configured/output")),
+        },
+        "storage_backend": "tensorstore",
+        "time_chunk_size": 1,
+    }
+
+    ome_series = json.loads((output / "OME" / "zarr.json").read_text())
+    assert ome_series["attributes"]["ome"]["series"] == ["0", "1"]
+
+    expected_axes = [
+        {"name": "t", "type": "time", "unit": "second"},
+        {"name": "c", "type": "channel"},
+        {"name": "z", "type": "space", "unit": "micrometer"},
+        {"name": "y", "type": "space", "unit": "micrometer"},
+        {"name": "x", "type": "space", "unit": "micrometer"},
+    ]
+    for position in range(2):
+        image_metadata = json.loads((output / str(position) / "zarr.json").read_text())
+        multiscale = image_metadata["attributes"]["ome"]["multiscales"][0]
+        assert multiscale["axes"] == expected_axes
+        assert multiscale["datasets"] == [
+            {
+                "path": "0",
+                "coordinateTransformations": [
+                    {"type": "scale", "scale": [1.0, 1.0, 1.5, 0.2, 0.2]}
+                ],
+            }
+        ]
+        assert (
+            image_metadata["attributes"]["ome_writers"]["frame_metadata"]
+            == (expected_frames_by_position[position])
+        )
+
+        array_metadata = json.loads(
+            (output / str(position) / "0" / "zarr.json").read_text()
+        )
+        assert array_metadata["dimension_names"] == ["t", "c", "z", "y", "x"]
+        assert array_metadata["data_type"] == "uint16"
+        assert array_metadata["shape"] == [1, 2, 2, 3, 4]
+
+
+def test_opm_data_handler_validates_order_and_sequence_lifecycle(
+    workspace_tmp_path,
+) -> None:
+    """Reject duplicate axes and distinguish incomplete and canceled writes.
+
+    Parameters
+    ----------
+    workspace_tmp_path : Path
+        Workspace-local directory for lifecycle outputs.
+    """
+    with pytest.raises(ValueError, match="every indexed axis once"):
+        OpmDataHandler(
+            path=workspace_tmp_path / "duplicate.zarr",
+            index_sizes={"t": 1, "c": 2},
+            acquisition_order=("t", "t"),
+        )
+
+    sequence = MDASequence()
+    incomplete = OpmDataHandler(
+        path=workspace_tmp_path / "incomplete.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    incomplete.sequenceStarted(sequence, {})
+    with pytest.raises(RuntimeError, match="0 of 2 expected frames"):
+        incomplete.sequenceFinished(sequence)
+    assert not incomplete.is_finalized
+
+    errored = OpmDataHandler(
+        path=workspace_tmp_path / "errored.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    errored.sequenceStarted(sequence, {})
+    errored.set_finish_reason_getter(lambda: "errored")
+    errored.sequenceFinished(sequence)
+    assert not errored.is_finalized
+
+    canceled = OpmDataHandler(
+        path=workspace_tmp_path / "canceled.zarr",
+        index_sizes={"t": 2},
+        delete_existing=True,
+    )
+    canceled.sequenceStarted(sequence, {})
+    canceled.frameReady(
+        np.zeros((2, 2), dtype=np.uint16),
+        MDAEvent(index={"t": 0}),
+        {"runner_time_ms": 0.0, "exposure_ms": 1.0},
+    )
+    canceled.sequenceCanceled(sequence)
+    canceled.sequenceFinished(sequence)
+    assert canceled.was_canceled
+    assert not canceled.is_finalized
+
+
+def test_tile_retry_rewrites_every_pixel_and_metadata_entry(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Replace the complete failed tile while retaining append stream order."""
+    output = workspace_tmp_path / "tile-retry.ome.zarr"
+    sequence = MDASequence()
+    events = tuple(
+        MDAEvent(
+            index={"t": plane, "p": 0, "z": 0, "c": 0},
+            exposure=5.0,
+            metadata={"DAQ": {"mode": "stage"}},
+        )
+        for plane in range(3)
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 3, "p": 1, "z": 1, "c": 1},
+        delete_existing=True,
+        acquisition_order=("p", "z", "t", "c"),
+        events=events,
+        max_time_chunk_size=3,
+    )
+    handler.sequenceStarted(
+        sequence,
+        {
+            "image_infos": [
+                {
+                    "width": 2,
+                    "height": 2,
+                    "dtype": "uint16",
+                    "pixel_size_um": 1.0,
+                }
+            ]
+        },
+    )
+
+    # The failed pass saved the first two planes.
+    for plane, value in enumerate((1, 2)):
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            events[plane],
+            {"runner_time_ms": float(value), "exposure_ms": 5.0},
+        )
+
+    handler.prepare_tile_retry(events, attempt=1)
+
+    # The restarted hardware tile produces all three frames again.  Planes 0
+    # and 1 overwrite; plane 2 advances the append-only stream normally.
+    for plane, value in enumerate((10, 20, 30)):
+        retry_event = events[plane].model_copy(deep=True)
+        retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            retry_event,
+            {"runner_time_ms": float(value), "exposure_ms": 5.0},
+        )
+
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert array.shape == (3, 1, 1, 2, 2)
+    for plane, value in enumerate((10, 20, 30)):
+        assert np.all(array[plane, 0, 0] == value)
+
+    array_metadata = json.loads((output / "0" / "zarr.json").read_text())
+    assert array_metadata["chunk_grid"]["configuration"]["chunk_shape"] == [
+        3,
+        1,
+        1,
+        2,
+        2,
+    ]
+
+    metadata = json.loads((output / "zarr.json").read_text())
+    frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
+    assert len(frame_metadata) == 3
+    assert [item["delta_t"] for item in frame_metadata] == [0.01, 0.02, 0.03]
+    assert all(
+        item["event_metadata"][TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
+        for item in frame_metadata
+    )
+
+
+def test_tile_retry_waits_for_queued_failed_pass_metadata(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Snapshot retry slots only after asynchronous frame callbacks drain."""
+    output = workspace_tmp_path / "queued-retry.ome.zarr"
+    events = tuple(
+        MDAEvent(index={"t": 0, "p": 0, "z": plane, "c": 0})
+        for plane in range(3)
+    )
+    sequence = MDASequence()
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 1, "p": 1, "z": 3, "c": 1},
+        delete_existing=True,
+        acquisition_order=("t", "p", "z", "c"),
+        events=events,
+    )
+    handler.sequenceStarted(sequence, {})
+    handler.frameReady(
+        np.full((2, 2), 1, dtype=np.uint16),
+        events[0],
+        {"runner_time_ms": 1.0},
+    )
+
+    prepare_started = Event()
+    prepare_errors: list[Exception] = []
+
+    def prepare_retry() -> None:
+        prepare_started.set()
+        try:
+            handler.prepare_tile_retry(events, attempt=1, received_frames=2)
+        except Exception as exc:  # pragma: no cover - assertion reports details
+            prepare_errors.append(exc)
+
+    prepare_thread = Thread(target=prepare_retry)
+    prepare_thread.start()
+    assert prepare_started.wait(timeout=1)
+    prepare_thread.join(timeout=0.05)
+    assert prepare_thread.is_alive(), "retry snapshot did not wait for queued frame"
+
+    # This callback was already emitted by the failed hardware pass, but its
+    # asynchronous output-handler relay had not reached the writer yet.
+    handler.frameReady(
+        np.full((2, 2), 2, dtype=np.uint16),
+        events[1],
+        {"runner_time_ms": 2.0},
+    )
+    prepare_thread.join(timeout=2)
+    assert not prepare_thread.is_alive()
+    assert not prepare_errors
+
+    for plane, value in enumerate((10, 20, 30)):
+        retry_event = events[plane].model_copy(deep=True)
+        retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+        handler.frameReady(
+            np.full((2, 2), value, dtype=np.uint16),
+            retry_event,
+            {"runner_time_ms": float(value)},
+        )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    for plane, value in enumerate((10, 20, 30)):
+        assert np.all(array[0, 0, plane, 0] == value)
+
+    metadata = json.loads((output / "zarr.json").read_text())
+    frame_metadata = metadata["attributes"]["ome_writers"]["frame_metadata"]
+    assert len(frame_metadata) == 3
+    assert len({tuple(item["storage_index"]) for item in frame_metadata}) == 3
+
+
+def test_temporal_chunks_preserve_mirror_time_and_plane_order(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Round-trip a mirror series through full and partial temporal chunks."""
+    output = workspace_tmp_path / "mirror-temporal-chunks.ome.zarr"
+    timepoints = 17
+    planes = 5
+    events = tuple(
+        MDAEvent(index={"t": time, "p": 0, "c": 0, "z": plane})
+        for time in range(timepoints)
+        for plane in range(planes)
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": timepoints, "p": 1, "c": 1, "z": planes},
+        delete_existing=True,
+        acquisition_order=("t", "p", "c", "z"),
+        events=events,
+        max_time_chunk_size=16,
+        time_chunk_concurrency=planes,
+    )
+    sequence = MDASequence()
+    handler.sequenceStarted(sequence, {})
+    for event in events:
+        value = 10 * int(event.index["t"]) + int(event.index["z"])
+        handler.frameReady(
+            np.full((2, 3), value, dtype=np.uint16),
+            event,
+            {"runner_time_ms": float(value)},
+        )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert array.shape == (timepoints, 1, planes, 2, 3)
+    for time in range(timepoints):
+        for plane in range(planes):
+            assert np.all(array[time, 0, plane] == 10 * time + plane)
+
+    array_metadata = json.loads((output / "0" / "zarr.json").read_text())
+    assert array_metadata["chunk_grid"]["configuration"]["chunk_shape"] == [
+        16,
+        1,
+        1,
+        2,
+        3,
+    ]
+
+
+def test_tile_retry_before_first_frame_starts_stream_normally(
+    workspace_tmp_path,
+    read_tensorstore_array,
+) -> None:
+    """Retry a tile even when the failed pass produced no writable frame."""
+    output = workspace_tmp_path / "empty-first-pass.ome.zarr"
+    sequence = MDASequence()
+    event = MDAEvent(
+        index={"t": 0, "p": 0, "z": 0, "c": 0},
+        metadata={"DAQ": {"mode": "stage"}},
+    )
+    handler = OpmDataHandler(
+        path=output,
+        index_sizes={"t": 1, "p": 1, "z": 1, "c": 1},
+        delete_existing=True,
+        acquisition_order=("t", "p", "z", "c"),
+        events=(event,),
+    )
+    handler.sequenceStarted(
+        sequence,
+        {
+            "image_infos": [
+                {
+                    "width": 2,
+                    "height": 2,
+                    "dtype": "uint16",
+                    "pixel_size_um": 1.0,
+                }
+            ]
+        },
+    )
+    handler.prepare_tile_retry((event,), attempt=1)
+    retry_event = event.model_copy(deep=True)
+    retry_event.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] = 1
+    handler.frameReady(
+        np.full((2, 2), 42, dtype=np.uint16),
+        retry_event,
+        {"runner_time_ms": 42.0, "exposure_ms": 5.0},
+    )
+    handler.sequenceFinished(sequence)
+
+    array = read_tensorstore_array(output / "0")
+    assert np.all(array[0, 0, 0] == 42)
