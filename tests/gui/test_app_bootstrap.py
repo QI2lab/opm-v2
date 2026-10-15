@@ -11,8 +11,8 @@ import pytest
 from pymmcore_gui import CoreAction, WidgetAction
 from pymmcore_gui._qt.QtCore import QEvent, Qt
 from pymmcore_gui._qt.QtWidgets import QApplication
-from pymmcore_widgets.control._rois.roi_model import RectangleROI
-from useq import MDASequence
+from pymmcore_widgets.control._rois.roi_model import ROI, RectangleROI
+from useq import GridFromPolygon, MDASequence
 
 from opm_v2._app import (
     LIVE_DISPLAY_INTERVAL_MS,
@@ -222,6 +222,15 @@ def test_registered_extension_composes_gui_engine_and_hardware_instances(
         assert controller.opm_nidaq.simulate
         assert controller.opm_picard_shutter.simulate
 
+        # Policy edits configure the next AO run without commanding the mirror.
+        settings = controller.opm_settings_widget
+        with patch.object(
+            controller.opm_ao_mirror, "set_reference_state"
+        ) as set_reference:
+            settings.cmbx_ao_starting_correction.setCurrentText("factory flat")
+            settings.cmbx_ao_sequential_correction.setCurrentText("previous AO result")
+            set_reference.assert_not_called()
+
         grid = controller.mda_widget.grid_plan
         controller.mda_widget.tab_wdg.setChecked(grid, True)
         grid.setMode("bounds")
@@ -361,6 +370,7 @@ def test_window_close_waits_for_active_mda_thread(
     (False, True),
     ids=("without-coverslip", "with-coverslip"),
 )
+@pytest.mark.parametrize("polygon", [False, True], ids=["rectangle", "polygon"])
 def test_stage_explorer_export_activates_unambiguous_mda_positions(
     demo_core,
     workspace_tmp_path,
@@ -368,6 +378,7 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
     offline_icons,
     opm_config_factory,
     with_coverslip,
+    polygon,
 ) -> None:
     """Export a real Stage Explorer ROI with and without a fitted plane."""
     config_path = opm_config_factory.write(
@@ -413,6 +424,12 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             text="sample",
             fov_size=explorer._fov_w_h(),
         )
+        if polygon:
+            roi = ROI(
+                vertices=[(100, 200), (110, 200), (110, 202), (104, 202), (104, 205), (100, 205)],
+                text="sample",
+                fov_size=explorer._fov_w_h(),
+            )
         plane = CoverslipPlane(100.0, 200.0, 7.0, 0.01, -0.02)
         explorer.roi_manager.add_roi(roi)
         if with_coverslip:
@@ -469,10 +486,14 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         assert exported[0].sequence is not None
         region = exported[0].sequence.grid_plan
         assert region is not None
-        assert region.left == pytest.approx(100.0)
-        assert region.right == pytest.approx(110.0)
-        assert region.top == pytest.approx(200.0)
-        assert region.bottom == pytest.approx(205.0)
+        if polygon:
+            assert isinstance(region, GridFromPolygon)
+            assert region.vertices == [tuple(vertex) for vertex in roi.vertices]
+        else:
+            assert region.left == pytest.approx(100.0)
+            assert region.right == pytest.approx(110.0)
+            assert region.top == pytest.approx(200.0)
+            assert region.bottom == pytest.approx(205.0)
         nested_metadata = dict(exported[0].sequence.metadata or {})
         if with_coverslip:
             assert (
@@ -577,6 +598,24 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
         )
         explorer.roi_manager.add_roi(roi)
 
+        # Projection changes the camera height after Explorer integration.
+        # Both existing cells and the marker must follow the native ROI signal.
+        for projection_height in (16, 32):
+            demo_core.setROI(0, 0, 64, projection_height)
+            expected_footprint = (
+                projection_height * pixel_size_um,
+                64 * pixel_size_um,
+            )
+            assert explorer.roi_manager._fov_size == pytest.approx(expected_footprint)
+            assert roi.fov_size == pytest.approx(expected_footprint)
+            marker = explorer._stage_pos_marker
+            assert marker is not None
+            marker_world_size = (
+                np.abs(explorer._affine_state.system_affine[:2, :2])
+                @ np.asarray((marker._rect.width, marker._rect.height))
+            )
+            assert marker_world_size == pytest.approx(expected_footprint)
+
         camera_footprint = explorer._fov_w_h()
         preview_overlap, _mode = explorer._toolbar.scan_menu.value()
         assert explorer.roi_manager._fov_size == pytest.approx(camera_footprint)
@@ -620,6 +659,12 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
         )
         assert restored_marker_world_size == pytest.approx(camera_footprint)
 
+        # Clearing the mirror override must also restore automatic ROI updates.
+        demo_core.setROI(0, 0, 64, 16)
+        restored_projection_footprint = (16 * pixel_size_um, 64 * pixel_size_um)
+        assert explorer.roi_manager._fov_size == pytest.approx(restored_projection_footprint)
+        assert roi.fov_size == pytest.approx(restored_projection_footprint)
+
         for mode in ("projection", "stage"):
             config["acq_config"]["opm_mode"] = mode
             controller._opm_acquisition_active = True
@@ -633,6 +678,7 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
         window.close()
 
 
+@pytest.mark.parametrize("polygon", [False, True], ids=["rectangle", "polygon"])
 def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
     demo_core,
     workspace_tmp_path,
@@ -640,6 +686,7 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
     offline_icons,
     opm_config_factory,
     camera_frame_recorder,
+    polygon,
 ) -> None:
     """Run an unsaved native preview with the current MM channel preset."""
     preview_config = opm_config_factory(
@@ -685,6 +732,12 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
             text="direct_scan",
             fov_size=(fov_width, fov_height),
         )
+        if polygon:
+            roi = ROI(
+                vertices=[(100, 200), (110, 200), (110, 202), (104, 202), (104, 205), (100, 205)],
+                text="direct_scan",
+                fov_size=(fov_width, fov_height),
+            )
         explorer.roi_manager.add_roi(roi)
         explorer.roi_manager.select_roi(roi)
 
@@ -902,7 +955,18 @@ def test_stage_explorer_canvas_double_click_moves_and_snaps_demo_hardware(
         window.close()
 
 
-def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
+@pytest.mark.parametrize(
+    "preset,states,simultaneous",
+    [
+        ("488nm", [False, True, False, False, False], False),
+        ("488 + 637", [False, True, False, True, False], True),
+        ("561 + 637", [False, False, True, True, False], True),
+        ("488 + 561", [False, True, True, False, False], True),
+    ],
+)
+def test_stage_explorer_arms_projection_from_mm_config_groups(
+    preset, states, simultaneous
+) -> None:
     """Program projection preview from live MM properties, not OPM channels."""
     controller = object.__new__(OPMAppController)
     controller.config = {
@@ -936,7 +1000,7 @@ def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
         ("OPM-live-mode", "Label"): "1-Projection",
         ("Camera", "Exposure"): "300",
         ("ImageGalvoMirrorRange", "Position"): "100",
-        ("Laser", "Label"): "488nm",
+        ("Laser", "Label"): preset,
     }
     controller.mmc.getProperty.side_effect = lambda device, prop: properties[
         (device, prop)
@@ -954,10 +1018,11 @@ def test_stage_explorer_arms_projection_from_mm_config_groups() -> None:
 
     controller.opm_nidaq.set_acquisition_params.assert_called_once_with(
         scan_type="projection",
-        channel_states=[False, True, False, False, False],
+        channel_states=states,
         image_mirror_range_um=100.0,
         exposure_ms=300.0,
         laser_blanking=True,
+        simultaneous=simultaneous,
     )
     controller.opm_nidaq.clear_tasks.assert_called_once_with()
     controller.opm_nidaq.generate_waveforms.assert_called_once_with()

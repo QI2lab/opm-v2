@@ -21,10 +21,12 @@ from types import MappingProxyType as mappingproxy
 import numpy as np
 from numpy.typing import NDArray
 from pymmcore_plus import CMMCorePlus
+from shapely import box
 from tqdm import trange
 from useq import (
     AbsolutePosition,
     Channel,
+    GridFromPolygon,
     MDAEvent,
     MDASequence,
     TIntervalLoops,
@@ -39,6 +41,7 @@ from opm_v2.engine.debug_printing import (
     warning,
 )
 from opm_v2.engine.opm_custom_events import (
+    ACTION_AO_OPTIMIZE,
     create_ao_grid_event,
     create_ao_mirror_update_event,
     create_ao_optimize_event,
@@ -54,6 +57,17 @@ from opm_v2.handlers.opm_data_handler import OpmDataHandler
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
+from opm_v2.utils.laser_modes import (
+    COMBINED_CHANNELS,
+    INTERLEAVED,
+    SIMULTANEOUS_PRESETS,
+    is_simultaneous,
+    laser_mode_for_channel,
+    normalize_laser_mode,
+    simultaneous_channel_indices,
+    validate_interleaved_exposures,
+    validate_simultaneous_exposures,
+)
 from opm_v2.utils.position_tools import (
     ao_grid_positions,
     apply_oblique_scan_correction,
@@ -80,7 +94,7 @@ class LiteralStagePosition:
 
 @dataclass(frozen=True)
 class StageExplorerRegion:
-    """One rectangular Stage Explorer ROI expressed in physical stage axes."""
+    """One Stage Explorer ROI expressed in physical stage axes."""
 
     x_min: float
     x_max: float
@@ -89,6 +103,7 @@ class StageExplorerRegion:
     z: float
     name: str | None = None
     coverslip_plane: CoverslipPlane | None = None
+    polygon: GridFromPolygon | None = None
 
 
 def debug(header: str, *lines: object) -> None:
@@ -317,7 +332,7 @@ def parse_mda_position_plan(
     Raises
     ------
     ValueError
-        If a position is incomplete or an exported ROI is not rectangular.
+        If a position is incomplete or an exported ROI has invalid geometry.
     """
     items: list[LiteralStagePosition | StageExplorerRegion] = []
     for index, stage_pos in enumerate(mda_positions_plan):
@@ -331,29 +346,34 @@ def parse_mda_position_plan(
         z_value = stage_pos.get("z")
 
         if nested_grid is not None:
+            polygon = None
             if "vertices" in nested_grid:
-                raise ValueError(
-                    "Stage Explorer polygon ROIs are not supported by OPM spatial "
-                    "planning. Export a rectangular ROI."
-                )
-            missing_bounds = {
-                key
-                for key in ("left", "right", "top", "bottom")
-                if key not in nested_grid
-            }
-            if missing_bounds:
-                raise ValueError(
-                    "Stage Explorer ROI is missing grid bounds: "
-                    f"{sorted(missing_bounds)}"
-                )
+                polygon = GridFromPolygon.model_validate(nested_grid)
+                geometry = polygon.poly
+                if geometry.is_empty or not np.isfinite(geometry.bounds).all():
+                    raise ValueError(
+                        f"Stage Explorer ROI at MDA position {index} has empty or nonfinite polygon geometry."
+                    )
+                left, top, right, bottom = geometry.bounds
+            else:
+                missing_bounds = {
+                    key
+                    for key in ("left", "right", "top", "bottom")
+                    if key not in nested_grid
+                }
+                if missing_bounds:
+                    raise ValueError(
+                        "Stage Explorer ROI is missing grid bounds: "
+                        f"{sorted(missing_bounds)}"
+                    )
+                left = float(nested_grid["left"])
+                right = float(nested_grid["right"])
+                top = float(nested_grid["top"])
+                bottom = float(nested_grid["bottom"])
             if z_value is None:
                 raise ValueError(
                     f"Stage Explorer ROI at MDA position {index} has no Z coordinate."
                 )
-            left = float(nested_grid["left"])
-            right = float(nested_grid["right"])
-            top = float(nested_grid["top"])
-            bottom = float(nested_grid["bottom"])
             nested_metadata = nested_sequence.get("metadata") or {}
             plane_payload = nested_metadata.get(COVERSLIP_METADATA_KEY)
             try:
@@ -376,6 +396,7 @@ def parse_mda_position_plan(
                     z=float(z_value),
                     name=str(name) if name is not None else None,
                     coverslip_plane=coverslip_plane,
+                    polygon=polygon,
                 )
             )
             continue
@@ -487,6 +508,19 @@ def stage_positions_from_position_plan(
             coverslip_slope_y=coverslip_slope_y,
             mmc=mmc,
         )
+        if item.polygon is not None:
+            # Mirror sweeps and camera tiles are centered on the stage position.
+            # Keep edge tiles in full, but omit tiles with no polygon coverage.
+            geometry = item.polygon.poly
+            half_scan = scan_range_um / 2.0
+            half_tile = camera_crop_x * (mmc or CMMCorePlus.instance()).getPixelSizeUm() / 2.0
+            region_positions = [
+                position for position in region_positions
+                if geometry.intersection(box(
+                    position["x"] - half_scan, position["y"] - half_tile,
+                    position["x"] + half_scan, position["y"] + half_tile,
+                )).area > 0
+            ]
         if item.coverslip_plane is not None:
             scan_reference_z_um = item.coverslip_plane.z_at(item.x_min, item.y_min)
             for position in region_positions:
@@ -578,6 +612,7 @@ def resolved_spatial_plan_summary(
             "source": source,
             "coverslip_plane": plane_metadata,
             "predicted_coverslip_z_range_um": predicted_z_range,
+            **({"polygon": region.polygon.model_dump(mode="json")} if region.polygon is not None else {}),
         })
 
     if not sources:
@@ -775,7 +810,8 @@ def populate_opm_metadata(
             "channel_states": channel_states,
             "exposure_channels_ms": channel_exposures_ms,
             "laser_powers": laser_powers,
-            "interleaved": interleaved,
+            "interleaved": interleaved and current_channel not in COMBINED_CHANNELS,
+            "laser_mode": laser_mode_for_channel(current_channel),
             "blanking": blanking,
             "current_channel": current_channel,
         },
@@ -987,12 +1023,27 @@ def get_channel_plan(
     ------
     Exception
         If all configured laser powers are zero.
+    ValueError
+        If the laser mode is unknown or simultaneous exposures are invalid.
     """
     mode_config = config["acq_config"][mode_key]
     channel_states = list(mode_config["channel_states"])
     channel_powers = list(mode_config["channel_powers"])
     channel_exposures_ms = list(mode_config["channel_exposures_ms"])
-    channel_names = config["OPM"]["channel_ids"]
+    channel_names = list(config["OPM"]["channel_ids"])
+    laser_mode = normalize_laser_mode(mode_config.get("laser_mode", INTERLEAVED))
+    if laser_mode != INTERLEAVED and not is_simultaneous(laser_mode):
+        raise ValueError(f"Unknown laser mode: {laser_mode}")
+    if laser_mode == INTERLEAVED:
+        validate_interleaved_exposures(
+            [channel_exposures_ms[i] for i, enabled in enumerate(channel_states) if enabled],
+            [channel_names[i] for i, enabled in enumerate(channel_states) if enabled],
+        )
+    if is_simultaneous(laser_mode):
+        indices = simultaneous_channel_indices(channel_names, laser_mode)
+        validate_simultaneous_exposures([channel_exposures_ms[i] for i in indices], laser_mode)
+        channel_states = [i in indices for i in range(len(channel_names))]
+        channel_names[indices[0]] = SIMULTANEOUS_PRESETS[laser_mode]
 
     active_channel_exps = []
     for index, channel_is_active in enumerate(channel_states):
@@ -1007,19 +1058,23 @@ def get_channel_plan(
     if sum(channel_powers) == 0:
         raise Exception("All lasers set to 0!")
 
+    active_indices = tuple(
+        index for index, active in enumerate(channel_states) if active
+    )
+    if is_simultaneous(laser_mode):
+        active_indices = (indices[0],)
+        active_channel_exps = active_channel_exps[:1]
+
     return {
+        "laser_mode": laser_mode,
         "states": channel_states,
         "powers": channel_powers,
         "exposures_ms": channel_exposures_ms,
         "names": channel_names,
         "active_exposures_ms": active_channel_exps,
-        "active_count": sum(channel_states),
-        "active_names": [
-            name for is_active, name in zip(channel_states, channel_names) if is_active
-        ],
-        "active_indices": tuple(
-            index for index, is_active in enumerate(channel_states) if is_active
-        ),
+        "active_count": len(active_indices),
+        "active_names": [channel_names[index] for index in active_indices],
+        "active_indices": active_indices,
         "interleaved": len(set(active_channel_exps)) == 1,
     }
 
@@ -1475,6 +1530,29 @@ def stage_position_z_groups(
     ]
 
 
+def annotate_ao_positions(
+    events: list[MDAEvent],
+    stage_positions: list[dict[str, float]],
+) -> None:
+    """Attach logical layer and lateral tile IDs to individual AO events.
+
+    Use the planner's depth-major tile order, including lab-frame scan positions,
+    so a physical X shift with depth does not change a tile's identity.
+    """
+    locations = {
+        pos_idx: (z_idx, lateral_idx)
+        for z_idx, group in enumerate(stage_position_z_groups(stage_positions))
+        for lateral_idx, pos_idx in enumerate(group)
+    }
+    for event in events:
+        if getattr(event.action, "name", None) != ACTION_AO_OPTIMIZE:
+            continue
+        payload = event.action.data["AO"]
+        z_idx, lateral_idx = locations[int(payload.get("pos_idx", 0))]
+        payload["z_idx"] = z_idx
+        payload["logical_position_idx"] = lateral_idx
+
+
 def append_ao_grid_z_event(
     opm_events: list[MDAEvent],
     ao_grid_event: MDAEvent,
@@ -1706,7 +1784,8 @@ def create_stage_scan_image_event(
                 "scan_axis_step_um": float(scan_axis_step_um),
                 "channel_states": channel_states,
                 "exposure_channels_ms": channel_exposures_ms,
-                "interleaved": True,
+                "interleaved": current_channel not in COMBINED_CHANNELS,
+                "laser_mode": laser_mode_for_channel(current_channel),
                 "laser_powers": laser_powers,
                 "blanking": laser_blanking,
                 "current_channel": current_channel,
@@ -1951,6 +2030,7 @@ def setup_timelapse(
         "2d",
         channel_states=channel_states,
         channel_powers=channel_powers,
+        laser_mode=channel_plan["laser_mode"],
         channel_exposures_ms=channel_exposures_ms,
         camera_center=[camera_center_x, camera_center_y],
         camera_crop=[camera_crop_x, camera_crop_y],
@@ -2208,6 +2288,7 @@ def setup_timelapse(
         "c": int(np.maximum(1, n_active_channels)),
         "z": int(np.maximum(1, n_scan_steps)),
     }
+    annotate_ao_positions(opm_events, stage_positions)
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,
@@ -2392,6 +2473,7 @@ def setup_projection(
         mode="projection",
         channel_states=channel_states,
         channel_powers=channel_powers,
+        laser_mode=channel_plan["laser_mode"],
         channel_exposures_ms=channel_exposures_ms,
         camera_center=[camera_center_x, camera_center_y],
         camera_crop=[camera_crop_x, camera_crop_y],
@@ -2665,6 +2747,7 @@ def setup_projection(
         "p": int(np.maximum(1, n_stage_positions)),
         "c": int(np.maximum(1, n_active_channels)),
     }
+    annotate_ao_positions(opm_events, stage_positions)
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,
@@ -2767,7 +2850,10 @@ def setup_mirrorscan(
     channel_names = channel_plan["names"]
     active_channel_indices = channel_plan["active_indices"]
     n_active_channels = channel_plan["active_count"]
-    interleaved_acq = channel_plan["interleaved"]
+    # The mirror waveform holds each plane for all camera channels. Exposure
+    # differences must never change this into one complete sweep per color.
+    # Simultaneous illumination is already represented as one camera channel.
+    interleaved_acq = True
     offset, e_to_ADU = get_camera_conversion(mmc, config)
 
     # --------------------------------------------------------------------#
@@ -2800,6 +2886,7 @@ def setup_mirrorscan(
         mode=scan_mode,
         channel_states=channel_states,
         channel_powers=channel_powers,
+        laser_mode=channel_plan["laser_mode"],
         channel_exposures_ms=channel_exposures_ms,
         image_mirror_range_um=scan_range_um,
         image_mirror_step_um=scan_step_um,
@@ -3067,61 +3154,15 @@ def setup_mirrorscan(
             # Handle acquiring images
             # ----------------------------------------------------------------#
 
-            if interleaved_acq:
-                if time_idx == 0:
-                    # Update daq state to sequence all channels
-                    opm_events.append(clone_event(daq_event))
-                if need_to_setup_daq:
-                    opm_events.append(clone_event(daq_event))
+            if time_idx == 0 or need_to_setup_daq:
+                opm_events.append(clone_event(daq_event))
 
-            local_axis_order = ("z", "c") if interleaved_acq else ("c", "z")
-            active_daq_channel: int | None = None
-            active_daq_settings = (
-                channel_states,
-                channel_powers,
-                channel_exposures_ms,
-            )
             for planned_event in iter_planned_image_events(
-                {"c": n_active_channels, "z": n_scan_steps}, local_axis_order
+                {"c": n_active_channels, "z": n_scan_steps}, ("z", "c")
             ):
                 current_chan_idx = planned_event.index["c"]
                 scan_idx = planned_event.index["z"]
                 chan_idx = active_channel_indices[current_chan_idx]
-                image_channel_states = channel_states
-                image_channel_powers = channel_powers
-                image_channel_exposures = channel_exposures_ms
-
-                if not interleaved_acq and current_chan_idx != active_daq_channel:
-                    active_daq_settings = single_channel_settings(
-                        channel_states,
-                        channel_powers,
-                        channel_exposures_ms,
-                        chan_idx,
-                    )
-                    (
-                        image_channel_states,
-                        image_channel_powers,
-                        image_channel_exposures,
-                    ) = active_daq_settings
-                    current_daq_event = clone_event(daq_event)
-                    current_daq_event.action.data["DAQ"]["channel_states"] = (
-                        image_channel_states
-                    )
-                    current_daq_event.action.data["DAQ"]["channel_powers"] = (
-                        image_channel_powers
-                    )
-                    current_daq_event.action.data["Camera"]["exposure_channels"] = (
-                        image_channel_exposures
-                    )
-                    opm_events.append(current_daq_event)
-                    active_daq_channel = current_chan_idx
-                elif not interleaved_acq:
-                    (
-                        image_channel_states,
-                        image_channel_powers,
-                        image_channel_exposures,
-                    ) = active_daq_settings
-
                 image_event = create_opm_image_event(
                     index={
                         "t": time_idx,
@@ -3134,9 +3175,9 @@ def setup_mirrorscan(
                     daq_mode=scan_mode,
                     image_mirror_range_um=scan_range_um,
                     mirror_step=scan_step_um,
-                    channel_states=image_channel_states,
-                    channel_exposures_ms=image_channel_exposures,
-                    laser_powers=image_channel_powers,
+                    channel_states=channel_states,
+                    channel_exposures_ms=channel_exposures_ms,
+                    laser_powers=channel_powers,
                     interleaved=interleaved_acq,
                     blanking=laser_blanking,
                     current_channel=channel_names[chan_idx],
@@ -3164,14 +3205,13 @@ def setup_mirrorscan(
         "c": int(np.maximum(1, n_active_channels)),
         "z": int(np.maximum(1, n_scan_steps)),
     }
-    camera_acquisition_order = (
-        ("t", "p", "z", "c") if interleaved_acq else ("t", "p", "c", "z")
-    )
+    camera_acquisition_order = ("t", "p", "z", "c")
     use_temporal_chunks = (
         n_time_steps > 100
         and n_active_channels == 1
         and 5 <= n_scan_steps <= 10
     )
+    annotate_ao_positions(opm_events, stage_positions)
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,
@@ -3322,6 +3362,7 @@ def setup_stagescan(
         mode="stage",
         channel_states=channel_states,
         channel_powers=channel_powers,
+        laser_mode=channel_plan["laser_mode"],
         channel_exposures_ms=channel_exposures_ms,
         camera_center=[camera_center_x, camera_center_y],
         camera_crop=[camera_crop_x, camera_crop_y],
@@ -3379,6 +3420,7 @@ def setup_stagescan(
     # Generate xyz stage positions
     stage_positions = []
     region_coverslip_plane: CoverslipPlane | None = None
+    region: StageExplorerRegion | None = None
 
     if mda_grid_plan is None:
         spatial_items = parse_mda_position_plan(mda_positions_plan)
@@ -3396,7 +3438,7 @@ def setup_stagescan(
             )
         if len(regions) != 1:
             raise ValueError(
-                "Stage mode currently supports exactly one rectangular Stage Explorer "
+                "Stage mode currently supports exactly one Stage Explorer "
                 f"ROI per acquisition; received {len(regions)}."
             )
 
@@ -3635,6 +3677,23 @@ def setup_stagescan(
         z_positions,
         z_offset_per_scan_um=dz_per_scan_tile,
     )
+    spatial_tile_mask = np.ones((n_scan_positions, n_tile_positions), dtype=bool)
+    if region is not None and region.polygon is not None:
+        # Keep full ASI trajectories so every retained position has the same
+        # frame count. Apply this same mask to positions and event-loop indices.
+        geometry = region.polygon.poly
+        half_tile = camera_crop_x * pixel_size_um / 2.0
+        half_camera_scan = camera_scan_overlap_um / 2.0
+        for scan_idx, (start, end) in enumerate(zip(scan_axis_start_pos_um, scan_axis_end_pos_um, strict=True)):
+            for tile_idx, y_um in enumerate(tile_axis_positions):
+                spatial_tile_mask[scan_idx, tile_idx] = geometry.intersection(box(
+                    start - half_camera_scan, y_um - half_tile,
+                    end + half_camera_scan, y_um + half_tile,
+                )).area > 0
+        stage_positions = [
+            position for index, position in enumerate(stage_positions)
+            if spatial_tile_mask.flat[index % spatial_tile_mask.size]
+        ]
     if region_coverslip_plane is not None:
         scan_reference_z_um = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
         for position in stage_positions:
@@ -3761,6 +3820,8 @@ def setup_stagescan(
                 for tile_idx in trange(
                     n_tile_positions, desc="Tile-axis-tiles:", leave=False
                 ):
+                    if not spatial_tile_mask[scan_idx, tile_idx]:
+                        continue
                     if (
                         use_per_z_ao_grid
                         and pos_idx in ao_z_group_at_position
@@ -3907,6 +3968,7 @@ def setup_stagescan(
         "c": int(np.maximum(1, n_active_channels)),
         "z": int(np.maximum(1, n_scan_axis_indices)),
     }
+    annotate_ao_positions(opm_events, stage_positions)
     return opm_events, create_zarr_handler(
         output,
         indice_sizes,

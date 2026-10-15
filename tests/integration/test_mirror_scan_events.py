@@ -6,7 +6,11 @@ import numpy as np
 import pytest
 from useq import AbsolutePosition, GridFromEdges, MDASequence
 
-from opm_v2.engine.opm_custom_events import ACTION_ASI_SETUP_SCAN, ACTION_STAGE_MOVE
+from opm_v2.engine.opm_custom_events import (
+    ACTION_ASI_SETUP_SCAN,
+    ACTION_DAQ,
+    ACTION_STAGE_MOVE,
+)
 from opm_v2.engine.setup_events import setup_mirrorscan, setup_timelapse
 from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 
@@ -21,10 +25,16 @@ from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
             ("t", "p", "z", "c"),
         ),
         (
-            [10.0, 20.0],
+            [20.0, 20.0],
             "tpcz",
-            [(plane, channel) for channel in range(2) for plane in range(2)],
-            ("t", "p", "c", "z"),
+            [(plane, channel) for plane in range(2) for channel in range(2)],
+            ("t", "p", "z", "c"),
+        ),
+        (
+            [20.0, 20.0, 20.0],
+            "tpcz",
+            [(plane, channel) for plane in range(2) for channel in range(3)],
+            ("t", "p", "z", "c"),
         ),
     ],
 )
@@ -40,7 +50,7 @@ def test_mirror_camera_order_follows_interleaving(
     split_events,
     assert_standard_image_fields,
 ) -> None:
-    """Build mirror events in each supported channel/Z ordering.
+    """Alternate colors per mirror plane regardless of exposure or MDA axis order.
 
     Parameters
     ----------
@@ -49,7 +59,7 @@ def test_mirror_camera_order_follows_interleaving(
     workspace_tmp_path : Path
         Directory used to construct the output handler.
     exposures : list[float]
-        Active-channel exposures controlling interleaving.
+        Per-channel exposures that must not change interleaving.
     axis_order : str
         Axis order selected in the standard MDA widget.
     camera_indices : list[tuple[int, int]]
@@ -65,7 +75,14 @@ def test_mirror_camera_order_follows_interleaving(
     assert_standard_image_fields : Callable
         Reusable standard useq field assertion.
     """
-    config = opm_config_factory(mode="mirror", channel_exposures_ms=exposures)
+    channels = (1, 3) if len(exposures) == 2 else (1, 2, 3)
+    config = opm_config_factory(
+        mode="mirror",
+        active_channels=channels,
+        channel_powers=[10.0] * len(channels),
+        channel_exposures_ms=exposures,
+        updates={"acq_config": {"DAQ": {"laser_mode": "interleaved"}}},
+    )
     events, handler = setup_mirrorscan(
         demo_core,
         config,
@@ -79,6 +96,41 @@ def test_mirror_camera_order_follows_interleaving(
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
     assert_standard_image_fields(image_events)
     assert handler.acquisition_order == acquisition_order
+    assert [event.exposure for event in image_events] == exposures * 2
+    daq_events = [
+        event for event in events if getattr(event.action, "name", None) == ACTION_DAQ
+    ]
+    # One shared waveform sweeps once; no per-color reprogramming is allowed.
+    assert len(daq_events) == 1
+    assert (
+        daq_events[0].action.data["DAQ"]["channel_states"]
+        == config["acq_config"]["DAQ"]["channel_states"]
+    )
+    assert daq_events[0].action.data["DAQ"]["interleaved"] is True
+    assert all(event.metadata["DAQ"]["interleaved"] for event in image_events)
+    assert all(
+        event.metadata["DAQ"]["channel_states"]
+        == config["acq_config"]["DAQ"]["channel_states"]
+        for event in image_events
+    )
+    daq_payload = daq_events[0].action.data["DAQ"]
+    daq = simulated_acquisition_hardware.daq
+    daq.set_acquisition_params(
+        scan_type="mirror",
+        channel_states=daq_payload["channel_states"],
+        image_mirror_range_um=daq_payload["image_mirror_range_um"],
+        image_mirror_step_um=daq_payload["image_mirror_step_um"],
+        laser_blanking=True,
+    )
+    daq.generate_waveforms()
+    exposure_edges = daq.digital_waveform[::2]
+    np.testing.assert_array_equal(exposure_edges.sum(axis=1), 1)
+    np.testing.assert_array_equal(exposure_edges.argmax(axis=1), list(channels) * 2)
+    mirror_positions = daq.analog_waveform[::2, 0].reshape(2, len(channels))
+    np.testing.assert_array_equal(
+        mirror_positions, np.repeat(mirror_positions[:, :1], len(channels), axis=1)
+    )
+    assert mirror_positions[0, 0] != mirror_positions[1, 0]
 
 
 @pytest.mark.parametrize(("scan_steps", "expected_time_chunk"), [(5, 16), (10, 13)])

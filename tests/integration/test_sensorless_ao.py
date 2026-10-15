@@ -169,7 +169,7 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
     optimization_start_states: list[str] = []
     optimization_start_coefficients: list[np.ndarray | None] = []
 
-    def _record_optimization(**kwargs) -> None:
+    def _record_optimization(**kwargs) -> bool:
         nonlocal optimization_count
         optimization_count += 1
         optimization_acceptance.append(kwargs["mode_acceptance"])
@@ -188,6 +188,7 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
             [optimization_count, optimization_count + 0.1, optimization_count + 0.2],
             dtype=float,
         )
+        return True
 
     monkeypatch.setattr(
         sensorless_ao,
@@ -282,7 +283,7 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
     starts: list[np.ndarray | None] = []
     optimization_count = 0
 
-    def _record_optimization(**kwargs) -> None:
+    def _record_optimization(**kwargs) -> bool:
         nonlocal optimization_count
         starting_coefficients = kwargs["starting_mirror_coefficients"]
         starts.append(
@@ -298,6 +299,7 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
             [optimization_count, optimization_count + 0.1, optimization_count + 0.2],
             dtype=float,
         )
+        return True
 
     monkeypatch.setattr(
         sensorless_ao,
@@ -355,3 +357,81 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
         mirror.positions_modal_array[acquisition_grid_size:],
         z1_result.modal_coefficients[acquisition_to_ao],
     )
+
+
+@pytest.mark.parametrize(
+    "policy",
+    [
+        "use starting correction",
+        "previous AO result",
+        "corresponding position in previous Z layer",
+    ],
+)
+def test_grid_uses_acquisition_correction_policy(
+    monkeypatch,
+    workspace_tmp_path,
+    opm_config_factory,
+    demo_core,
+    policy,
+):
+    """Use the same policy within a grid, across layers, and across timepoints."""
+    from opm_v2.utils.ao_policy import PREVIOUS_AO, PREVIOUS_Z, AOCorrectionHistory
+
+    config = opm_config_factory(
+        mode="projection",
+        updates={
+            "acq_config": {
+                "AO": {
+                    "starting_correction": "system flat",
+                    "sequential_correction": policy,
+                }
+            }
+        },
+    )
+    ao_dict = create_ao_grid_event(config).action.data["AO"]["ao_dict"]
+    mirror = SimpleNamespace(
+        current_coeffs=np.zeros(2),
+        current_voltage=np.zeros(3),
+        positions_modal_array=np.zeros((4, 2)),
+        positions_voltage_array=np.zeros((4, 3)),
+    )
+    history = AOCorrectionHistory(mirror, ao_dict)
+    starts = []
+
+    def optimize(**kwargs):
+        starts.append(kwargs["starting_mirror_coefficients"].copy())
+        mirror.current_coeffs = np.full(2, len(starts), dtype=float)
+        mirror.current_voltage = np.full(3, len(starts), dtype=float)
+        return True
+
+    monkeypatch.setattr(
+        sensorless_ao, "CMMCorePlus", SimpleNamespace(instance=lambda: demo_core)
+    )
+    monkeypatch.setattr(sensorless_ao.AOMirror, "instance", lambda: mirror)
+    monkeypatch.setattr(sensorless_ao, "run_ao_optimization", optimize)
+    for time_idx in range(2):
+        for z_idx in range(2):
+            output = workspace_tmp_path / f"t{time_idx}_z{z_idx}"
+            output.mkdir()
+            sensorless_ao.run_ao_grid_mapping(
+                ao_dict=ao_dict,
+                stage_positions=[
+                    {"x": x + z_idx, "y": 0, "z": z_idx * 10} for x in (0, 10)
+                ],
+                position_indices=[z_idx * 2, z_idx * 2 + 1],
+                num_scan_positions=2,
+                num_tile_positions=1,
+                save_dir_path=output,
+                correction_history=history,
+                time_idx=time_idx,
+                z_idx=z_idx,
+                verbose=False,
+            )
+    expected = (
+        list(range(8))
+        if policy == PREVIOUS_AO
+        else [0, 0, 1, 2, 0, 0, 5, 6]
+        if policy == PREVIOUS_Z
+        else [0] * 8
+    )
+    np.testing.assert_array_equal(np.asarray(starts)[:, 0], expected)

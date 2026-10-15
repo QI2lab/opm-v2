@@ -45,6 +45,7 @@ from opm_v2.utils.coverslip import (
     CoverslipPlane,
     fit_coverslip_plane,
 )
+from opm_v2.utils.laser_modes import COMBINED_CHANNELS
 
 DEBUGGING = True
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
@@ -208,26 +209,28 @@ def _stage_explorer_display_footprint_w_h(
 
 def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
     """Refresh ROI cells using the active OPM acquisition footprint."""
-    display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
-    stage_explorer.set_display_fov_size_um(display_footprint)
-
     overlap = stage_explorer.roi_manager.scan_overlap
     mode = stage_explorer.roi_manager.scan_mode
     controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
         stage_explorer.window(), "opm_controller", None
     )
+    # Camera previews must follow ROI and pixel-affine changes through the
+    # widget's native signals. A fixed camera-sized override freezes that FOV.
+    display_footprint = None
     if controller is not None:
         acq_config = controller.config["acq_config"]
         if (
             controller._opm_scan_footprint_active
             and "mirror" in str(acq_config["opm_mode"]).casefold()
         ):
+            display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
             positions = acq_config["Positions"]
             tile_overlap = float(positions["tile_axis_overlap"])
             scan_overlap = float(positions.get("scan_axis_overlap", tile_overlap))
             # OPM configuration stores overlaps as fractions, while useq and
             # Stage Explorer express GridFromEdges overlap in percent.
             overlap = (100.0 * scan_overlap, 100.0 * tile_overlap)
+    stage_explorer.set_display_fov_size_um(display_footprint)
     stage_explorer.roi_manager.set_scan_options(overlap, mode)
     stage_explorer.set_blending_overlap(overlap)
 
@@ -499,15 +502,13 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
     Returns
     -------
     useq.AbsolutePosition
-        Position containing the selected rectangular ROI grid.
+        Position containing the selected ROI grid.
 
     Raises
     ------
     ValueError
-        If a single-FOV ROI is not rectangular.
+        If the selected ROI produces no positions.
     """
-    if type(roi).__name__ != "RectangleROI":
-        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
     controller = _stage_explorer_controller(stage_explorer)
     z_position = controller.mmc.getZPosition() if controller is not None else None
     positions = stage_explorer.positions_from_rois(
@@ -673,6 +674,7 @@ def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
         "opm-stage-explorer",
         str(daq.scan_type),
         tuple(bool(state) for state in daq.channel_states),
+        bool(getattr(daq, "simultaneous", False)),
         None if daq.exposure_ms is None else float(daq.exposure_ms),
         (
             None
@@ -1563,11 +1565,6 @@ class OPMAppController:
         self.mmc.events.configSet.connect(self.update_live_state)
         self.update_live_state()
 
-        # Changes to the selected AO mirror state
-        self.opm_settings_widget.widgets["AO"][
-            "mirror_state"
-        ].currentIndexChanged.connect(self.update_ao_mirror_state)
-
         # Connect live preview
         self.mmc.events.continuousSequenceAcquisitionStarting.connect(
             self.setup_preview_mode_callback
@@ -1589,7 +1586,6 @@ class OPMAppController:
             "OPM STOP button -> cooperative software-boundary stop",
             "Picard shutter button -> O2-O3 shutter state",
             "mmc.events.configSet -> update_live_state",
-            "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
             "Live start/stop -> suspend/restore Stage Explorer polling",
         )
@@ -1949,7 +1945,7 @@ class OPMAppController:
             1,
         )
 
-        # Get the current active laser channel, limits to one channel at a time
+        # The combined live preset gates both physical lasers on the same frame.
         image_mirror_range_um = np.round(
             float(self.mmc.getProperty("ImageGalvoMirrorRange", "Position")),
             0,
@@ -1958,7 +1954,8 @@ class OPMAppController:
         # Create the channel states list needed for the DAQ waveform
         active_channel_id = self.mmc.getProperty("Laser", "Label")
         channel_states = [
-            active_channel_id == channel_id
+            (channel_id in COMBINED_CHANNELS[active_channel_id] if active_channel_id in COMBINED_CHANNELS
+             else active_channel_id == channel_id)
             for channel_id in self.config["OPM"]["channel_ids"]
         ]
 
@@ -1982,6 +1979,7 @@ class OPMAppController:
             image_mirror_range_um=image_mirror_range_um,
             exposure_ms=exposure_ms,
             laser_blanking=daq_config["laser_blanking"],
+            simultaneous=active_channel_id in COMBINED_CHANNELS,
         )
 
         # ------------------------------------------------------------------------------#
@@ -2141,8 +2139,8 @@ class OPMAppController:
         self.opm_settings_widget.set_stop_pending()
         self.info(
             "OPM STOP REQUESTED",
-            "The active hardware-triggered event will finish.",
-            "Stopping before the next software-controlled command.",
+            "AO will stop at its next frame or stage-move boundary and restore hardware.",
+            "An active hardware-triggered imaging event will finish before stopping.",
         )
 
     def _on_mda_sequence_started(self, *_args) -> None:
@@ -2201,6 +2199,7 @@ class OPMAppController:
         output : Path, str, or None
             Requested MDA output or ``"memory"`` for an in-memory acquisition.
         """
+        self.update_config_snapshot(self.opm_settings_widget.acquisition_snapshot())
         opm_mode = self.config["acq_config"]["opm_mode"]
         ao_mode = self.config["acq_config"]["AO"]["ao_mode"]
         o2o3_mode = self.config["acq_config"]["o2o3_mode"]

@@ -8,8 +8,9 @@ Sensorless adaptive optics and tools.
 from __future__ import annotations
 
 import time
+import traceback
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import sleep
 
@@ -22,6 +23,11 @@ from scipy.ndimage import center_of_mass, laplace
 from scipy.optimize import curve_fit
 
 from opm_v2.engine.debug_printing import info, warning
+from opm_v2.utils.ao_cancel import AOCancelled, check_ao_stop
+from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
+from opm_v2.utils.ao_o3_stack import O3StackMetric, O3StackSettings
+from opm_v2.utils.ao_policy import AOCorrectionHistory
+from opm_v2.utils.metadata_serialization import json_metadata
 from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
 
 try:
@@ -37,6 +43,15 @@ DEBUGGING = True
 MAXIMUM_MODE_DELTA = 0.5
 DEFUALT_PSF_RADIUS_PX = 3
 DEFUALT_SIGN_FIGS = 6
+
+
+@dataclass
+class GaussianSpotPrior:
+    """Spot location fixed from the starting image of one AO optimization."""
+
+    center: tuple[float, float] | None = None
+    threshold: float = 1000.0
+    center_radius_px: float = 16.0
 
 
 @dataclass(frozen=True)
@@ -192,7 +207,11 @@ mode_names = [
 
 
 def get_metric(
-    image: NDArray, metric_to_use: str, psf_radius_px: int = DEFUALT_PSF_RADIUS_PX
+    image: NDArray,
+    metric_to_use: str,
+    psf_radius_px: int = DEFUALT_PSF_RADIUS_PX,
+    *,
+    gaussian_prior: GaussianSpotPrior | None = None,
 ) -> float:
     """Calculate the selected metric on the provided image.
 
@@ -204,6 +223,8 @@ def get_metric(
         descriptor for metric to use
     psf_radius_px : int
         Radius of PSF in pixels
+    gaussian_prior : GaussianSpotPrior or None
+        Fixed spot location and center bounds for the Gaussian metric.
 
     Returns
     -------
@@ -230,7 +251,16 @@ def get_metric(
         elif "localize_gauss_2d" in metric_to_use:
             metric = metric_localize_gauss2d(image)
         elif "gauss_2d" in metric_to_use:
-            metric = metric_gauss2d(image)
+            metric = (
+                metric_gauss2d(image)
+                if gaussian_prior is None
+                else metric_gauss2d(
+                    image,
+                    image_center=gaussian_prior.center,
+                    threshold=gaussian_prior.threshold,
+                    center_radius_px=gaussian_prior.center_radius_px,
+                )
+            )
         elif "brightness" in metric_to_use:
             metric = metric_brightness(image, percentile=None)
         elif "fourier_ratio" in metric_to_use:
@@ -370,6 +400,10 @@ def acquire_metric_image(
     metric_to_use: str,
     num_averaged_frames: int = 1,
     opm_nidaq: OPMNIDAQ | None = None,
+    *,
+    gaussian_prior: GaussianSpotPrior | None = None,
+    o3_sampler: O3StackMetric | None = None,
+    stop_requested=None,
 ) -> tuple[NDArray, float]:
     """Acquire images and calculate a consistent adaptive-optics metric.
 
@@ -384,23 +418,52 @@ def acquire_metric_image(
     opm_nidaq : OPMNIDAQ or None
         Active AO DAQ controller. When supplied, one camera-device failure is
         recovered without changing the configured scan mode.
+    gaussian_prior : GaussianSpotPrior or None
+        For Gaussian AO, initialize the center from the starting (averaged)
+        image once, then reuse it for every frame, probe, and candidate.
+    o3_sampler : O3StackMetric or None
+        Fixed through-focus scan and 3D metric state for this AO run.
+    stop_requested : callable or None
+        Thread-safe cancellation predicate checked between camera frames.
 
     Returns
     -------
     tuple[numpy.ndarray, float]
         Averaged camera image and its metric value.
     """
+    def snap():
+        check_ao_stop(stop_requested)
+        return _snap_ao_image(mmc, opm_nidaq)
+
+    check_ao_stop(stop_requested)
+    if o3_sampler is not None:
+        stack, metric = o3_sampler.acquire(
+            mmc, snap, num_averaged_frames, stop_requested=stop_requested
+        )
+        check_ao_stop(stop_requested)
+        if not np.isfinite(metric):
+            warning("AO O3 STACK INVALID", o3_sampler.diagnostics[-1]["reason"])
+        return stack, metric
     if num_averaged_frames > 1:
-        images = [
-            _snap_ao_image(mmc, opm_nidaq) for _ in range(num_averaged_frames)
-        ]
+        images = [snap() for _ in range(num_averaged_frames)]
         image_stack = np.stack(images, axis=0).astype(np.float32)
         image = np.mean(image_stack, axis=0)
-        metric = float(np.mean([get_metric(im, metric_to_use) for im in images]))
     else:
-        image = _snap_ao_image(mmc, opm_nidaq)
-        metric = get_metric(image, metric_to_use)
+        image = snap()
+        images = [image]
 
+    metric_options = {}
+    if metric_to_use == "gauss_2d" and gaussian_prior is not None:
+        if gaussian_prior.center is None:
+            gaussian_prior.center = _initial_gaussian_center(
+                image, gaussian_prior.threshold
+            )
+        metric_options["gaussian_prior"] = gaussian_prior
+    metric = float(
+        np.mean([get_metric(im, metric_to_use, **metric_options) for im in images])
+    )
+
+    check_ao_stop(stop_requested)
     return image, metric
 
 
@@ -448,6 +511,85 @@ def round_to_sigfigs(x: float, signif_figs: int = DEFUALT_SIGN_FIGS) -> float:
         return np.round(x, digits)
 
 
+def _restore_ao_correction(
+    mirror: AOMirror, coefficients: NDArray, daq: OPMNIDAQ
+) -> None:
+    """Restore the accepted correction, stopping acquisition if restoration fails.
+
+    Parameters
+    ----------
+    mirror : AOMirror
+        Active deformable mirror.
+    coefficients : NDArray
+        Last accepted modal coefficients.
+    daq : OPMNIDAQ
+        Active AO acquisition controller.
+
+    Raises
+    ------
+    RuntimeError
+        If the accepted correction cannot be restored.
+    """
+    try:
+        if not mirror.set_modal_coefficients(coefficients.copy()):
+            raise RuntimeError("Mirror rejected the accepted correction")
+    except Exception as exc:
+        daq.stop_waveform_playback()
+        raise RuntimeError(
+            "Failed to restore last accepted AO mirror correction"
+        ) from exc
+
+
+def _measure_restored_correction(
+    mirror, mmc, daq, metric_to_use, num_averaged_frames,
+    metric_options, record, save_dir_path,
+) -> None:
+    """Measure the restored state without changing the accepted AO history.
+
+    Write each check immediately to a separate journal, including invalid fits.
+    Controller positions are readbacks, not independent optical feedback.
+    """
+    check_ao_stop(metric_options.get("stop_requested"))
+    time.sleep(0.1)  # Same additional settling delay as candidate measurements.
+    mirror._update_current_state()
+    record = {
+        **record,
+        "timestamp_unix_s": time.time(),
+        "num_averaged_frames": num_averaged_frames,
+        "metric_name": metric_to_use,
+        "requested_voltage": mirror.last_requested_voltage.copy(),
+        "reported_voltage_before": mirror.current_voltage.copy(),
+    }
+    sampler = metric_options.get("o3_sampler")
+    if sampler is not None:
+        sampler.context = {**record, "kind": "restoration_verification"}
+    image, metric = acquire_metric_image(
+        mmc, metric_to_use, num_averaged_frames, opm_nidaq=daq, **metric_options
+    )
+    mirror._update_current_state()
+    record.update(
+        measured_metric=float(metric),
+        metric_valid=bool(np.isfinite(metric)),
+        reported_voltage_after=mirror.current_voltage.copy(),
+    )
+    record["max_voltage_readback_error"] = float(max(
+        np.max(np.abs(record[key] - record["requested_voltage"]))
+        for key in ("reported_voltage_before", "reported_voltage_after")
+    ))
+    if save_dir_path is not None:
+        save_dir_path.mkdir(parents=True, exist_ok=True)
+        root = zarr.open_group(str(save_dir_path / "ao_restore_checks.zarr"), mode="a")
+        group = root.create_group(f"check_{record['step_index']:06d}")
+        group.create_array("image", data=np.asarray(image))
+        group.attrs.update(json_metadata(record))
+    print(
+        f"    Restored correction measured metric: {metric:.6f}; "
+        f"historical best: {record['historical_best_metric']:.6f}; "
+        f"zero probe: {record['zero_probe_metric']:.6f}; "
+        f"max actuator readback error: {record['max_voltage_readback_error']:.6g}"
+    )
+
+
 def run_ao_optimization(
     exposure_ms: float,
     channel_states: tuple[bool],
@@ -470,6 +612,10 @@ def run_ao_optimization(
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
     verbose: bool = True,
+    initialization_metadata: dict | None = None,
+    o3_stack_settings: dict | None = None,
+    alignment_refocus_every_n_modes: int = 0,
+    stop_requested=None,
 ) -> bool:
     """Run sensorless adaptive optics.
 
@@ -506,6 +652,13 @@ def run_ao_optimization(
         Mirror reference associated with explicit starting coefficients.
     starting_coefficients_source : str or None
         Description recorded for an explicit coefficient initializer.
+    initialization_metadata : dict or None
+        Acquisition policies and logical time, layer, and position identifiers.
+    o3_stack_settings : dict or None
+        O3 scan range, step, angle, remote pixel scale, and stage device.
+    alignment_refocus_every_n_modes : int
+        Initial 2D alignment only: refocus O3 between each N attempted modes.
+        Zero disables. Uses current illumination without shutter control.
     mode_acceptance : str
         Rule used to accept a fitted modal update.
     num_averaged_frames : int
@@ -522,7 +675,7 @@ def run_ao_optimization(
     Returns
     -------
     bool
-        Whether optimization completed successfully.
+        Whether optimization completed successfully; False on cooperative STOP.
 
     Raises
     ------
@@ -535,6 +688,12 @@ def run_ao_optimization(
     ValueError
         If a mirror state or mode selection is invalid.
     """
+    if (isinstance(alignment_refocus_every_n_modes, bool)
+            or not isinstance(alignment_refocus_every_n_modes, (int, np.integer))
+            or alignment_refocus_every_n_modes < 0):
+        raise ValueError("Alignment refocus interval must be a nonnegative integer")
+    if alignment_refocus_every_n_modes and (daq_mode != "2d" or metric_to_use == O3_STACK_METRIC):
+        raise ValueError("Periodic alignment autofocus requires 2D, non-stack AO")
     if verbose:
         print("\n+++++++++++      RUNNING SENSORLESS AO      +++++++++++\n")
 
@@ -550,6 +709,16 @@ def run_ao_optimization(
         raise ImportError("Required hardware modules not available.")
 
     mmc = CMMCorePlus.instance()
+    o3_sampler = None
+    if metric_to_use == O3_STACK_METRIC:
+        from opm_v2.hardware.PicardShutter import PicardShutter
+
+        settings = O3StackSettings(**(o3_stack_settings or {}))
+        settings.offsets()  # Validate before moving any device.
+        PicardShutter.instance().closeShutter()
+        o3_sampler = O3StackMetric(settings, output_path=save_dir_path)
+        daq_mode = "2d"
+        channel_states = [False] * len(channel_states)
 
     # This routine executes the feedback loop behind the AO custom event.  Use
     # the active camera and the Core exposure API; only adapter-specific
@@ -611,6 +780,7 @@ def run_ao_optimization(
     # Set starting mirror state
     # ---------------------------------------------#
 
+    starting_state_applied = True
     if starting_mirror_coefficients is not None:
         inherited_coefficients = np.asarray(
             starting_mirror_coefficients,
@@ -622,24 +792,31 @@ def run_ao_optimization(
             )
         AOMirror_local.set_reference_state(starting_reference_state)
         if not AOMirror_local.set_modal_coefficients(inherited_coefficients.copy()):
+            opmNIDAQ_local.stop_waveform_playback()
             raise RuntimeError("Failed to apply inherited AO mirror coefficients")
         coefficient_source = starting_coefficients_source or "explicit coefficients"
         starting_state_label = f"{coefficient_source} ({starting_reference_state})"
     elif "system" in starting_mirror_state:
-        AOMirror_local.apply_system_flat_voltage()
+        starting_state_applied = AOMirror_local.apply_system_flat_voltage()
         starting_state_label = starting_mirror_state
     elif "optimized" in starting_mirror_state:
-        AOMirror_local.apply_optimized_voltage()
+        starting_state_applied = AOMirror_local.apply_optimized_voltage()
         starting_state_label = starting_mirror_state
     elif "factory" in starting_mirror_state:
-        AOMirror_local.apply_factory_flat_voltage()
+        starting_state_applied = AOMirror_local.apply_factory_flat_voltage()
         starting_state_label = starting_mirror_state
     elif "zeros" in starting_mirror_state:
-        AOMirror_local.apply_zeros_voltage()
+        starting_state_applied = AOMirror_local.apply_zeros_voltage()
         starting_state_label = starting_mirror_state
     else:
         raise ValueError(f"Invalid starting mirror state: {starting_mirror_state}")
 
+    if not starting_state_applied:
+        opmNIDAQ_local.stop_waveform_playback()
+        raise RuntimeError("Failed to apply starting AO mirror correction")
+
+    if initialization_metadata:
+        info("AO INITIALIZATION", initialization_metadata)
     if verbose:
         print(f"\n------- INFO -------\nStarting mirror state: {starting_state_label}")
 
@@ -689,11 +866,16 @@ def run_ao_optimization(
         starting_coef_delta * (coef_delta_scale**k) for k in range(num_iterations)
     ]
     metadata = {
+        "initialization": initialization_metadata or {},
         "starting_mirror_state": starting_state_label,
         "starting_coeffs": starting_coeffs.tolist(),
         "stage_position": stage_position,
         "opm_mode": daq_mode,
         "metric_name": metric_to_use,
+        "num_averaged_frames": num_averaged_frames,
+        "restoration_verification_store": "ao_restore_checks.zarr",
+        "alignment_refocus_every_n_modes": alignment_refocus_every_n_modes,
+        "alignment_refocus": [],
         "num_iterations": num_iterations,
         "num_mode_samples": num_mode_samples,
         "mode_deltas": list(mode_deltas),
@@ -705,6 +887,14 @@ def run_ao_optimization(
         "image_mirror_range_um": image_mirror_range_um,
         "pos_idx": 0 if pos_idx is None else pos_idx,
     }
+    if o3_sampler is not None:
+        metadata["o3_stack"] = {
+            **asdict(o3_sampler.settings),
+            "illumination": "manually enabled external alignment beam",
+            "axes": ["o3", "camera_y", "camera_x"],
+            "geometry": "rotation about camera X into O2; no resampling",
+            "measurements": o3_sampler.diagnostics,
+        }
     # ---------------------------------------------#
     # Start AO optimization
     # ---------------------------------------------#
@@ -712,6 +902,17 @@ def run_ao_optimization(
     if verbose:
         print("\n++++++++    STARTING SENSORLESS AO LOOP    ++++++++\n")
 
+    # A new prior for each AO position/run, held fixed across all its probes.
+    metric_options = (
+        {"gaussian_prior": GaussianSpotPrior()} if metric_to_use == "gauss_2d" else {}
+    )
+    if o3_sampler is not None:
+        metric_options = {"o3_sampler": o3_sampler}
+        o3_sampler.context = {
+            "kind": "starting", "modal_coefficients": starting_coeffs.tolist()
+        }
+
+    metric_options["stop_requested"] = stop_requested
     # Aqcuire starting image and metric
     try:
         starting_image, starting_metric = acquire_metric_image(
@@ -719,28 +920,24 @@ def run_ao_optimization(
             metric_to_use,
             num_averaged_frames,
             opm_nidaq=opmNIDAQ_local,
+            **metric_options,
         )
+        if not np.isfinite(starting_metric):
+            raise ValueError("Starting AO metric must be finite")
         starting_metric = round_to_sigfigs(starting_metric, metric_precision)
 
         # append to tracking lists
         all_images.append(starting_image)
         all_metrics.append(starting_metric)
+    except AOCancelled:
+        opmNIDAQ_local.stop_waveform_playback()
+        return False
     except Exception as e:
-        raise RuntimeError("Failed to get starting metric") from e
+        opmNIDAQ_local.stop_waveform_playback()
+        raise RuntimeError(f"Failed to get starting metric: {e}") from e
 
     # Start AO iterations
     for k in range(num_iterations):
-        if num_averaged_frames > 50 and num_iterations > 1:
-            opmNIDAQ_local.stop_waveform_playback()
-
-            # Run the auto-focus optimization
-            mmc.setExposure(10.0)
-            manage_O3_focus("MCL NanoDrive Z Stage", verbose=True, mmc=mmc)
-            # Enforce camera exposure
-            mmc.setExposure(float(exposure_ms))
-
-            opmNIDAQ_local.start_waveform_playback()
-
         if k == 0:
             iteration_optimal_metrics = [starting_metric]
             current_coeffs = starting_coeffs.copy()
@@ -760,6 +957,40 @@ def run_ao_optimization(
 
         # Iterate over modes to optimize
         for mode in modes_to_optimize:
+            if stop_requested is not None and stop_requested():
+                _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                opmNIDAQ_local.stop_waveform_playback()
+                return False
+            completed_modes = len(optimal_metrics)
+            if (alignment_refocus_every_n_modes and completed_modes
+                    and completed_modes % alignment_refocus_every_n_modes == 0):
+                _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                stage_name = (o3_stack_settings or {}).get("stage_name", "MCL NanoDrive Z Stage")
+                try:
+                    stage = mmc.getDeviceObject(stage_name)
+                    stage.wait()
+                    start_um = float(stage.getPosition())
+                    best_um = manage_O3_focus(
+                        stage_name, verbose=verbose, mmc=mmc,
+                        control_shutter=False, stop_requested=stop_requested,
+                    )
+                    record = {
+                        "after_modes": completed_modes, "start_um": start_um,
+                        "best_um": float(best_um), "timestamp_unix_s": time.time(),
+                        "modal_coefficients": current_coeffs.tolist(),
+                    }
+                    metadata["alignment_refocus"].append(record)
+                    if save_dir_path is not None:
+                        save_dir_path.mkdir(parents=True, exist_ok=True)
+                        journal = zarr.open_group(str(save_dir_path / "ao_alignment_focus.zarr"), mode="a")
+                        journal.create_group(f"after_{completed_modes:06d}").attrs.update(json_metadata(record))
+                    print(f"AO alignment refocus after {completed_modes} modes: {start_um:.3f} -> {best_um:.3f} um")
+                except AOCancelled:
+                    opmNIDAQ_local.stop_waveform_playback()
+                    return False
+                except Exception:
+                    opmNIDAQ_local.stop_waveform_playback()
+                    raise
             if verbose:
                 print(f"\nOptimizing Zernike mode: {mode + 1}:{mode_names[mode]} . . .")
 
@@ -767,6 +998,8 @@ def run_ao_optimization(
             modal_coeff_deltas = np.linspace(
                 -mode_deltas[k], mode_deltas[k], num_mode_samples
             )
+            # Even sample counts must also include a true reference measurement.
+            modal_coeff_deltas[num_mode_samples // 2] = 0.0
             perturbed_modal_coeffs = np.tile(
                 current_coeffs.copy(), (num_mode_samples, 1)
             )
@@ -774,23 +1007,53 @@ def run_ao_optimization(
 
             mode_success = True
             metrics = []
+            probe_images = []
             for ii, modal_coeff in enumerate(perturbed_modal_coeffs):
-                success = AOMirror_local.set_modal_coefficients(modal_coeff)
+                # Keep failed/skipped samples in the saved arrays, but never
+                # fit a partial sweep or acquire an image for a rejected command.
+                try:
+                    success = mode_success and AOMirror_local.set_modal_coefficients(
+                        modal_coeff
+                    )
+                except Exception:
+                    _restore_ao_correction(
+                        AOMirror_local, current_coeffs, opmNIDAQ_local
+                    )
+                    raise
 
                 if not (success):
+                    mode_success = False
                     metric = np.nan
                     image = np.zeros_like(starting_image)
                 else:
                     if not opmNIDAQ_local.running():
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
                         raise ConnectionError("DAQ is not running, check for errors")
+                    if o3_sampler is not None:
+                        o3_sampler.context = {
+                            "kind": "probe", "iteration": k + 1,
+                            "mode_index": int(mode), "mode_name": mode_names[mode],
+                            "delta": float(modal_coeff_deltas[ii]),
+                            "modal_coefficients": modal_coeff.tolist(),
+                        }
                     try:
                         image, metric = acquire_metric_image(
                             mmc,
                             metric_to_use,
                             num_averaged_frames,
                             opm_nidaq=opmNIDAQ_local,
+                            **metric_options,
                         )
+                    except AOCancelled:
+                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        opmNIDAQ_local.stop_waveform_playback()
+                        return False
                     except Exception as e:
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
                         raise RuntimeError("Exception in acquiring image") from e
                     try:
                         metric = round_to_sigfigs(metric, metric_precision)
@@ -810,6 +1073,7 @@ def run_ao_optimization(
 
                 # Update all metrics / images
                 metrics.append(metric)
+                probe_images.append(image)
                 all_metrics.append(metric)
                 all_images.append(image)
                 if verbose:
@@ -820,6 +1084,7 @@ def run_ao_optimization(
             # ---------------------------------------------#
             # Fit metrics to determine optimal delta
             # ---------------------------------------------#
+            fit_valid = mode_success
             if mode_success:
                 try:
                     # Are metrics monotonic, if so use the maximum
@@ -841,7 +1106,8 @@ def run_ao_optimization(
                     else:
                         # Fit and use the peak of quadratic fit
                         a, b, c = quadratic_fit(modal_coeff_deltas, metrics)
-                        optimal_delta = -b / (2 * a)
+                        if not np.all(np.isfinite([a, b, c])):
+                            raise ValueError("AO fit coefficients must be finite")
                         # Reject if metrics have positive curvature
                         if a >= 0:
                             optimal_delta = modal_coeff_deltas[int(np.argmax(metrics))]
@@ -853,6 +1119,10 @@ def run_ao_optimization(
                                     "\n------- WARNING -------"
                                     "\n Metrics have positive curvature!"
                                 )
+                        else:
+                            optimal_delta = -b / (2 * a)
+                        if not np.isfinite(optimal_delta):
+                            raise ValueError("AO fitted delta must be finite")
                         # Clip optimal delta at the edge of sampled range
                         optimal_delta = np.clip(
                             optimal_delta,
@@ -860,6 +1130,7 @@ def run_ao_optimization(
                             modal_coeff_deltas.max(),
                         )
                 except Exception as e:
+                    fit_valid = False
                     optimal_delta = 0
                     optimal_image = np.zeros_like(starting_image)
                     if verbose:
@@ -878,64 +1149,144 @@ def run_ao_optimization(
             # Validate the optimal delta
             # ---------------------------------------------#
             current_opt_metric = iteration_optimal_metrics[-1]
+            current_opt_image = optimal_images[-1] if optimal_images else starting_image
+            zero_metric_index = num_mode_samples // 2
+            # Zero delta is the same correction already accepted. Retain a
+            # higher observed score and its image even when the candidate loses.
+            if np.isfinite(metrics[zero_metric_index]) and metrics[zero_metric_index] > current_opt_metric:
+                current_opt_metric = metrics[zero_metric_index]
+                current_opt_image = probe_images[zero_metric_index]
+            update = False
+            candidate_valid = False
 
-            if optimal_delta != 0:
+            if np.isfinite(optimal_delta) and optimal_delta != 0:
                 # remeasure metric to verify new position
                 active_coeffs = current_coeffs.copy()
                 active_coeffs[mode] += optimal_delta
-                _ = AOMirror_local.set_modal_coefficients(active_coeffs)
-                time.sleep(0.1)
-                # Acquire image and metric
-                if not opmNIDAQ_local.running():
-                    raise ConnectionError("DAQ is not running, check for errors")
                 try:
-                    optimal_image, optimal_metric = acquire_metric_image(
-                        mmc,
-                        metric_to_use,
-                        num_averaged_frames,
-                        opm_nidaq=opmNIDAQ_local,
+                    success = AOMirror_local.set_modal_coefficients(active_coeffs)
+                except Exception:
+                    _restore_ao_correction(
+                        AOMirror_local, current_coeffs, opmNIDAQ_local
                     )
-                except Exception as e:
-                    raise RuntimeError("Exception in acquiring optimal image") from e
+                    raise
+                if success:
+                    time.sleep(0.1)
+                    # Only score a correction that was actually applied.
+                    if not opmNIDAQ_local.running():
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
+                        raise ConnectionError("DAQ is not running, check for errors")
+                    if o3_sampler is not None:
+                        o3_sampler.context = {
+                            "kind": "candidate", "iteration": k + 1,
+                            "mode_index": int(mode), "mode_name": mode_names[mode],
+                            "delta": float(optimal_delta),
+                            "modal_coefficients": active_coeffs.tolist(),
+                        }
+                    try:
+                        optimal_image, optimal_metric = acquire_metric_image(
+                            mmc,
+                            metric_to_use,
+                            num_averaged_frames,
+                            opm_nidaq=opmNIDAQ_local,
+                            **metric_options,
+                        )
+                    except AOCancelled:
+                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        opmNIDAQ_local.stop_waveform_playback()
+                        return False
+                    except Exception as e:
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
+                        raise RuntimeError(
+                            "Exception in acquiring optimal image"
+                        ) from e
 
-                optimal_metric = round_to_sigfigs(optimal_metric, metric_precision)
-                if verbose:
-                    print(
-                        f"    Optimal delta: {optimal_delta:.4f}",
-                        f"    Optimal metric: {optimal_metric:.5f}\n",
-                        sep="\n",
-                    )
+                    if np.isfinite(optimal_metric):
+                        optimal_metric = round_to_sigfigs(
+                            optimal_metric, metric_precision
+                        )
 
-                # NOTE: There are 3 variations of accepting a change,
-                #       1. Accept all changes
-                #       2. Accept change if better than current opt.
-                #       3. Accept change if better than 0 delta metric
-                if "all" in mode_acceptance:
-                    update = True
-                elif "optimal" in mode_acceptance:
-                    if optimal_metric >= current_opt_metric:
-                        update = True
-                    else:
-                        update = False
-                elif "zero" in mode_acceptance:
-                    zero_metric_index = num_mode_samples // 2
-                    if optimal_metric >= metrics[zero_metric_index]:
-                        update = True
-                    else:
-                        update = False
-            else:
-                update = False
+                    if verbose:
+                        print(
+                            f"    Candidate delta: {optimal_delta:.6f}",
+                            f"    Candidate metric: {optimal_metric:.5f}\n",
+                            sep="\n",
+                        )
+
+                    # Acceptance policies only compare valid, applied states.
+                    if np.isfinite(optimal_metric):
+                        candidate_valid = True
+                        if "all" in mode_acceptance:
+                            update = True
+                        elif "optimal" in mode_acceptance:
+                            update = optimal_metric >= current_opt_metric
+                        elif "zero" in mode_acceptance:
+                            update = optimal_metric >= metrics[zero_metric_index]
+
+            # A quadratic vertex is a proposal, not necessarily the best
+            # observed correction. Under "optimal", keep a better valid probe
+            # rather than discarding it in favor of the fitted candidate.
+            # Failed fits/commands/measurements still invalidate the mode.
+            if (
+                "optimal" in mode_acceptance and fit_valid
+                and (candidate_valid or optimal_delta == 0)
+            ):
+                best_probe = int(np.argmax(metrics))
+                candidate_score = optimal_metric if candidate_valid else -np.inf
+                if metrics[best_probe] > max(current_opt_metric, candidate_score):
+                    selected_delta = float(modal_coeff_deltas[best_probe])
+                    selected_coeffs = current_coeffs.copy()
+                    selected_coeffs[mode] += selected_delta
+                    try:
+                        success = AOMirror_local.set_modal_coefficients(selected_coeffs)
+                    except Exception:
+                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        raise
+                    update = bool(success)
+                    if update:
+                        optimal_delta = selected_delta
+                        optimal_metric = metrics[best_probe]
+                        optimal_image = probe_images[best_probe]
+                        if verbose:
+                            print(
+                                f"    Keeping measured delta: {optimal_delta:.6f}, "
+                                f"metric: {optimal_metric:.6f}"
+                            )
 
             # Update lists dependant on update status
             if update:
                 current_coeffs[mode] += optimal_delta
             else:
-                if len(optimal_images) == 0:
-                    optimal_image = starting_image
-                    optimal_metric = starting_metric
-                else:
-                    optimal_image = optimal_images[-1]
-                    optimal_metric = current_opt_metric
+                _restore_ao_correction(
+                    AOMirror_local, current_coeffs, opmNIDAQ_local
+                )
+                try:
+                    _measure_restored_correction(
+                        AOMirror_local, mmc, opmNIDAQ_local, metric_to_use,
+                        num_averaged_frames, metric_options,
+                        {
+                            "step_index": len(optimal_metrics),
+                            "iteration": k + 1,
+                            "mode_index": int(mode),
+                            "mode_name": mode_names[mode],
+                            "modal_coefficients": current_coeffs.copy(),
+                            "historical_best_metric": float(current_opt_metric),
+                            "zero_probe_metric": float(metrics[zero_metric_index]),
+                        },
+                        save_dir_path,
+                    )
+                except AOCancelled:
+                    opmNIDAQ_local.stop_waveform_playback()
+                    return False
+                except Exception as exc:
+                    opmNIDAQ_local.stop_waveform_playback()
+                    raise RuntimeError("Failed to verify restored AO correction") from exc
+                optimal_image = current_opt_image
+                optimal_metric = current_opt_metric
 
             optimal_images.append(optimal_image)
             optimal_metrics.append(optimal_metric)
@@ -950,7 +1301,7 @@ def run_ao_optimization(
             if verbose:
                 print(
                     f"\n+++++     Was mirror updated: {update}     +++++",
-                    f"Current optimal metric: {iteration_optimal_metrics[-1]:.6f}",
+                    f"Retained best metric (historical): {iteration_optimal_metrics[-1]:.6f}",
                     sep="\n",
                 )
 
@@ -963,7 +1314,7 @@ def run_ao_optimization(
     # ---------------------------------------------#
 
     # Update the mirror state and positions arrays
-    AOMirror_local.set_modal_coefficients(optimal_coeffs[-1])
+    _restore_ao_correction(AOMirror_local, optimal_coeffs[-1], opmNIDAQ_local)
     AOMirror_local.update_optimized_array()
     if pos_idx is not None:
         try:
@@ -990,6 +1341,7 @@ def run_ao_optimization(
         AOMirror_local.save_current_state(save_prefix)
         AOMirror_local.save_positions_array(save_prefix)
 
+        results_step = "Saving AO results"
         try:
             # Save and plot optimization results
             all_images = np.asarray(all_images)
@@ -1012,10 +1364,14 @@ def run_ao_optimization(
                 update_status=update_status,
                 metadata=metadata,
                 save_dir_path=save_dir_path,
+                **({"o3_stacks": np.asarray(o3_sampler.measured_stacks)}
+                   if o3_sampler is not None else {}),
             )
+            results_step = "Loading saved AO results"
             ao_results = load_optimization_results(
                 save_dir_path / Path("ao_results.zarr")
             )
+            results_step = "Plotting AO Zernike coefficients (results already saved)"
             plot_zernike_coeffs(
                 ao_results=ao_results,
                 zernike_mode_names=mode_names,
@@ -1023,6 +1379,7 @@ def run_ao_optimization(
                 show_fig=False,
                 x_range=starting_coef_delta,
             )
+            results_step = "Plotting AO metric progress (results already saved)"
             plot_metric_progress(
                 ao_results=ao_results,
                 zernike_mode_names=mode_names,
@@ -1032,12 +1389,13 @@ def run_ao_optimization(
         except Exception as e:
             print(
                 "\n------- WARNING -------",
-                "Saving results had an exception!",
+                f"{results_step} failed!",
                 f"{e}",
                 sep="\n",
             )
+            traceback.print_exc()
 
-        return True
+    return True
 
 
 # -------------------------------------------------#
@@ -1085,6 +1443,13 @@ def plot_zernike_coeffs(
     num_iterations = int(metadata["num_iterations"])
     optimal_coeffs = np.array(ao_results["optimal_coeffs"])
     starting_coeffs = np.array(ao_results["starting_coeffs"])
+    # Current stores contain one correction per mode update. Older stores
+    # contain only the final correction from each iteration.
+    if optimal_coeffs.shape[0] != num_iterations:
+        num_modes = len(metadata["modes_to_optimize"])
+        optimal_coeffs = optimal_coeffs.reshape(
+            num_iterations, num_modes, -1
+        )[:, -1, :]
 
     # Create the plot
     fig, ax = plt.subplots(figsize=(7.5, 8))
@@ -1155,6 +1520,8 @@ def plot_zernike_coeffs(
         plt.show()
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_zernike_coeffs.png"))
+    if not show_fig:
+        plt.close(fig)
 
 
 def plot_metric_progress_depr(
@@ -1220,9 +1587,9 @@ def plot_metric_progress_depr(
         ax.plot(
             np.linspace(0, num_modes - 1, num_modes),
             zero_metrics_by_iteration[ii],
-            color=colors[ii],
+            color=colors[ii % len(colors)],
             label=f"iteration {ii}",
-            marker=markers[ii],
+            marker=markers[ii % len(markers)],
             linestyle="--",
             linewidth=1,
         )
@@ -1317,9 +1684,9 @@ def plot_metric_progress(
             ax.plot(
                 np.linspace(0, num_modes - 1, num_modes),
                 zero_metrics_by_iteration[ii],
-                color=colors[ii],
+                color=colors[ii % len(colors)],
                 label=f"\u0394=0, iteration {ii}",
-                marker=markers[ii],
+                marker=markers[ii % len(markers)],
                 linestyle="--",
                 linewidth=1,
             )
@@ -1327,9 +1694,9 @@ def plot_metric_progress(
             ax.plot(
                 np.linspace(0, num_modes - 1, num_modes),
                 optimal_metrics_by_iteration[ii],
-                color=colors[ii],
+                color=colors[ii % len(colors)],
                 label=f"optimal iteration {ii}",
-                marker=markers[ii],
+                marker=markers[ii % len(markers)],
                 linestyle="-",
                 linewidth=1,
             )
@@ -1347,6 +1714,8 @@ def plot_metric_progress(
         plt.show()
     if save_dir_path:
         fig.savefig(save_dir_path / Path("ao_metrics.png"))
+    if not show_fig:
+        plt.close(fig)
 
 
 def plot_phase(phase: dict, save_dir_path: Path = None, show_fig: bool = False) -> None:
@@ -2170,143 +2539,156 @@ def metric_laplacian_variance(
     return metric
 
 
+def _initial_gaussian_center(image: NDArray, threshold: float) -> tuple[float, float]:
+    """Locate the initial spot using an intensity threshold, without a fallback.
+
+    Returns
+    -------
+    tuple[float, float]
+        Intensity-weighted center (x, y) of the above-threshold pixels.
+
+    Raises
+    ------
+    ValueError
+        If the image is invalid or contains no signal above the threshold.
+    """
+    image = np.asarray(image, dtype=float)
+    if image.ndim != 2 or not image.size or not np.all(np.isfinite(image)):
+        raise ValueError("Gaussian AO requires a finite, nonempty 2D image")
+    mask = image > threshold
+    if not np.any(mask):
+        raise ValueError(
+            f"Gaussian AO starting image has no spot above threshold {threshold:g}"
+        )
+    ys, xs = np.nonzero(mask)
+    weights = image[mask] - threshold
+    return float(np.average(xs, weights=weights)), float(
+        np.average(ys, weights=weights)
+    )
+
+
 def metric_gauss2d(
     image: NDArray,
     crop_size: int = 128,
-    threshold: float | None = 1000,
-    image_center: int = None,
-    return_image: bool | None = False,
-) -> float:
-    """Compute weighted metric for 2D gaussian.
+    threshold: float = 1000,
+    image_center: tuple[float, float] | None = None,
+    return_image: bool = False,
+    *,
+    center_radius_px: float = 16.0,
+) -> float | tuple[float, NDArray]:
+    """Fit a single Gaussian spot constrained by its initial AO location.
 
     Parameters
     ----------
     image : NDArray
         2D image.
     crop_size : int, optional
-        Width of the optional square crop in pixels.
+        Half-width of the fixed crop in pixels; zero uses the full image.
     threshold : float, optional
-        Initial threshold used to find the spot.
-    image_center : int, optional
-        Center of the image to crop (default is None).
-    return_image : Optional[bool], optional
-        Whether to return the cropped image (default is False).
+        Threshold for locating the spot when no initial center is supplied.
+        AO determines this center once from its starting image.
+    image_center : tuple[float, float] or None
+        Initial spot center (x, y), held fixed throughout an AO optimization.
+    return_image : bool, optional
+        Also return the normalized crop, including when a fit fails.
+    center_radius_px : float, optional
+        Maximum fitted-center displacement on each axis from the initial
+        center. Both Gaussian FWHM widths must exceed one pixel. Fits pinned to
+        the center or sigma bounds are invalid rather than rewarded.
 
     Returns
     -------
-    weighted_metric : float
-        Weighted metric value.
-    """
-    # Optionally crop the image
-    if crop_size:
-        if image_center is None:
-            center = get_image_center(image, threshold)
-        else:
-            center = image_center
-        image = get_cropped_image(image, crop_size, center)
-
-    image_max = np.max(image)
-    if not np.isfinite(image_max) or image_max <= 0:
-        return np.nan
-
-    # normalize image 0-1
-    image = image / image_max
-    # normalize_roi(image, bg_percentile=25.0)
-    image = image.astype(np.float32)
-
-    # create coord. grid for fitting
-    x = np.arange(image.shape[1])
-    y = np.arange(image.shape[0])
-    x, y = np.meshgrid(x, y)
-
-    # fitting assumes a single bead in FOV....
-    initial_guess = (
-        image.max(),
-        image.shape[1] // 2,
-        image.shape[0] // 2,
-        3,
-        3,
-        image.min(),
-    )
-
-    sigma_floor = 0.25
-    fit_bounds = [
-        [0, 0, 0, sigma_floor, sigma_floor, 0],
-        [1.5, image.shape[1], image.shape[0], 100, 100, 10],
-    ]
+    float or tuple[float, NDArray]
+        Weighted amplitude/width/symmetry score (NaN for invalid fits),
+        optionally with the normalized crop.
+    """  # noqa: DOC501 - validation exceptions are caught and logged below.
+    image = np.asarray(image, dtype=float)
+    weighted_metric = np.nan
     try:
-        popt, pcov = curve_fit(
+        if image.ndim != 2 or not image.size or not np.all(np.isfinite(image)):
+            raise ValueError("Expected a finite, nonempty 2D image")
+        center = (
+            _initial_gaussian_center(image, threshold)
+            if image_center is None
+            else image_center
+        )
+        if (
+            len(center) != 2
+            or not np.all(np.isfinite(center))
+            or not 0 <= center[0] < image.shape[1]
+            or not 0 <= center[1] < image.shape[0]
+            or not np.isfinite(center_radius_px)
+            or center_radius_px <= 0
+        ):
+            raise ValueError("Invalid initial spot center or center bounding box")
+        origin_x = origin_y = 0
+        if crop_size:
+            crop_center = (int(round(center[0])), int(round(center[1])))
+            origin_x = max(crop_center[0] - crop_size, 0)
+            origin_y = max(crop_center[1] - crop_size, 0)
+            image = get_cropped_image(image, crop_size, crop_center)
+        prior_x, prior_y = center[0] - origin_x, center[1] - origin_y
+        image_max = np.max(image)
+        if image_max <= 0 or np.ptp(image) == 0:
+            raise ValueError("No spot contrast in the initial spot crop")
+        image = image / image_max
+        y, x = np.indices(image.shape, dtype=float)
+        background = float(np.median(image))
+        # Clip bounds in crop coordinates, including crops at camera edges.
+        lower_x = max(0.0, prior_x - center_radius_px)
+        upper_x = min(image.shape[1] - 1.0, prior_x + center_radius_px)
+        lower_y = max(0.0, prior_y - center_radius_px)
+        upper_y = min(image.shape[0] - 1.0, prior_y + center_radius_px)
+        # The requested minimum is a full width, while gauss2d fits sigma.
+        fwhm_per_sigma = 2.0 * np.sqrt(2.0 * np.log(2.0))
+        sigma_floor = (1.0 + 1e-6) / fwhm_per_sigma
+        lower = [0, lower_x, lower_y, sigma_floor, sigma_floor, 0]
+        upper = [1.5, upper_x, upper_y, 100, 100, 10]
+        initial_guess = (
+            image.max() - background,
+            prior_x,
+            prior_y,
+            3,
+            3,
+            max(background, 0.0),
+        )
+        popt, _ = curve_fit(
             gauss2d,
             (x, y),
             image.ravel(),
             p0=initial_guess,
-            bounds=fit_bounds,
+            bounds=(lower, upper),
             maxfev=1000,
         )
-
-        amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
         if not np.all(np.isfinite(popt)):
-            return np.nan
-
+            raise ValueError("Nonfinite Gaussian fit parameters")
+        # A boundary solution can represent a hot pixel or a spot outside
+        # the allowed region; neither should drive the mirror correction.
+        bound_hits = []
+        for index, name in enumerate(("center_x", "center_y", "sigma_x", "sigma_y"), 1):
+            for side, bounds in (("lower", lower), ("upper", upper)):
+                if np.isclose(popt[index], bounds[index], atol=1e-4, rtol=0):
+                    bound_hits.append(
+                        f"{name}={popt[index]:.6g} px ({side} bound {bounds[index]:.6g})"
+                    )
+                    if index in (3, 4):
+                        bound_hits[-1] += (
+                            f"; FWHM={popt[index] * fwhm_per_sigma:.6g} px"
+                            f" ({side} bound {bounds[index] * fwhm_per_sigma:.6g} px)"
+                        )
+        if bound_hits:
+            raise ValueError("Gaussian fit reached a bound: " + "; ".join(bound_hits))
+        amplitude, _, _, sigma_x, sigma_y, _ = popt
         sigma_area = sigma_x * sigma_y
         ellipticity = abs(sigma_x - sigma_y) / (sigma_x + sigma_y)
+        score = amplitude / sigma_area**2 * np.exp(-4.0 * ellipticity**2)
+        if not np.isfinite(score) or score <= 0:
+            raise ValueError("Invalid Gaussian metric")
+        weighted_metric = float(score)
+    except Exception as exc:
+        warning("AO GAUSSIAN FIT INVALID", str(exc))
 
-        width_score = amplitude / (sigma_area**2)
-        symmetry_score = np.exp(-4.0 * ellipticity**2)
-
-        weighted_metric = width_score * symmetry_score
-        if not np.isfinite(weighted_metric) or weighted_metric <= 0:
-            return np.nan
-
-    # fit_bounds = [
-    #     [0, 0, 0, 0.25, 0.25, 0],
-    #     [1.5, image.shape[1], image.shape[0], 100, 100, 10],
-    # ]
-    # try:
-    #     popt, pcov = curve_fit(
-    #         gauss2d,
-    #         (x, y),
-    #         image.ravel(),
-    #         p0=initial_guess,
-    #         bounds=fit_bounds,
-    #         maxfev=1000,
-    #     )
-
-    #     amplitude, center_x, center_y, sigma_x, sigma_y, offset = popt
-
-    #     # weighted_metric = (
-    #     #     (1 - np.abs((sigma_x - sigma_y) / (sigma_x + sigma_y)))
-    #     #     + 1 / (sigma_x + sigma_y)
-    #     #     + np.exp(-1 * (sigma_x + sigma_y - 1) ** 2)
-    #     # )
-
-    #     # weighted_metric = (
-    #     # np.exp(-1 * np.abs(sigma_x - sigma_y))
-    #     # + 2 / (sigma_y + sigma_x)
-    #     # )
-    #     # SJS: From old laser_optmization code
-    #     # weighted_metric = (
-    #     # (1 - np.abs((sigma_x-sigma_y)/(sigma_x+sigma_y)))
-    #     # * (1/(sigma_x+sigma_y)) * np.exp(-1*(sigma_x+sigma_y-4)**2)
-    #     # )
-    #     weight_amp = 0.5
-    #     weight_sigma_x = 1000
-    #     weight_sigma_y = 1000
-    #     weighted_metric = (
-    #     weight_amp * amplitude
-    #     + weight_sigma_x / sigma_x + weight_sigma_y / sigma_y
-    #     + np.exp(-1*(sigma_x+sigma_y-4)**2)
-    #     )
-
-    #     if (weighted_metric <= 0): # or (weighted_metric > 100):
-    #         weighted_metric = 1e-12
-    except Exception:
-        weighted_metric = np.nan
-
-    if return_image:
-        return weighted_metric, image
-    else:
-        return weighted_metric
+    return (weighted_metric, image) if return_image else weighted_metric
 
 
 def metric_localize_gauss2d(image: NDArray) -> float:
@@ -2362,7 +2744,11 @@ def run_ao_grid_mapping(
     num_scan_positions: int = 1,
     save_dir_path: Path = None,
     verbose: bool = True,
-) -> AOGridResult:
+    correction_history: AOCorrectionHistory | None = None,
+    time_idx: int = 0,
+    z_idx: int = 0,
+    stop_requested=None,
+) -> AOGridResult | None:
     """Run adaptive optics on a grid and interpolate across stage positions.
 
     Parameters
@@ -2388,6 +2774,13 @@ def run_ao_grid_mapping(
     verbose : bool, optional
         If True, prints additional debugging information. Default is False.
 
+    correction_history : AOCorrectionHistory or None
+        Acquisition-scoped initializer and completed-result history.
+    time_idx : int
+        Logical acquisition timepoint.
+    z_idx : int
+        Logical acquisition depth layer.
+
     Returns
     -------
     AOGridResult
@@ -2395,6 +2788,8 @@ def run_ao_grid_mapping(
 
     Raises
     ------
+    RuntimeError
+        If a grid-point optimization fails to complete.
     KeyError
         If the AO configuration omits a required optimization setting.
     ValueError
@@ -2490,7 +2885,7 @@ def run_ao_grid_mapping(
         grid_reference_state = "zeros_voltage"
         gui_start_coefficients = np.zeros_like(AOMirror_local.current_coeffs)
     elif "optimized" in mirror_state:
-        grid_reference_state = "system_flat"
+        grid_reference_state = getattr(AOMirror_local, "optimized_reference_state", "system_flat")
         gui_start_coefficients = AOMirror_local.optimized_modal_coeffs.copy()
     elif "system" in mirror_state:
         grid_reference_state = "system_flat"
@@ -2499,6 +2894,9 @@ def run_ao_grid_mapping(
         raise ValueError(f"Invalid starting mirror state: {mirror_state}")
     if previous_grid_reference_state is not None:
         grid_reference_state = previous_grid_reference_state
+
+    if correction_history is not None:
+        grid_reference_state = correction_history.reference_state
 
     # Run AO optimization for each stage position
     if verbose:
@@ -2531,6 +2929,8 @@ def run_ao_grid_mapping(
     if verbose:
         print("\n\nStarting AO grid optimization . . .")
     for ao_pos_idx in range(num_ao_pos):
+        if stop_requested is not None and stop_requested():
+            return None
         if verbose:
             print(
                 f"+++ \nMoving stage to position {ao_pos_idx + 1}/{num_ao_pos}: \n{ao_stage_positions[ao_pos_idx]}+++"
@@ -2554,7 +2954,28 @@ def run_ao_grid_mapping(
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
 
-        run_ao_optimization(
+        context = {
+            "time_idx": time_idx,
+            "z_idx": z_idx,
+            "position": ("grid", num_scan_positions, num_tile_positions, ao_pos_idx),
+        }
+        initializer = (
+            correction_history.initializer(**context)
+            if correction_history is not None
+            else {
+                "starting_mirror_coefficients": (
+                    gui_start_coefficients
+                    if previous_grid_coefficients is None
+                    else previous_grid_coefficients[ao_pos_idx]
+                ),
+                "starting_reference_state": grid_reference_state,
+                "starting_coefficients_source": (
+                    "GUI state" if previous_grid_coefficients is None else "previous Z"
+                ),
+            }
+        )
+        completed = run_ao_optimization(
+            stop_requested=stop_requested,
             exposure_ms=ao_dict["exposure_ms"],
             channel_states=ao_dict["channel_states"],
             metric_to_use=ao_dict["metric"],
@@ -2567,23 +2988,20 @@ def run_ao_grid_mapping(
             metric_precision=ao_dict["metric_precision"],
             modes_to_optimize=ao_dict["modes_to_optimize"],
             starting_mirror_state=mirror_state,
-            starting_mirror_coefficients=(
-                gui_start_coefficients
-                if previous_grid_coefficients is None
-                else previous_grid_coefficients[ao_pos_idx]
-            ),
-            starting_reference_state=grid_reference_state,
-            starting_coefficients_source=(
-                "GUI state"
-                if previous_grid_coefficients is None
-                else "previous Z"
-            ),
+            **initializer,
             mode_acceptance=ao_dict["metric_acceptance"],
             num_averaged_frames=ao_dict["num_averaged_frames"],
+            o3_stack_settings=ao_dict.get("o3_stack_settings"),
             pos_idx=None,
             save_dir_path=current_save_dir,
             verbose=verbose,
         )
+        if completed is not True:
+            if stop_requested is not None and stop_requested():
+                return None
+            raise RuntimeError("AO grid optimization did not complete")
+        if correction_history is not None:
+            correction_history.complete(AOMirror_local.current_coeffs, **context)
         ao_grid_wfc_coeffs[ao_pos_idx] = AOMirror_local.current_coeffs.copy()
         ao_grid_wfc_positions[ao_pos_idx] = AOMirror_local.current_voltage.copy()
 
@@ -2638,6 +3056,7 @@ def save_optimization_results(
     update_status: NDArray,
     metadata: dict,
     save_dir_path: Path,
+    o3_stacks: NDArray | None = None,
 ) -> None:
     """Save the results from running AO-optimize.
 
@@ -2668,9 +3087,13 @@ def save_optimization_results(
         run_optimization parameters
     save_dir_path : Path
         zarr destination path
+    o3_stacks : NDArray or None
+        Every measured O3 stack, including rejected candidate measurements.
+        Indices correspond to the O3 measurement diagnostics in metadata.
     """
     results_path = save_dir_path / Path("ao_results.zarr")
-    attributes = {**metadata, "zernike_mode_names": list(mode_names)}
+    # Validate before mode="w" can replace an existing result store.
+    attributes = json_metadata({**metadata, "zernike_mode_names": list(mode_names)})
     root = zarr.open_group(
         str(results_path),
         mode="w",
@@ -2687,6 +3110,8 @@ def save_optimization_results(
     root.create_array("starting_metric", data=np.asarray(starting_metric))
     root.create_array("starting_image", data=starting_image)
     root.create_array("update_status", data=update_status)
+    if o3_stacks is not None:
+        root.create_array("o3_measured_stacks", data=o3_stacks)
 
 
 def load_optimization_results(results_path: Path):

@@ -49,8 +49,14 @@ from opm_v2.engine.opm_custom_events import (
 )
 from opm_v2.hardware.AOMirror import AOMirror
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
+from opm_v2.utils.ao_policy import PREVIOUS_Z, AOCorrectionHistory
 from opm_v2.utils.autofocus_remote_unit import manage_O3_focus
 from opm_v2.utils.elveflow_control import run_fluidic_program
+from opm_v2.utils.laser_modes import (
+    is_simultaneous,
+    validate_interleaved_exposures,
+    validate_simultaneous_exposures,
+)
 from opm_v2.utils.sensorless_ao import (
     AOGridResult,
     run_ao_grid_mapping,
@@ -165,6 +171,7 @@ class OPMEngineV2(MDAEngine):
         self._is_stage_explorer_preview = False
         self._stage_move_count = 0
         self._pending_stage_scan_progress: dict[str, object] | None = None
+        self._ao_corrections: AOCorrectionHistory | None = None
         self._previous_ao_grid_result: AOGridResult | None = None
         self._previous_ao_grid_key: tuple[int, int] | None = None
         self._safe_stop_requested = ThreadEvent()
@@ -187,6 +194,17 @@ class OPMEngineV2(MDAEngine):
             Complete OPM configuration snapshot from the GUI controller.
         """
         self._config = deepcopy(config)
+
+    def _ao_stop_requested(self) -> bool:
+        """Return whether the acquisition has requested cooperative AO cancellation.
+
+        Returns
+        -------
+        bool
+            True when the STOP event is set.
+        """
+        event = getattr(self, "_safe_stop_requested", None)
+        return event is not None and event.is_set()
 
     def request_safe_stop(self) -> bool:
         """Request cancellation at the next software-controlled event boundary.
@@ -303,6 +321,10 @@ class OPMEngineV2(MDAEngine):
                 "Every active DAQ channel must have an exposure greater than "
                 f"0 ms; received {active_exposures}"
             )
+        if is_simultaneous(data_dict["DAQ"].get("laser_mode")):
+            validate_simultaneous_exposures(active_exposures, data_dict["DAQ"]["laser_mode"])
+        elif data_dict["DAQ"].get("interleaved", True) or data_dict["DAQ"].get("mode") == "mirror":
+            validate_interleaved_exposures(active_exposures)
         return active_exposures
 
     def configure_stage_camera_trigger(self) -> None:
@@ -414,6 +436,10 @@ class OPMEngineV2(MDAEngine):
         metadata = getattr(sequence, "metadata", {})
         is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in metadata
         self._is_stage_explorer_preview = is_stage_explorer_preview
+        self._ao_corrections = None
+        ao_config = self._config.get("acq_config", {}).get("AO", {})
+        if not is_stage_explorer_preview and ao_config.get("ao_mode", "none") != "none":
+            self._ao_corrections = AOCorrectionHistory(self.AOMirror, ao_config)
         speed_override = metadata.get(STAGE_MOVE_SPEED_METADATA_KEY, {})
         if isinstance(speed_override, Mapping):
             self._apply_stage_move_speeds(speed_override)
@@ -428,6 +454,18 @@ class OPMEngineV2(MDAEngine):
         except Exception:
             self._restore_stage_speeds()
             raise
+
+    def _ao_history(self, settings: dict) -> AOCorrectionHistory:
+        """Return acquisition history, also supporting direct custom-event execution.
+
+        Returns
+        -------
+        AOCorrectionHistory
+            Fixed acquisition seed and successfully completed corrections.
+        """
+        if getattr(self, "_ao_corrections", None) is None:
+            self._ao_corrections = AOCorrectionHistory(self.AOMirror, settings)
+        return self._ao_corrections
 
     def _capture_stage_speeds(self) -> None:
         """Remember the physical XY move speeds in effect before an MDA run."""
@@ -1184,6 +1222,7 @@ class OPMEngineV2(MDAEngine):
                         channel_states=data_dict["DAQ"]["channel_states"],
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
+                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
                     )
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
@@ -1194,6 +1233,7 @@ class OPMEngineV2(MDAEngine):
                         ),
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
+                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
                     )
                     # # Setup camera in progressive scan mode
                     # self.mmcore.setProperty(
@@ -1213,6 +1253,7 @@ class OPMEngineV2(MDAEngine):
                         ),
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
+                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
                     )
                 elif str(data_dict["DAQ"]["mode"]) == "2d":
                     self.opmDAQ.set_acquisition_params(
@@ -1220,6 +1261,7 @@ class OPMEngineV2(MDAEngine):
                         channel_states=data_dict["DAQ"]["channel_states"],
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
+                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
                     )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
@@ -1381,7 +1423,19 @@ class OPMEngineV2(MDAEngine):
                         f"modal coefficients: {self.AOMirror.current_coeffs.copy()}",
                     )
                 else:
-                    run_ao_optimization(
+                    history = self._ao_history(data_dict["AO"])
+                    context = {
+                        "time_idx": int(data_dict["AO"].get("time_idx", 0)),
+                        "z_idx": int(data_dict["AO"].get("z_idx", 0)),
+                        "position": (
+                            "tile",
+                            data_dict["AO"].get("logical_position_idx", pos_idx),
+                            data_dict["AO"].get("scan_idx", 0),
+                        ),
+                    }
+                    completed = run_ao_optimization(
+                        stop_requested=self._ao_stop_requested,
+                        **history.initializer(**context),
                         exposure_ms=float(data_dict["Camera"]["exposure_ms"]),
                         channel_states=data_dict["AO"]["channel_states"],
                         metric_to_use=data_dict["AO"]["metric"],
@@ -1398,10 +1452,20 @@ class OPMEngineV2(MDAEngine):
                         starting_mirror_state=str(data_dict["AO"]["mirror_state"]),
                         mode_acceptance=data_dict["AO"]["metric_acceptance"],
                         num_averaged_frames=int(data_dict["AO"]["num_averaged_frames"]),
+                        o3_stack_settings=data_dict["AO"].get("o3_stack_settings"),
+                        alignment_refocus_every_n_modes=data_dict["AO"].get(
+                            "alignment_refocus_every_n_modes", 0
+                        ),
                         pos_idx=pos_idx,
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING,
                     )
+                    if completed is not True:
+                        if self._safe_stop_requested.is_set():
+                            self.mmcore.mda.cancel()
+                            return ()
+                        raise RuntimeError("AO optimization did not complete")
+                    history.complete(self.AOMirror.current_coeffs, **context)
                     if pos_idx is not None:
                         try:
                             self.AOMirror.update_positions_array(int(pos_idx))
@@ -1434,12 +1498,16 @@ class OPMEngineV2(MDAEngine):
                 else:
                     time_idx = int(data_dict["AO"].get("time_idx", 0))
                     z_idx = int(data_dict["AO"].get("z_idx", 0))
+                    settings = {"ao_mode": "grid", **data_dict["AO"].get("ao_dict", {})}
+                    history = self._ao_history(settings)
                     previous_result = None
-                    if z_idx > 0:
+                    if (
+                        z_idx > 0
+                        and history.settings["sequential_correction"] == PREVIOUS_Z
+                    ):
                         expected_key = (time_idx, z_idx - 1)
                         if (
-                            getattr(self, "_previous_ao_grid_key", None)
-                            != expected_key
+                            getattr(self, "_previous_ao_grid_key", None) != expected_key
                             or getattr(self, "_previous_ao_grid_result", None) is None
                         ):
                             raise RuntimeError(
@@ -1450,6 +1518,10 @@ class OPMEngineV2(MDAEngine):
                         previous_result = self._previous_ao_grid_result
 
                     grid_result = run_ao_grid_mapping(
+                        stop_requested=self._ao_stop_requested,
+                        correction_history=history,
+                        time_idx=time_idx,
+                        z_idx=z_idx,
                         stage_positions=data_dict["AO"]["stage_positions"],
                         position_indices=data_dict["AO"].get("position_indices"),
                         ao_dict=data_dict["AO"]["ao_dict"],
@@ -1468,6 +1540,9 @@ class OPMEngineV2(MDAEngine):
                         save_dir_path=data_dict["AO"]["output_path"],
                         verbose=DEBUGGING,
                     )
+                    if grid_result is None and self._safe_stop_requested.is_set():
+                        self.mmcore.mda.cancel()
+                        return ()
                     self._previous_ao_grid_result = grid_result
                     self._previous_ao_grid_key = (time_idx, z_idx)
 
@@ -1731,6 +1806,9 @@ class OPMEngineV2(MDAEngine):
             Sequence that has completed or been canceled.
         """
         debug("TEARDOWN", "Acquisition finished, tearing down.")
+        self._ao_corrections = None
+        self._previous_ao_grid_result = None
+        self._previous_ao_grid_key = None
         sequence_metadata = getattr(sequence, "metadata", {})
         is_stage_explorer_preview = STAGE_MOVE_SPEED_METADATA_KEY in sequence_metadata
 
@@ -1772,7 +1850,12 @@ class OPMEngineV2(MDAEngine):
                             0.0,
                         )
 
-            self._save_ao_position_arrays()
+            try:
+                self._save_ao_position_arrays()
+            except Exception:
+                logging.getLogger(__name__).exception(
+                    "Could not save AO position arrays; continuing hardware teardown"
+                )
             self.mmcore.clearCircularBuffer()
 
             # Upstream commands the pre-acquisition XYZ return and then calls

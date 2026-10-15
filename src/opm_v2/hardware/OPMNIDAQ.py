@@ -181,6 +181,7 @@ class OPMNIDAQ:
         self._channel_states = [False, False, False, False, False]
         self._active_channels_indices = None
         self._n_active_channels = 0
+        self.simultaneous = False
         self._num_do_channels = 8
         self._do_waveform = np.zeros((self._num_do_channels), dtype=np.uint8)
         self._ao_waveform = [np.zeros(1), np.zeros(1)]
@@ -568,6 +569,7 @@ class OPMNIDAQ:
         return (
             self.scan_type,
             tuple(bool(state) for state in self.channel_states),
+            bool(self.simultaneous),
             float(self.exposure_ms),
             bool(self.laser_blanking),
             float(self.image_mirror_step_um),
@@ -589,6 +591,7 @@ class OPMNIDAQ:
         image_mirror_range_um: float = None,
         laser_blanking: bool = None,
         exposure_ms: float = None,
+        simultaneous: bool = False,
     ):
         """Configure the DAQ for an acquisition.
 
@@ -606,7 +609,11 @@ class OPMNIDAQ:
             Laser blanking state: Active (True) or Inactive (False)
         exposure_ms : float
             camera exposure time in milliseconds.
+        simultaneous : bool
+            Gate all enabled lasers together for one camera channel. Defaults to
+            False so subsequent single-laser AO runs restore normal timing.
         """
+        self.simultaneous = bool(simultaneous)
         if scan_type:
             self.scan_type = scan_type
         if channel_states:
@@ -725,24 +732,34 @@ class OPMNIDAQ:
         - 'projection' for a projection scan is a linear ramp for both the image and projection mirrors.
         - 'mirror' for a mirror scan is n_scan_step frames x n_do channels x camera_roi
         """
+        # Physical laser outputs and camera channels differ in simultaneous mode.
+        groups = (
+            [self._active_channels_indices] if self.simultaneous
+            else [[index] for index in self._active_channels_indices]
+        )
+        if not groups and self.scan_type == "2d":
+            # External alignment illumination: a valid blanked camera cycle,
+            # with both mirrors stationary and every imaging laser TTL low.
+            groups = [[]]
+        n_exposure_channels = len(groups)
         if self.scan_type == "2d":
             """Only fire the active channel lasers, keep the mirrors in their neutral positions."""
 
             # -----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
-            self.samples_per_do_ch = (2 * self._n_active_channels - 1) + 1
-            self.samples_per_do_ch = (2 * self._n_active_channels - 1) + 1
+            self.samples_per_do_ch = (2 * n_exposure_channels - 1) + 1
+            self.samples_per_do_ch = (2 * n_exposure_channels - 1) + 1
 
             # Generate values for DO
             _do_waveform = np.zeros(
                 (self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8
             )
-            for ii, ind in enumerate(self._active_channels_indices):
+            for ii, ind in enumerate(groups):
                 if self._laser_blanking:
-                    _do_waveform[2 * ii :: 2 * self._n_active_channels, ind] = 1
+                    _do_waveform[2 * ii :: 2 * n_exposure_channels, ind] = 1
                 else:
-                    _do_waveform[:, int(ind)] = 1
+                    _do_waveform[:, ind] = 1
 
             if self._laser_blanking:
                 _do_waveform[-1, :] = 0
@@ -765,18 +782,18 @@ class OPMNIDAQ:
             # -----------------------------------------------------#
             # The DO channel changes with changes in camera's trigger output,
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
-            self.samples_per_do_ch = (2 * self._n_active_channels - 1) + 1
-            self.samples_per_do_ch = (2 * self._n_active_channels - 1) + 1
+            self.samples_per_do_ch = (2 * n_exposure_channels - 1) + 1
+            self.samples_per_do_ch = (2 * n_exposure_channels - 1) + 1
 
             # Generate values for DO
             _do_waveform = np.zeros(
                 (self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8
             )
-            for ii, ind in enumerate(self._active_channels_indices):
+            for ii, ind in enumerate(groups):
                 if self._laser_blanking:
-                    _do_waveform[2 * ii :: 2 * self._n_active_channels, ind] = 1
+                    _do_waveform[2 * ii :: 2 * n_exposure_channels, ind] = 1
                 else:
-                    _do_waveform[:, int(ind)] = 1
+                    _do_waveform[:, ind] = 1
 
             if self._laser_blanking:
                 _do_waveform[-1, :] = 0
@@ -843,18 +860,18 @@ class OPMNIDAQ:
             # There are 2 time steps per frame, except for first frame plus one final frame to reset voltage
             # Collect one frame for each scan position
             n_voltage_steps = int(self._image_scan_steps)
-            self.samples_per_do_ch = 2 * n_voltage_steps * self._n_active_channels
+            self.samples_per_do_ch = 2 * n_voltage_steps * n_exposure_channels
 
             # Generate values for DO
             _do_waveform = np.zeros(
                 (self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8
             )
-            for ii, ind in enumerate(self._active_channels_indices):
+            for ii, ind in enumerate(groups):
                 # Turn laser on in order for each image position
                 if self._laser_blanking:
-                    _do_waveform[2 * ii :: 2 * self._n_active_channels, ind] = 1
+                    _do_waveform[2 * ii :: 2 * n_exposure_channels, ind] = 1
                 else:
-                    _do_waveform[:, int(ind)] = 1
+                    _do_waveform[:, ind] = 1
 
             if self._laser_blanking:
                 _do_waveform[-1, :] = 0
@@ -875,12 +892,12 @@ class OPMNIDAQ:
             )
 
             # Set the last time point (when exp is off) to the first mirror positions.
-            _ao_waveform[0 : 2 * self._n_active_channels - 1, 0] = scan_mirror_volts[0]
+            _ao_waveform[0 : 2 * n_exposure_channels - 1, 0] = scan_mirror_volts[0]
 
             if len(scan_mirror_volts) > 1:
                 # (2 * # active channels) voltage values for all other frames
-                _ao_waveform[2 * self._n_active_channels - 1 : -1, 0] = np.kron(
-                    scan_mirror_volts[1:], np.ones(2 * self._n_active_channels)
+                _ao_waveform[2 * n_exposure_channels - 1 : -1, 0] = np.kron(
+                    scan_mirror_volts[1:], np.ones(2 * n_exposure_channels)
                 )
 
             # set back to initial value at end
@@ -892,20 +909,20 @@ class OPMNIDAQ:
 
             # -----------------------------------------------------#
             # setup digital trigger buffer on DAQ
-            self.samples_per_do_ch = 2 * int(self._n_active_channels)
-            self.samples_per_do_ch = 2 * int(self._n_active_channels)
+            self.samples_per_do_ch = 2 * int(n_exposure_channels)
+            self.samples_per_do_ch = 2 * int(n_exposure_channels)
 
             # create DAQ pattern for laser strobing controlled via rolling shutter
             _do_waveform = np.zeros(
                 (self.samples_per_do_ch, self._num_do_channels), dtype=np.uint8
             )
-            for ii, ind in enumerate(self._active_channels_indices):
+            for ii, ind in enumerate(groups):
                 if self._laser_blanking:
                     _do_waveform[
-                        2 * ii :: 2 * int(self._n_active_channels), int(ind)
+                        2 * ii :: 2 * int(n_exposure_channels), ind
                     ] = 1
                 else:
-                    _do_waveform[:, int(ind)] = 1
+                    _do_waveform[:, ind] = 1
 
             if self._laser_blanking:
                 _do_waveform[-1, :] = 0

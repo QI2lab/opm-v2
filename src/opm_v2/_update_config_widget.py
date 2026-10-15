@@ -23,6 +23,16 @@ from pymmcore_gui._qt.QtWidgets import (
     QWidget,
 )
 
+from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
+from opm_v2.utils.ao_policy import SEQUENTIAL_CORRECTIONS, correction_settings
+from opm_v2.utils.laser_modes import (
+    INTERLEAVED,
+    SIMULTANEOUS_PRESETS,
+    is_simultaneous,
+    normalize_laser_mode,
+    simultaneous_channel_indices,
+)
+
 MIN_AO_POSITIONS = 1
 MAX_AO_POSITIONS = 20
 MAX_AO_ITERATIONS = 10
@@ -62,6 +72,23 @@ class OPMSettingsV2(QWidget):
         positions_config.setdefault("sample_depth_end_um", 0.0)
         positions_config.setdefault("z_axis_overlap", 0.15)
 
+        ao_config = config["acq_config"]["AO"]
+        ao_config.update(correction_settings(ao_config))
+        # Retire the unvalidated experimental metric from previously saved configs.
+        config["OPM"]["ao_metrics"] = [
+            metric for metric in config["OPM"]["ao_metrics"] if metric != "energy_3d_o3"
+        ]
+        if ao_config.get("metric") == "energy_3d_o3":
+            ao_config["metric"] = O3_STACK_METRIC
+            ao_config["ao_mode"] = "none"
+        if O3_STACK_METRIC not in config["OPM"]["ao_metrics"]:
+            config["OPM"]["ao_metrics"].append(O3_STACK_METRIC)
+        for key, default in {
+            "alignment_refocus_every_n_modes": 0,
+            "o3_stack_range_um": 4.0, "o3_stack_step_um": 0.5,
+            "o3_tilt_deg": 30.0, "o3_pixel_size_um": 0.115,
+        }.items():
+            ao_config.setdefault(key, default)
         self.config = config
         self.widgets = {}
         self.create_ui()
@@ -290,9 +317,28 @@ class OPMSettingsV2(QWidget):
         self.cmbx_ao_mirror = self.create_combobox(
             items=self.config["OPM"]["ao_mirror_states"],
             width=125,
-            current=self.config["acq_config"]["AO"]["mirror_state"],
+            current=self.config["acq_config"]["AO"]["starting_correction"],
             connect_to_fn=self.update_config,
         )
+
+        self.cmbx_ao_starting_correction = self.cmbx_ao_mirror
+        self.cmbx_ao_sequential_correction = self.create_combobox(
+            items=SEQUENTIAL_CORRECTIONS,
+            width=290,
+            current=self.config["acq_config"]["AO"]["sequential_correction"],
+            connect_to_fn=self.update_config,
+        )
+        self.cmbx_ao_mirror.setToolTip(
+            "Snapshot this correction at acquisition start. Applied when AO runs."
+        )
+        self.cmbx_ao_sequential_correction.setToolTip(
+            "Reuse the starting correction, chain completed AO results within this "
+            "acquisition, or use the matching position from the preceding Z layer. "
+            "Previous-Z history starts afresh at each timepoint."
+        )
+        self.layout_ao_sequential = QHBoxLayout()
+        self.layout_ao_sequential.addWidget(QLabel("Sequential correction:"))
+        self.layout_ao_sequential.addWidget(self.cmbx_ao_sequential_correction)
 
         self.cmbx_ao_metric = self.create_combobox(
             items=self.config["OPM"]["ao_metrics"],
@@ -304,9 +350,44 @@ class OPMSettingsV2(QWidget):
         self.layout_ao_metric = QHBoxLayout()
         self.layout_ao_metric.addWidget(QLabel("Metric:"))
         self.layout_ao_metric.addWidget(self.cmbx_ao_metric)
+        self.cmbx_ao_metric.setToolTip(
+            "gauss_3d_o3: 3D Gaussian plus fixed-core energy score. Uses a manually "
+            "enabled alignment beam; imaging lasers are off and the existing "
+            "alignment shutter stays closed."
+        )
+        self.group_o3_stack = QGroupBox("O3 stack (manual alignment beam)")
+        o3_layout = QVBoxLayout()
+        self.o3_stack_widgets = {}
+        for key, label, maximum, precision in (
+            ("o3_stack_range_um", "Full O3 range (µm):", 100.0, 2),
+            ("o3_stack_step_um", "O3 step (µm):", 10.0, 3),
+            ("o3_tilt_deg", "O2–O3 angle (degrees):", 89.0, 2),
+            ("o3_pixel_size_um", "Remote pixel size (µm):", 10.0, 4),
+        ):
+            row = QHBoxLayout()
+            control = self.create_dbspinbox(
+                value=self.config["acq_config"]["AO"][key], min=0.001,
+                max=maximum, precision=precision, interval=0.1,
+                connect_to_fn=self.update_config,
+            )
+            row.addWidget(QLabel(label))
+            row.addWidget(control)
+            o3_layout.addLayout(row)
+            self.o3_stack_widgets[key] = control
+        note = QLabel(
+            "Camera Y tilt; stationary mirrors. Averaged frames applies per plane. "
+            "Range/step must be even (default: 9 planes). Enable the external beam manually."
+        )
+        note.setWordWrap(True)
+        o3_layout.addWidget(note)
+        self.group_o3_stack.setLayout(o3_layout)
+        self.group_o3_stack.setVisible(self.cmbx_ao_metric.currentText() == O3_STACK_METRIC)
+        self.cmbx_ao_metric.currentTextChanged.connect(
+            lambda metric: self.group_o3_stack.setVisible(metric == O3_STACK_METRIC)
+        )
 
         self.layout_ao_mirror = QHBoxLayout()
-        self.layout_ao_mirror.addWidget(QLabel("AO Mirror State:"))
+        self.layout_ao_mirror.addWidget(QLabel("Starting correction:"))
         self.layout_ao_mirror.addWidget(self.cmbx_ao_mirror)
 
         self.cmbx_ao_accept = self.create_combobox(
@@ -401,6 +482,20 @@ class OPMSettingsV2(QWidget):
         self.layout_averaged_frames.addWidget(QLabel("Averaged frames:"))
         self.layout_averaged_frames.addWidget(self.spbx_averaged_frames)
 
+        self.spbx_alignment_refocus = self.create_spinbox(
+            value=self.config["acq_config"]["AO"]["alignment_refocus_every_n_modes"],
+            min=0, max=1000, connect_to_fn=self.update_config,
+        )
+        self.spbx_alignment_refocus.setSpecialValueText("Off")
+        self.spbx_alignment_refocus.setToolTip(
+            "Initial alignment only: optimize now, 2D, non-stack metric. "
+            "Run O2–O3 autofocus after every N attempted modes, before the next mode. "
+            "Uses current illumination and exposure; no shutter control."
+        )
+        self.layout_alignment_refocus = QHBoxLayout()
+        self.layout_alignment_refocus.addWidget(QLabel("Alignment: refocus every N modes:"))
+        self.layout_alignment_refocus.addWidget(self.spbx_alignment_refocus)
+
         self.spbx_num_scan_positions = self.create_spinbox(
             value=self.config["acq_config"]["AO"]["num_scan_positions"],
             min=MIN_AO_POSITIONS,
@@ -448,8 +543,10 @@ class OPMSettingsV2(QWidget):
         self.group_ao_main = QGroupBox("AO optimization settings")
         self.layout_ao_main = QVBoxLayout()
         self.layout_ao_main.addLayout(self.layout_ao_mirror)
+        self.layout_ao_main.addLayout(self.layout_ao_sequential)
         self.layout_ao_main.addLayout(self.layout_ao_mode)
         self.layout_ao_main.addLayout(self.layout_ao_metric)
+        self.layout_ao_main.addWidget(self.group_o3_stack)
         self.layout_ao_main.addLayout(self.layout_ao_accept)
         self.layout_ao_main.addLayout(self.layout_ao_modes)
         self.layout_ao_main.addLayout(self.layout_ao_daq_mode)
@@ -463,6 +560,7 @@ class OPMSettingsV2(QWidget):
         self.layout_ao_main.addLayout(self.layout_mode_alpha)
         self.layout_ao_main.addLayout(self.layout_metric_prec)
         self.layout_ao_main.addLayout(self.layout_averaged_frames)
+        self.layout_ao_main.addLayout(self.layout_alignment_refocus)
         self.layout_ao_main.addLayout(self.layout_num_scan_positions)
         self.layout_ao_main.addLayout(self.layout_num_tile_positions)
         self.layout_ao_main.addLayout(self.layout_camera_mode)
@@ -475,6 +573,7 @@ class OPMSettingsV2(QWidget):
 
         self.widgets.update({
             "AO": {
+                **self.o3_stack_widgets,
                 "metric": self.cmbx_ao_metric,
                 "modes_to_optimize": self.cmbx_ao_modes,
                 "metric_acceptance": self.cmbx_ao_accept,
@@ -493,9 +592,12 @@ class OPMSettingsV2(QWidget):
                 "ao_mode": self.cmbx_ao_mode,
                 "metric_precision": self.spbx_metric_precision,
                 "mirror_state": self.cmbx_ao_mirror,
+                "starting_correction": self.cmbx_ao_starting_correction,
+                "sequential_correction": self.cmbx_ao_sequential_correction,
                 "lightsheet_mode": self.cmbx_ao_camera_mode,
                 "readout_ms": self.spbx_readout_time,
                 "num_averaged_frames": self.spbx_averaged_frames,
+                "alignment_refocus_every_n_modes": self.spbx_alignment_refocus,
             }
         })
 
@@ -515,6 +617,20 @@ class OPMSettingsV2(QWidget):
         self.layout_opm_mode = QHBoxLayout()
         self.layout_opm_mode.addWidget(QLabel("OPM mode:"))
         self.layout_opm_mode.addWidget(self.cmbx_opm_mode)
+
+        self.cmbx_laser_mode = self.create_combobox(
+            items=[INTERLEAVED, *SIMULTANEOUS_PRESETS], width=210,
+            current=normalize_laser_mode(self.config["acq_config"]["DAQ"].get("laser_mode", INTERLEAVED)),
+            connect_to_fn=self.update_config,
+        )
+        self.cmbx_laser_mode.setToolTip(
+            "Interleaved requires identical exposure times for every enabled channel. "
+            "Simultaneous acquires one combined channel using the selected pair and both laser powers. "
+            "Set equal exposure times for the selected pair. Other lasers are excluded."
+        )
+        self.layout_laser_mode = QHBoxLayout()
+        self.layout_laser_mode.addWidget(QLabel("Laser mode:"))
+        self.layout_laser_mode.addWidget(self.cmbx_laser_mode)
 
         self.cmbx_o2o3_mode = self.create_combobox(
             items=self.config["OPM"]["autofocus_frequencies"],
@@ -586,6 +702,7 @@ class OPMSettingsV2(QWidget):
 
         self.layout_opm_settings = QVBoxLayout()
         self.layout_opm_settings.addLayout(self.layout_opm_mode)
+        self.layout_opm_settings.addLayout(self.layout_laser_mode)
         self.layout_opm_settings.addLayout(self.layout_o2o3_mode)
         self.layout_opm_settings.addLayout(self.layout_picard_shutter)
         self.layout_opm_settings.addLayout(self.layout_fluidics_mode)
@@ -947,6 +1064,7 @@ class OPMSettingsV2(QWidget):
 
         self.widgets.update({
             "DAQ": {
+                "laser_mode": self.cmbx_laser_mode,
                 "scan_range_um": self.spbx_mirror_image_range,
                 "scan_axis_step_um": self.spbx_scan_step_size,
             },
@@ -1257,7 +1375,17 @@ class OPMSettingsV2(QWidget):
         config["acq_config"]["o2o3_mode"] = self.cmbx_o2o3_mode.currentText()
         config["acq_config"]["fluidics"] = self.cmbx_fluidics_mode.currentText()
         config["acq_config"]["AO"]["daq_mode"] = self.cmbx_ao_daq_mode.currentText()
+        self.spbx_alignment_refocus.setEnabled(
+            self.cmbx_ao_mode.currentText() == "optimize now"
+            and self.cmbx_ao_daq_mode.currentText() == "2d"
+            and self.cmbx_ao_metric.currentText() != O3_STACK_METRIC
+        )
         config["acq_config"]["AO"]["metric"] = self.cmbx_ao_metric.currentText()
+        using_o3_stack = self.cmbx_ao_metric.currentText() == O3_STACK_METRIC
+        for control in (self.cmbx_ao_daq_mode, self.cmbx_ao_active_channel,
+                        self.spbx_active_channel_power, self.spbx_ao_mirror_range,
+                        self.cmbx_ao_camera_mode, self.spbx_readout_time):
+            control.setEnabled(not using_o3_stack)
         # config['acq_config']['AO']['mode_accept'] = self.cmbx_ao_accept.currentText()
 
         if self.cmbx_laser_blanking.currentText() == "on":
@@ -1269,11 +1397,37 @@ class OPMSettingsV2(QWidget):
             laser_blanking = True
 
         config["acq_config"]["DAQ"]["laser_blanking"] = laser_blanking
+        if "DAQ" in self.widgets:
+            simultaneous = is_simultaneous(self.cmbx_laser_mode.currentText())
+            channel_boxes = [
+                self.chx_405_state,
+                self.chx_488_state,
+                self.chx_561_state,
+                self.chx_638_state,
+                self.chx_705_state,
+            ]
+            pair = (simultaneous_channel_indices(config["OPM"]["channel_ids"], self.cmbx_laser_mode.currentText())
+                    if simultaneous else ())
+            for index, checkbox in enumerate(channel_boxes):
+                checkbox.setEnabled(not simultaneous)
+                if simultaneous:
+                    with QSignalBlocker(checkbox):
+                        checkbox.setChecked(index in pair)
+                    config["acq_config"]["DAQ"]["channel_states"][index] = index in pair
 
+        ao_config = config["acq_config"]["AO"]
+        ao_config.update(correction_settings(ao_config))
         self.config = config
 
         if self._write_config():
             self.settings_changed.emit(self.value())
+
+    def acquisition_snapshot(self) -> dict:
+        """Commit pending numeric edits before constructing acquisition events."""
+        for widget in self.findChildren(QDoubleSpinBox) + self.findChildren(QSpinBox):
+            widget.interpretText()
+        self.update_config()
+        return self.value()
 
     def value(self) -> dict:
         """Return an isolated snapshot of the current GUI configuration.

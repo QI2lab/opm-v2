@@ -42,6 +42,9 @@ def _isolated_engine() -> OPMEngineV2:
     """
     engine = object.__new__(OPMEngineV2)
     engine.simulate_hardware = True
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.current_coeffs = np.zeros(2)
+    engine.AOMirror.optimized_reference_state = "system_flat"
     engine.simulated_asi_state = {}
     engine.simulated_asi_transitions = []
     engine.simulated_custom_actions = []
@@ -1082,7 +1085,8 @@ def test_saved_teardown_uses_4x_speed_for_large_return_then_restores() -> None:
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
 
 
-def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
+@pytest.mark.parametrize("save_error", [False, True])
+def test_saved_acquisition_teardown_uses_extended_return_timeout(save_error) -> None:
     """Extend the timeout for the upstream return after a saved acquisition."""
     engine = _isolated_engine()
     engine.simulate_hardware = False
@@ -1096,6 +1100,9 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
     engine.opmDAQ = MagicMock()
     engine.AOMirror = MagicMock()
     engine.AOMirror.output_path = None
+    if save_error:
+        engine.AOMirror.output_path = Path("acquisition")
+        engine.AOMirror.save_positions_array.side_effect = OSError("disk unavailable")
     engine._post_teardown = None
     mmcore.hasProperty.return_value = False
     mmcore.getXYStageDevice.return_value = "XYStage"
@@ -1110,6 +1117,7 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
         engine.teardown_sequence(MDASequence())
 
     upstream_teardown.assert_called_once()
+    mmcore.clearCircularBuffer.assert_called_once()
     mmcore.setTimeoutMs.assert_not_called()
     mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 5000)
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
@@ -1139,9 +1147,13 @@ def test_daq_exposure_validation_uses_only_enabled_channels() -> None:
     """Validate DAQ exposure arrays before any camera or laser operation."""
     payload = {
         "DAQ": {"channel_states": [True, False, True]},
-        "Camera": {"exposure_channels": [5.0, 0.0, 7.0]},
+        "Camera": {"exposure_channels": [5.0, 0.0, 5.0]},
     }
-    assert OPMEngineV2._active_daq_exposures(payload) == [5.0, 7.0]
+    assert OPMEngineV2._active_daq_exposures(payload) == [5.0, 5.0]
+
+    payload["Camera"]["exposure_channels"] = [20.0, 0.0, 5.0]
+    with pytest.raises(ValueError, match="Interleaved acquisition requires equal"):
+        OPMEngineV2._active_daq_exposures(payload)
 
     payload["DAQ"]["channel_states"] = [False, False, False]
     with pytest.raises(ValueError, match="no active acquisition channels"):

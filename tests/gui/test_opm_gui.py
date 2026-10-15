@@ -6,12 +6,13 @@ import json
 from math import prod
 from pathlib import Path
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 from pymmcore_gui._qt.QtCore import Qt
 from pymmcore_gui._qt.QtWidgets import QComboBox, QDoubleSpinBox, QSpinBox
 
-from opm_v2._app import launch_opm_app
+from opm_v2._app import ConfigStore, OPMAppController, launch_opm_app
 from opm_v2._update_config_widget import OPMSettingsV2
 from opm_v2.engine.opm_custom_events import (
     ACTION_AO_GRID,
@@ -21,6 +22,40 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_O2O3_AUTOFOCUS,
 )
 from opm_v2.engine.opm_engine import OPMEngineV2
+
+
+@pytest.mark.parametrize("write_succeeds", [True, False])
+def test_projection_dispatch_commits_displayed_range(
+    workspace_tmp_path, qtbot, opm_config_factory, monkeypatch, write_succeeds,
+):
+    """Starting MDA must use the displayed range, even with a stale snapshot."""
+    config_path = opm_config_factory.write(
+        opm_config_factory(mode="projection", scan_range_um=10),
+        workspace_tmp_path / "projection_range.json",
+    )
+    settings = OPMSettingsV2(config_path)
+    qtbot.addWidget(settings)
+    controller = object.__new__(OPMAppController)
+    controller.config_store = ConfigStore(config_path)
+    controller.config = controller.config_store.data
+    controller.opm_settings_widget = settings
+    controller.opm_engine = MagicMock()
+    controller._opm_scan_footprint_active = False
+    monkeypatch.setattr(settings, "_write_config", lambda: write_succeeds)
+    settings.spbx_proj_image_range.setKeyboardTracking(False)
+    settings.spbx_proj_image_range.lineEdit().setText("100")
+    assert controller.config["acq_config"]["DAQ"]["scan_range_um"] == 10
+    planned = []
+
+    def capture_plan(optimize_now, mode, output):
+        planned.append((mode, controller.config["acq_config"]["DAQ"]["scan_range_um"]))
+        return None, None
+
+    monkeypatch.setattr(controller, "create_opm_events", capture_plan)
+    monkeypatch.setattr(controller, "timestamped_output_path", lambda path: path)
+    controller.custom_execute_mda(workspace_tmp_path / "projection.ome.zarr")
+    assert planned == [("projection", 100)]
+    assert settings.spbx_mirror_image_range.value() == 100
 
 
 def _read_config(path: Path) -> dict[str, Any]:
@@ -383,10 +418,21 @@ def test_every_custom_combo_box_option_persists(
 
     combo_specs = [
         (settings.cmbx_opm_mode, ("acq_config", "opm_mode"), str),
+        (settings.cmbx_laser_mode, ("acq_config", "DAQ", "laser_mode"), str),
         (settings.cmbx_o2o3_mode, ("acq_config", "o2o3_mode"), str),
         (settings.cmbx_fluidics_mode, ("acq_config", "fluidics"), str),
         (settings.cmbx_ao_mode, ("acq_config", "AO", "ao_mode"), str),
         (settings.cmbx_ao_mirror, ("acq_config", "AO", "mirror_state"), str),
+        (
+            settings.cmbx_ao_starting_correction,
+            ("acq_config", "AO", "starting_correction"),
+            str,
+        ),
+        (
+            settings.cmbx_ao_sequential_correction,
+            ("acq_config", "AO", "sequential_correction"),
+            str,
+        ),
         (settings.cmbx_ao_metric, ("acq_config", "AO", "metric"), str),
         (
             settings.cmbx_ao_accept,
@@ -419,9 +465,12 @@ def test_every_custom_combo_box_option_persists(
         "cmbx_o2o3_mode",
         "cmbx_fluidics_mode",
         "cmbx_laser_blanking",
+        "cmbx_laser_mode",
         "cmbx_ao_active_channel",
         "cmbx_ao_mode",
         "cmbx_ao_mirror",
+        "cmbx_ao_starting_correction",
+        "cmbx_ao_sequential_correction",
         "cmbx_ao_metric",
         "cmbx_ao_accept",
         "cmbx_ao_modes",
@@ -463,6 +512,7 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
         "spbx_mode_alpha": ("acq_config", "AO", "mode_alpha"),
         "spbx_metric_precision": ("acq_config", "AO", "metric_precision"),
         "spbx_averaged_frames": ("acq_config", "AO", "num_averaged_frames"),
+        "spbx_alignment_refocus": ("acq_config", "AO", "alignment_refocus_every_n_modes"),
         "spbx_num_scan_positions": ("acq_config", "AO", "num_scan_positions"),
         "spbx_num_tile_positions": ("acq_config", "AO", "num_tile_positions"),
         "spbx_readout_time": ("acq_config", "AO", "readout_ms"),
@@ -577,6 +627,7 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
     scenario = gui_integration_scenario
     mode = scenario["mode"]
     ao_options = scenario["ao_options"]
+    simultaneous = scenario.get("laser_mode") == "simultaneous"
     config = opm_config_from_scenario(scenario)
     config_path = opm_config_factory.write(
         config, workspace_tmp_path / f"{scenario['name']}_gui.json"
@@ -591,6 +642,8 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
             simulate_hardware=True,
         )
     qtbot.addWidget(window)
+    started_events = []
+    demo_core.mda.events.eventStarted.connect(started_events.append)
 
     try:
         qtbot.waitUntil(lambda: window.opm_controller.bootstrap_complete, timeout=5000)
@@ -605,10 +658,12 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
         settings.cmbx_opm_mode.setCurrentText(alternate_mode)
         settings.cmbx_opm_mode.setCurrentText(mode)
         combo_values = {
+            settings.cmbx_laser_mode: scenario.get("laser_mode", "interleaved"),
             settings.cmbx_o2o3_mode: scenario["o2o3_mode"],
             settings.cmbx_fluidics_mode: scenario["fluidics"],
             settings.cmbx_ao_mode: scenario["ao_mode"],
-            settings.cmbx_ao_mirror: ao_options["mirror_state"],
+            settings.cmbx_ao_starting_correction: ao_options["starting_correction"],
+            settings.cmbx_ao_sequential_correction: ao_options["sequential_correction"],
             settings.cmbx_ao_metric: ao_options["metric"],
             settings.cmbx_ao_accept: ao_options["metric_acceptance"],
             settings.cmbx_ao_modes: ao_options["modes_to_optimize"],
@@ -670,6 +725,9 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
 
         persisted = _read_config(config_path)
         assert persisted["acq_config"]["opm_mode"] == mode
+        assert persisted["acq_config"]["DAQ"]["laser_mode"] == scenario.get(
+            "laser_mode", "interleaved"
+        )
         assert (
             persisted["acq_config"]["DAQ"]["scan_range_um"] == scenario["scan_range_um"]
         )
@@ -732,49 +790,64 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
             if axis["name"] not in {"y", "x"}
         ]
         qtbot.waitUntil(
-            lambda: len(camera_frame_recorder.frames)
-            == prod(stored_array.shape[:-2]),
+            lambda: len(camera_frame_recorder.frames) == prod(stored_array.shape[:-2]),
             timeout=5000,
         )
         camera_frame_recorder.assert_matches_store(stored_array, storage_axes)
         stored_frames = root_metadata["attributes"]["ome_writers"]["frame_metadata"]
         assert stored_frames
         assert len(stored_frames) == len(camera_frame_recorder.frames)
+        if mode == "mirror":
+            arrival_order = [
+                tuple(event.index.get(axis, 0) for axis in ("t", "p", "z", "c"))
+                for event in camera_frame_recorder.events
+            ]
+            assert arrival_order == sorted(arrival_order)
         stored_config = opm_metadata["configuration"]
         assert stored_config["acq_config"] == controller.config["acq_config"]
+        if simultaneous:
+            assert all(
+                frame["event_metadata"]["DAQ"]["laser_mode"] == "simultaneous 488/637"
+                for frame in stored_frames
+            )
+            daq_events = [
+                event
+                for event in started_events
+                if getattr(event.action, "name", None) == "DAQ"
+            ]
+            assert daq_events
+            assert all(
+                event.action.data["DAQ"]["laser_mode"] == "simultaneous 488/637"
+                for event in daq_events
+            )
+        expected_policies = {
+            key: ao_options[key]
+            for key in ("starting_correction", "sequential_correction")
+        }
+        for key, expected in expected_policies.items():
+            assert stored_config["acq_config"]["AO"][key] == expected
+        # Verify the GUI selections reached actual dispatched AO actions, as well
+        # as the persisted acquisition config. Demo mode skips mirror optimization;
+        # coefficient inheritance is exercised by test_ao_initialization and
+        # test_sensorless_ao with real engine/optimizer boundaries.
+        ao_payloads = []
+        for event in started_events:
+            action = event.action
+            if getattr(action, "name", None) == ACTION_AO_OPTIMIZE:
+                ao_payloads.append(action.data["AO"])
+            elif getattr(action, "name", None) == ACTION_AO_GRID:
+                ao_payloads.append(action.data["AO"]["ao_dict"])
+        if scenario["ao_mode"] != "none":
+            assert ao_payloads
+        for payload in ao_payloads:
+            for key, expected in expected_policies.items():
+                assert payload[key] == expected
         assert {frame["event_metadata"]["DAQ"]["mode"] for frame in stored_frames} == {
             scenario["expected_daq_mode"]
         }
-        mirror_is_sequential = (
-            mode == "mirror" and len(set(scenario["channel_exposures_ms"])) > 1
-        )
-
-        def expected_frame_daq(frame, values):
-            """Return full or single-channel DAQ values for a stored frame.
-
-            Parameters
-            ----------
-            frame : dict[str, Any]
-                Stored ome-writers frame metadata.
-            values : list[Any]
-                Full GUI-selected DAQ values.
-
-            Returns
-            -------
-            list[Any]
-                Values representing the hardware state for this frame.
-            """
-            if not mirror_is_sequential:
-                return values
-            current_channel = frame["event_metadata"]["DAQ"]["current_channel"]
-            channel_index = config["OPM"]["channel_ids"].index(current_channel)
-            result = [False if isinstance(value, bool) else 0.0 for value in values]
-            result[channel_index] = values[channel_index]
-            return result
-
         assert all(
             frame["event_metadata"]["DAQ"]["channel_states"]
-            == expected_frame_daq(frame, expected_states)
+            == expected_states
             for frame in stored_frames
         )
         if mode == "stage":
@@ -785,7 +858,7 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
                 scenario["scan_axis_step_um"]
                 / 1000
                 / stage_speed_mm_s
-                / sum(expected_states)
+                / (1 if simultaneous else sum(expected_states))
                 * 1000
             )
             stored_exposures = [actual_exposure_ms] * len(expected_states)
@@ -793,12 +866,12 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
             stored_exposures = expected_exposures
         assert all(
             frame["event_metadata"]["DAQ"]["exposure_channels_ms"]
-            == expected_frame_daq(frame, stored_exposures)
+            == stored_exposures
             for frame in stored_frames
         )
         assert all(
             frame["event_metadata"]["DAQ"]["laser_powers"]
-            == expected_frame_daq(frame, expected_powers)
+            == expected_powers
             for frame in stored_frames
         )
         assert {
@@ -806,10 +879,14 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
         } == {scenario["laser_blanking"] or scenario["fluidics"] != "none"}
         assert {
             frame["event_metadata"]["DAQ"]["current_channel"] for frame in stored_frames
-        } == {
-            config["OPM"]["channel_ids"][channel]
-            for channel in scenario["active_channels"]
-        }
+        } == (
+            {"488 + 637"}
+            if simultaneous
+            else {
+                config["OPM"]["channel_ids"][channel]
+                for channel in scenario["active_channels"]
+            }
+        )
         assert {
             frame["event_metadata"]["Camera"]["exposure_ms"] for frame in stored_frames
         } == (
@@ -857,4 +934,5 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
         elif scenario["ao_mode"] != "none":
             assert ACTION_AO_OPTIMIZE in actions
     finally:
+        demo_core.mda.events.eventStarted.disconnect(started_events.append)
         window.close()

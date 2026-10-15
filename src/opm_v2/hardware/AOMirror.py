@@ -164,6 +164,7 @@ class AOMirror:
         self._mirror_settle_ms = int(mirror_settle_ms)
         self._wait_after_move = bool(wait_after_move)
         self._wfc_connected = False
+        self.optimized_reference_state = "system_flat"
 
         if self.simulate:
             self.n_actuators = 52
@@ -572,6 +573,9 @@ class AOMirror:
                 f"Voltage validation: Volts array must have shape = {self.n_actuators}"
             )
             return False
+        elif not np.all(np.isfinite(volts)):
+            print("Voltage validation: Actuator voltages must be finite.")
+            return False
         elif np.any(np.abs(volts) >= 0.99):
             print(
                 "------- AOmirror -------\n"
@@ -691,14 +695,15 @@ class AOMirror:
     def update_optimized_array(self):
         """Update the last optimized voltage and modal arrays."""
         self._update_current_state()
-        self.optimized_modal_coefs = self.current_coeffs.copy()
+        self.optimized_modal_coeffs = self.current_coeffs.copy()
         self.optimized_voltage = self.current_voltage.copy()
+        self.optimized_reference_state = self._reference_state or "system_flat"
 
         if DEBUGGING:
             print(
                 "------- AOmirror -------\n"
                 "Updated optimized arrays:\n"
-                f"modal_coefs: {self.optimized_modal_coefs}\n"
+                f"modal_coefs: {self.optimized_modal_coeffs}\n"
                 f"voltages: {self.optimized_voltage}"
             )
 
@@ -769,13 +774,13 @@ class AOMirror:
 
         return success
 
-    def apply_optimized_voltage(self, reference_state: str = "system_flat"):
+    def apply_optimized_voltage(self, reference_state: str | None = None):
         """Apply the last optimized modal coefficients.
 
         Parameters
         ----------
-        reference_state : str
-            Mirror reference state for the modal coefficients.
+        reference_state : str or None
+            Override the saved reference state; None uses its original reference.
 
         Returns
         -------
@@ -784,8 +789,9 @@ class AOMirror:
         """
         try:
             _old_voltage = self.current_voltage.copy()
-            self.set_reference_state(reference_state)
-            self.set_modal_coefficients(self.optimized_modal_coefs)
+            self.set_reference_state(reference_state or self.optimized_reference_state)
+            if not self.set_modal_coefficients(self.optimized_modal_coeffs):
+                return False
             self._update_current_state()
             success = self._verify_current_voltage(self.optimized_voltage)
         except Exception as e:
@@ -873,6 +879,7 @@ class AOMirror:
         """
         positions = np.asarray(positions, dtype=np.float32)
         if self._validate_voltage(positions):
+            self.last_requested_voltage = positions.copy()
             if self.simulate:
                 self.current_voltage = positions.copy()
                 return True
@@ -918,12 +925,17 @@ class AOMirror:
         amps = np.asarray(amps, dtype=np.float32)
         if amps.shape != (self._n_modes,):
             raise ValueError("amps must be shape (n_modes,)")
+        if not np.all(np.isfinite(amps)):
+            print("Modal coefficient validation: Coefficients must be finite.")
+            return False
 
         if self.simulate:
-            self.current_coeffs = amps.copy()
             deltas = np.zeros(self.n_actuators, dtype=np.float32)
             deltas[: self._n_modes] = amps * 0.01
-            return self.set_mirror_voltage(self._ref_voltage + deltas)
+            success = self.set_mirror_voltage(self._ref_voltage + deltas)
+            if success:
+                self.current_coeffs = amps.copy()
+            return success
 
         # update modal_coef model
         self.modal_coeff.set_coefs_values(
@@ -995,6 +1007,7 @@ class AOMirror:
             if self._output_path is None:
                 raise ValueError("Cannot save current state, missing output path")
             else:
+                self._output_path.mkdir(parents=True, exist_ok=True)
                 # save wfc compatible file
                 actuator_save_path = self._output_path / Path(
                     f"{prefix}_wfc_voltage.wcs"
@@ -1008,7 +1021,8 @@ class AOMirror:
                 metadata = {
                     "mode_names": self.mode_names,
                     "optimized_state": {
-                        "mode_amplitudes": self.optimized_modal_coefs.tolist(),
+                        "reference_state": self.optimized_reference_state,
+                        "mode_amplitudes": self.optimized_modal_coeffs.tolist(),
                         "volt_amplitudes": self.optimized_voltage.tolist(),
                     },
                     "current_state": {
@@ -1040,6 +1054,7 @@ class AOMirror:
             Filename prefix, by default "stage_position"
         """
         if self._output_path:
+            self._output_path.mkdir(parents=True, exist_ok=True)
             positions_file_path = self._output_path / Path(f"{prefix}_voltage.json")
             positions_list = self.positions_voltage_array.tolist()
             with open(positions_file_path, "w") as f:

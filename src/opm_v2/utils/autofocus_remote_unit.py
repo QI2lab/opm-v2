@@ -14,6 +14,7 @@ from scipy import ndimage
 
 from opm_v2.engine.debug_printing import info, warning
 from opm_v2.hardware.PicardShutter import PicardShutter
+from opm_v2.utils.ao_cancel import check_ao_stop
 
 
 def _snap_autofocus_image(mmc: CMMCorePlus) -> np.ndarray:
@@ -78,6 +79,9 @@ def find_best_O3_focus_metric(
     shutter_controller: PicardShutter,
     O3_stage_name: str,
     verbose=False,
+    *,
+    control_shutter=True,
+    stop_requested=None,
 ) -> float:
     """Optimize the position of O3 with respect to O2.
 
@@ -94,6 +98,10 @@ def find_best_O3_focus_metric(
         Micro-Manager device name for the O3 stage.
     verbose : bool
         Whether to print autofocus progress.
+    control_shutter : bool
+        Open and close the alignment shutter; False leaves all shutters untouched.
+    stop_requested : callable or None
+        Cancellation predicate checked between stage moves and camera frames.
 
     Returns
     -------
@@ -103,7 +111,8 @@ def find_best_O3_focus_metric(
     """
     experiment_focus_device = str(mmc.getFocusDevice())
     o3_stage = mmc.getDeviceObject(O3_stage_name, StageDevice)
-    start_um = float(np.round(o3_stage.getPosition(), 2))
+    o3_stage.wait()
+    start_um = float(o3_stage.getPosition())
     if verbose:
         print(
             f"Experiment focus device remains {experiment_focus_device}; "
@@ -115,9 +124,12 @@ def find_best_O3_focus_metric(
             print(f"Starting {label} alignment.")
         metrics = np.zeros(positions_um.shape[0])
         for index, position_um in enumerate(positions_um):
+            check_ao_stop(stop_requested)
             o3_stage.setPosition(float(position_um))
             o3_stage.wait()
+            check_ao_stop(stop_requested)
             image = _snap_autofocus_image(mmc)
+            check_ao_stop(stop_requested)
             metrics[index] = calculate_focus_metric(image)
             if verbose:
                 print(
@@ -129,8 +141,10 @@ def find_best_O3_focus_metric(
     shutter_open = False
     completed = False
     try:
-        shutter_controller.openShutter()
-        shutter_open = True
+        check_ao_stop(stop_requested)
+        if control_shutter:
+            shutter_controller.openShutter()
+            shutter_open = True
 
         rough_positions = np.round(
             np.arange(start_um - 2.5, start_um + 2.5, 0.25),
@@ -175,6 +189,7 @@ def find_best_O3_focus_metric(
                     print("Fine focus failed to find better position.")
                 best_um = start_um
 
+        check_ao_stop(stop_requested)
         o3_stage.setPosition(best_um)
         o3_stage.wait()
         completed = True
@@ -200,6 +215,9 @@ def manage_O3_focus(
     O3_stage_name: str,
     verbose: bool = False,
     mmc: CMMCorePlus | None = None,
+    *,
+    control_shutter: bool = True,
+    stop_requested=None,
 ) -> float:
     """Manage the focus of O3 with respect to fixed O2.
 
@@ -212,6 +230,10 @@ def manage_O3_focus(
     mmc : CMMCorePlus or None
         Core owned by the active MDA engine. Falls back to the shared instance
         for direct utility use.
+    control_shutter : bool
+        False leaves shutters untouched and does not instantiate their controller.
+    stop_requested : callable or None
+        Cancellation predicate passed to the autofocus scan.
 
     Returns
     -------
@@ -220,11 +242,12 @@ def manage_O3_focus(
     """
     # get instances of core and shutter controller. Assumes they are already initialized.
     mmc = mmc or CMMCorePlus.instance()
-    shutter_controller = PicardShutter.instance()
+    shutter_controller = PicardShutter.instance() if control_shutter else None
 
     # determine optimal O3 stage position
     updated_O3_stage_position = find_best_O3_focus_metric(
-        mmc, shutter_controller, O3_stage_name, verbose
+        mmc, shutter_controller, O3_stage_name, verbose,
+        control_shutter=control_shutter, stop_requested=stop_requested,
     )
 
     return updated_O3_stage_position

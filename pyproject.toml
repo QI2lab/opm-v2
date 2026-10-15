@@ -42,6 +42,7 @@ dependencies = [
     "pythonnet==3.0.3; sys_platform == 'win32'",
     "pyserial",
     "scipy",
+    "shapely",
     "zarr",
 ]
 [tool.hatch.metadata]
