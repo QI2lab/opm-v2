@@ -54,7 +54,7 @@ class OB1Controller:
         to_OB1_pin: int = 7,
         from_OB1_pin: int = 8,
         simulate: bool = False,
-    ):
+    ) -> None:
         """Initialize the Arduino interface to the OB1 controller.
 
         Parameters
@@ -93,7 +93,7 @@ class OB1Controller:
         # SJS: Should we not init board in the _init_? This way we can init and close in the fluidics loop?
         # self.init_board()
 
-    def init_board(self):
+    def init_board(self) -> None:
         """Initialize the Arduino connection and configure OB1 pins."""
         if self.simulate:
             self.board = True
@@ -114,7 +114,7 @@ class OB1Controller:
         self.from_OB1_pin.register_callback(self._input_callback)
         self.from_OB1_pin.enable_reporting()
 
-    def close_board(self):
+    def close_board(self) -> None:
         """Close the Arduino connection and reset pin state."""
         if self.simulate:
             self.board = None
@@ -128,7 +128,7 @@ class OB1Controller:
         self.from_OB1_pin = None
         self.to_OB1_pin = None
 
-    def set_polling_rate(self, polling_rate_ms: int = 1000):
+    def set_polling_rate(self, polling_rate_ms: int = 1000) -> None:
         """Set the Arduino sampling interval.
 
         The interval should be short enough to observe every OB1 output pulse.
@@ -142,7 +142,7 @@ class OB1Controller:
         if not self.simulate:
             self.board.setSamplingInterval(polling_rate_ms)
 
-    def _input_callback(self, data: float = None, verbose: bool = False):
+    def _input_callback(self, data: float | None = None, verbose: bool = False) -> None:
         """Record an OB1 input-state transition.
 
         Parameters
@@ -159,7 +159,7 @@ class OB1Controller:
         else:
             self._from_OB1_pin_high = False
 
-    def wait_for_OB1(self):
+    def wait_for_OB1(self) -> None:
         """Wait until the OB1 acknowledgement input goes high.
 
         Raises
@@ -175,7 +175,7 @@ class OB1Controller:
         # reset the input to false
         self._from_OB1_pin_high = False
 
-    def trigger_OB1(self, pulse_duration: float = 0.500):
+    def trigger_OB1(self, pulse_duration: float = 0.500) -> None:
         """Send a high pulse to the OB1 controller.
 
         Parameters

@@ -55,7 +55,9 @@ def test_repeated_acquisitions_release_closed_viewers(
             )
             qtbot.waitUntil(lambda: manager._active_mda_viewer is not None)
             handler = controller.data_handler
-            qtbot.waitUntil(lambda: handler.get_view() is not None, timeout=10000)
+            qtbot.waitUntil(
+                lambda handler=handler: handler.get_view() is not None, timeout=10000
+            )
             if not close_during_acquisition:
                 qtbot.waitUntil(
                     lambda: controller._opm_mda_thread is None, timeout=15000
@@ -84,7 +86,7 @@ def test_repeated_acquisitions_release_closed_viewers(
                 lambda: manager._current_image_preview is not None, timeout=5000
             )
             preview = manager._current_image_preview.widget()
-            qtbot.waitUntil(lambda: preview._timer_id is not None)
+            qtbot.waitUntil(lambda preview=preview: preview._timer_id is not None)
             assert len(dispatcher.registeredTimers(preview)) == 1
             demo_core.stopSequenceAcquisition()
             assert not dispatcher.registeredTimers(preview)

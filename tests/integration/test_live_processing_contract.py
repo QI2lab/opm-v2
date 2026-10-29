@@ -196,9 +196,7 @@ def test_explicit_mirror_selection_overrides_stale_stage_metadata(
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     action_names = [getattr(event.action, "name", None) for event in events]
     daq_events = [
-        event
-        for event in events
-        if getattr(event.action, "name", None) == ACTION_DAQ
+        event for event in events if getattr(event.action, "name", None) == ACTION_DAQ
     ]
     image_events = [event for event in events if "DAQ" in event.metadata]
 
@@ -247,9 +245,7 @@ def test_lifecycle_log_flushes_started_and_exactly_one_terminal(
             event,
             {"runner_time_ms": 0.0, "exposure_ms": 1.5},
         )
-        assert [record["event"] for record in _read_json_lines(log_path)] == [
-            "started"
-        ]
+        assert [record["event"] for record in _read_json_lines(log_path)] == ["started"]
         handler.sequenceFinished(sequence)
     elif terminal_event == "canceled":
         handler.sequenceCanceled(sequence)
@@ -260,9 +256,7 @@ def test_lifecycle_log_flushes_started_and_exactly_one_terminal(
 
     records = _read_json_lines(log_path)
     assert [record["event"] for record in records] == ["started", terminal_event]
-    assert {record["acquisition_id"] for record in records} == {
-        "test-acquisition-id"
-    }
+    assert {record["acquisition_id"] for record in records} == {"test-acquisition-id"}
     assert all("timestamp" in record for record in records)
     assert not any("tile" in record["event"] for record in records)
 

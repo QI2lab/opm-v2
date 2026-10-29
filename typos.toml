@@ -1,0 +1,11 @@
+[files]
+extend-exclude = ["*.cfg", "opm_config.json", "uv.lock"]
+
+[default.extend-words]
+OME = "OME"
+ome = "ome"
+DAQ = "DAQ"
+NIDAQ = "NIDAQ"
+OB = "OB"
+nd = "nd"
+Tre = "Tre"

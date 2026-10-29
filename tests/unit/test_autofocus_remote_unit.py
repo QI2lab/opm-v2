@@ -88,11 +88,16 @@ def test_alignment_autofocus_never_accesses_shutter(monkeypatch, cancel):
     position = [50.0]
     stage.getPosition.side_effect = lambda: position[0]
     stage.setPosition.side_effect = lambda value: position.__setitem__(0, value)
-    mmc.snap.side_effect = lambda: np.full((8, 8), 2000*np.exp(-((position[0]-50.3)/0.4)**2))
+    mmc.snap.side_effect = lambda: np.full(
+        (8, 8), 2000 * np.exp(-(((position[0] - 50.3) / 0.4) ** 2))
+    )
     shutter = MagicMock(side_effect=AssertionError("Must not access shutter"))
     monkeypatch.setattr(af.PicardShutter, "instance", shutter)
-    kwargs = dict(mmc=mmc, control_shutter=False,
-                  stop_requested=lambda: cancel and mmc.snap.call_count >= 2)
+    kwargs = {
+        "mmc": mmc,
+        "control_shutter": False,
+        "stop_requested": lambda: cancel and mmc.snap.call_count >= 2,
+    }
     if cancel:
         with pytest.raises(AOCancelled):
             manage_O3_focus("O3", **kwargs)

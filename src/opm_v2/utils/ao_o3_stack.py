@@ -7,6 +7,14 @@ not the shear used for a sample-stage OPM scan. No image resampling is used.
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+    from pymmcore_plus import CMMCorePlus
+
+
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
@@ -66,7 +74,9 @@ class O3StackSettings:
         return np.linspace(-self.range_um / 2, self.range_um / 2, round(intervals) + 1)
 
 
-def o2_coordinates(u, v, w, tilt_deg):
+def o2_coordinates(
+    u: np.ndarray | float, v: np.ndarray | float, w: np.ndarray | float, tilt_deg: float
+) -> tuple[np.ndarray | float, np.ndarray | float, np.ndarray | float]:
     """Rotate camera X/Y and O3 travel into the O2 frame.
 
     Returns
@@ -97,7 +107,7 @@ class O3StackMetric:
     context: dict = field(default_factory=dict)
     _journal: object = field(default=None, init=False, repr=False)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         """Create a separate measurement journal without overwriting a prior run."""
         if self.output_path is not None:
             self.output_path = Path(self.output_path)
@@ -105,14 +115,22 @@ class O3StackMetric:
             self._journal = zarr.open_group(
                 str(self.output_path / "o3_measurements.zarr"),
                 mode="w-",
-                attributes=json_metadata({
-                    "settings": asdict(self.settings),
-                    "axes": ["o3", "camera_y", "camera_x"],
-                    "illumination": "manually enabled external alignment beam",
-                }),
+                attributes=json_metadata(
+                    {
+                        "settings": asdict(self.settings),
+                        "axes": ["o3", "camera_y", "camera_x"],
+                        "illumination": "manually enabled external alignment beam",
+                    }
+                ),
             )
 
-    def acquire(self, mmc, snap, num_frames=1, stop_requested=None):
+    def acquire(
+        self,
+        mmc: CMMCorePlus,
+        snap: Callable[[], np.ndarray],
+        num_frames: int = 1,
+        stop_requested: Callable[[], bool] | None = None,
+    ) -> tuple[np.ndarray, float]:
         """Acquire and score a stack, returning O3 even when a snap fails.
 
         Returns
@@ -138,10 +156,12 @@ class O3StackMetric:
         if not np.isfinite(self.start_um):
             raise ValueError("O3 starting position must be finite")
         if self._journal is not None:
-            self._journal.attrs.update({
-                "o3_start_um": self.start_um,
-                "return_verified": False,
-            })
+            self._journal.attrs.update(
+                {
+                    "o3_start_um": self.start_um,
+                    "return_verified": False,
+                }
+            )
         images = []
         positions = []
         try:
@@ -168,11 +188,13 @@ class O3StackMetric:
                     f"O3 RETURN FAILED: target {self.start_um:.6f} um; {exc}"
                 ) from exc
             if self._journal is not None:
-                self._journal.attrs.update({
-                    "return_verified": True,
-                    "o3_return_um": returned_um,
-                    "return_error": None,
-                })
+                self._journal.attrs.update(
+                    {
+                        "return_verified": True,
+                        "o3_return_um": returned_um,
+                        "return_error": None,
+                    }
+                )
         stack = np.asarray(images, dtype=np.float32)
         if self.bounds is None:
             # A projection is used only to locate the initial ROI, never to score it.
@@ -187,16 +209,18 @@ class O3StackMetric:
             )
         y0, y1, x0, x1 = self.bounds
         stack = stack[:, y0:y1, x0:x1].copy()
-        measurement = json_metadata({
-            **self.context,
-            "o3_start_um": self.start_um,
-            "o3_positions_um": positions,
-            "o3_return_um": returned_um,
-            "return_verified": True,
-            "crop_y0_y1_x0_x1": list(self.bounds),
-            "stack_index": len(self.measured_stacks),
-            "fit_status": "pending",
-        })
+        measurement = json_metadata(
+            {
+                **self.context,
+                "o3_start_um": self.start_um,
+                "o3_positions_um": positions,
+                "o3_return_um": returned_um,
+                "return_verified": True,
+                "crop_y0_y1_x0_x1": list(self.bounds),
+                "stack_index": len(self.measured_stacks),
+                "fit_status": "pending",
+            }
+        )
         saved = None
         if self._journal is not None:
             saved = self._journal.create_group(
@@ -220,7 +244,7 @@ class O3StackMetric:
         self.measured_stacks.append(stack)
         return stack, score
 
-    def _move_verified(self, stage, target_um):
+    def _move_verified(self, stage: StageDevice, target_um: float) -> float:
         """Wait for the named O3 device and check its position readback.
 
         Returns
@@ -237,7 +261,10 @@ class O3StackMetric:
         stage.setPosition(target_um)
         stage.wait()
         actual_um = float(stage.getPosition())
-        if not np.isfinite(actual_um) or abs(actual_um - target_um) > POSITION_TOLERANCE_UM:
+        if (
+            not np.isfinite(actual_um)
+            or abs(actual_um - target_um) > POSITION_TOLERANCE_UM
+        ):
             raise RuntimeError(
                 f"{self.settings.stage_name}: requested {target_um:.6f} um, "
                 f"read back {actual_um:.6f} um "
@@ -245,7 +272,9 @@ class O3StackMetric:
             )
         return actual_um
 
-    def measure(self, stack, offsets=None):
+    def measure(
+        self, stack: np.ndarray, offsets: np.ndarray | None = None
+    ) -> tuple[float, dict]:
         """Fit a rotated Gaussian and penalize energy outside a fixed core.
 
         Returns
@@ -277,12 +306,14 @@ class O3StackMetric:
         )
         coords = tuple(a.ravel() for a in (u, v, w))
         normalized = data.ravel() / data.max()
-        border = np.concatenate((
-            data[:, 0, :].ravel(),
-            data[:, -1, :].ravel(),
-            data[:, :, 0].ravel(),
-            data[:, :, -1].ravel(),
-        ))
+        border = np.concatenate(
+            (
+                data[:, 0, :].ravel(),
+                data[:, -1, :].ravel(),
+                data[:, :, 0].ravel(),
+                data[:, :, -1].ravel(),
+            )
+        )
         background = max(float(np.median(border) / data.max()), 0)
         noise = float(
             1.4826 * np.median(np.abs(border - np.median(border))) / data.max()
@@ -294,7 +325,8 @@ class O3StackMetric:
         seed_center = np.array([np.average(a, weights=weights) for a in coords])
         center = seed_center if self.prior_center is None else self.prior_center
         rotated = o2_coordinates(
-            *(a - c for a, c in zip(coords, seed_center)), self.settings.tilt_deg
+            *(a - c for a, c in zip(coords, seed_center, strict=False)),
+            self.settings.tilt_deg,
         )
         floors = np.array([scale, scale, self.settings.step_um]) / FWHM_PER_SIGMA
         sigmas = np.maximum(
@@ -308,7 +340,17 @@ class O3StackMetric:
         lower = np.r_[0, lower_center, floors * (1 + 1e-6), 0]
         upper = np.r_[10, upper_center, upper_width, 1]
 
-        def model(points, amplitude, cu, cv, cw, sx, sy, sz, bg):
+        def model(
+            points: np.ndarray,
+            amplitude: float,
+            cu: float,
+            cv: float,
+            cw: float,
+            sx: float,
+            sy: float,
+            sz: float,
+            bg: float,
+        ) -> np.ndarray:
             x, y, z = o2_coordinates(
                 points[0] - cu, points[1] - cv, points[2] - cw, self.settings.tilt_deg
             )
@@ -347,9 +389,16 @@ class O3StackMetric:
         core_center = fitted_center if self.prior_center is None else self.prior_center
         core_sigmas = fitted_sigmas if self.core_sigmas is None else self.core_sigmas
         core_coords = o2_coordinates(
-            *(a - c for a, c in zip(coords, core_center)), self.settings.tilt_deg
+            *(a - c for a, c in zip(coords, core_center, strict=False)),
+            self.settings.tilt_deg,
         )
-        core = sum((a / (2 * s)) ** 2 for a, s in zip(core_coords, core_sigmas)) <= 1
+        core = (
+            sum(
+                (a / (2 * s)) ** 2
+                for a, s in zip(core_coords, core_sigmas, strict=False)
+            )
+            <= 1
+        )
         # The Gaussian's fitted offset can absorb unmodeled tails. Measure
         # energy against the independent ROI-border background instead.
         bg_subtracted = normalized - background

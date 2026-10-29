@@ -1,5 +1,8 @@
 #!/usr/bin/python
 """Control a Gibson peristaltic pump with an in-memory simulation backend."""
+
+from __future__ import annotations
+
 # ----------------------------------------------------------------------------------------
 # The basic I/O class for a Gibson peristaltic pump
 # ----------------------------------------------------------------------------------------
@@ -12,7 +15,6 @@
 # 11/16/15
 # jeffmoffitt@gmail.com
 # ----------------------------------------------------------------------------------------
-
 # ----------------------------------------------------------------------------------------
 # Import
 # ----------------------------------------------------------------------------------------
@@ -38,7 +40,7 @@ class APump:
     """
 
     @classmethod
-    def instance(cls) -> "APump":
+    def instance(cls) -> APump:
         """Return the process-wide pump instance.
 
         Returns
@@ -115,7 +117,7 @@ class APump:
         self.startFlow(self.speed, self.direction)
         self.identification = self.getIdentification()
 
-    def getIdentification(self):
+    def getIdentification(self) -> str:
         """Read the pump identification string.
 
         Returns
@@ -125,7 +127,7 @@ class APump:
         """
         return self.sendImmediate(self.pump_ID, "%")
 
-    def enableRemoteControl(self, remote):
+    def enableRemoteControl(self, remote: bool) -> None:
         """Enable or disable remote pump control.
 
         Parameters
@@ -139,7 +141,7 @@ class APump:
             self.sendBuffered(self.pump_ID, "SK")
         self.remote_enabled = bool(remote)
 
-    def readDisplay(self):
+    def readDisplay(self) -> str:
         """Read the pump display.
 
         Returns
@@ -149,7 +151,7 @@ class APump:
         """
         return self.sendImmediate(self.pump_ID, "R")
 
-    def getStatus(self):
+    def getStatus(self) -> tuple[str, float, str, str, str, str]:
         """Decode the current pump status.
 
         Returns
@@ -179,13 +181,13 @@ class APump:
 
         return (status, speed, direction, control, auto_start, "No Error")
 
-    def close(self):
+    def close(self) -> None:
         """Disable remote control and close the serial connection."""
         self.enableRemoteControl(0)
         if self.serial is not None:
             self.serial.close()
 
-    def setFlowDirection(self, forward):
+    def setFlowDirection(self, forward: bool) -> None:
         """Set the pump flow direction.
 
         Parameters
@@ -205,7 +207,7 @@ class APump:
                 self.sendBuffered(self.pump_ID, "K<")
         self.direction = "Forward" if forward else "Reverse"
 
-    def setSpeed(self, rotation_speed):
+    def setSpeed(self, rotation_speed: float) -> None:
         """Set pump rotation speed.
 
         Parameters
@@ -219,7 +221,7 @@ class APump:
             self.speed = float(rotation_speed)
             self.flow_status = "Flowing" if self.speed > 0 else "Stopped"
 
-    def startFlow(self, speed, direction="Forward"):
+    def startFlow(self, speed: float, direction: str = "Forward") -> None:
         """Start flow at a requested speed and direction.
 
         Parameters
@@ -232,7 +234,7 @@ class APump:
         self.setSpeed(speed)
         self.setFlowDirection(direction == "Forward")
 
-    def stopFlow(self):
+    def stopFlow(self) -> bool:
         """Stop pump flow.
 
         Returns
@@ -243,7 +245,7 @@ class APump:
         self.setSpeed(0.0)
         return True
 
-    def sendImmediate(self, unitNumber, command):
+    def sendImmediate(self, unitNumber: int, command: str) -> str:
         """Send an immediate pump command.
 
         Parameters
@@ -285,7 +287,7 @@ class APump:
 
         return response
 
-    def sendBuffered(self, unitNumber, command):
+    def sendBuffered(self, unitNumber: int, command: str) -> None:
         """Send a buffered pump command.
 
         Parameters
@@ -302,14 +304,14 @@ class APump:
         self.sendAndAcknowledge(start + command + stop)
         self.disconnect()
 
-    def disconnect(self):
+    def disconnect(self) -> None:
         """End the current pump command session."""
         if self.simulate:
             self.command_log.append("DISCONNECT")
             return
         self.sendAndAcknowledge("\xff")
 
-    def selectUnit(self, unitNumber):
+    def selectUnit(self, unitNumber: int) -> bool:
         """Select a pump unit.
 
         Parameters
@@ -327,7 +329,7 @@ class APump:
 
         return self.getResponse() == devSelect
 
-    def sendAndAcknowledge(self, string):
+    def sendAndAcknowledge(self, string: str) -> None:
         """Send command characters and read each acknowledgement.
 
         Parameters
@@ -339,7 +341,7 @@ class APump:
             self.sendString(string[i])
             self.getResponse()
 
-    def sendString(self, string):
+    def sendString(self, string: str) -> None:
         """Write text to the serial connection.
 
         Parameters
@@ -349,7 +351,7 @@ class APump:
         """
         self.serial.write(string.encode())
 
-    def getResponse(self):
+    def getResponse(self) -> bytes:
         """Read a response byte from the serial connection.
 
         Returns

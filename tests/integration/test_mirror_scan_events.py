@@ -330,14 +330,12 @@ def test_tilted_mirror_tiles_overlap_in_both_lab_axes(
     for event in image_events:
         first_event_by_position.setdefault(event.index["p"], event)
 
-    logical_scan_origins = np.unique([
-        event.metadata["Stage"]["x_pos"]
-        for event in first_event_by_position.values()
-    ])
-    logical_camera_x_origins = np.unique([
-        event.metadata["Stage"]["y_pos"]
-        for event in first_event_by_position.values()
-    ])
+    logical_scan_origins = np.unique(
+        [event.metadata["Stage"]["x_pos"] for event in first_event_by_position.values()]
+    )
+    logical_camera_x_origins = np.unique(
+        [event.metadata["Stage"]["y_pos"] for event in first_event_by_position.values()]
+    )
     scan_stride_max = 20.0 * (1.0 - overlap)
     camera_x_stride_max = (
         config["acq_config"]["camera_roi"]["crop_x"]
@@ -346,19 +344,14 @@ def test_tilted_mirror_tiles_overlap_in_both_lab_axes(
     )
 
     assert np.max(np.diff(logical_scan_origins)) <= scan_stride_max + 1e-6
-    assert (
-        np.max(np.diff(logical_camera_x_origins))
-        <= camera_x_stride_max + 1e-6
-    )
+    assert np.max(np.diff(logical_camera_x_origins)) <= camera_x_stride_max + 1e-6
     reference_z = plane.z_at(100.0, 200.0)
     stage_events = [
         event
         for event in events
         if getattr(event.action, "name", None) == ACTION_STAGE_MOVE
     ]
-    for event, move in zip(
-        first_event_by_position.values(), stage_events, strict=True
-    ):
+    for event, move in zip(first_event_by_position.values(), stage_events, strict=True):
         stage = event.metadata["Stage"]
         lab_z_offset = -(stage["z_pos"] - reference_z)
         expected_raw_scan = stage["x_pos"] - lab_z_offset / np.tan(np.pi / 6)
@@ -410,7 +403,10 @@ def test_timelapse_writer_uses_camera_event_order(
         event.x_pos is None and event.y_pos is None and event.z_pos is None
         for event in image_events
     )
-    assert all(event.metadata["Stage"] == {"x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0} for event in image_events)
+    assert all(
+        event.metadata["Stage"] == {"x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0}
+        for event in image_events
+    )
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
 
 
@@ -483,7 +479,9 @@ def test_timelapse_explicit_positions_move_only_at_position_boundaries(
     ]
 
     assert custom_actions.count(ACTION_STAGE_MOVE) == len(positions)
-    assert [(event.x_pos, event.y_pos, event.z_pos) for event in stage_events] == positions
+    assert [
+        (event.x_pos, event.y_pos, event.z_pos) for event in stage_events
+    ] == positions
     assert handler.index_sizes["p"] == len(positions)
     assert all(
         event.x_pos is None and event.y_pos is None and event.z_pos is None

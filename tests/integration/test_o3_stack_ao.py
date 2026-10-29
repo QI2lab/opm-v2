@@ -53,7 +53,9 @@ def test_engine_dispatch_passes_o3_settings(monkeypatch, opm_config_factory):
     assert not any(optimize.call_args.kwargs["channel_states"])
 
 
-def test_stop_during_ao_dispatch_cancels_without_completing_history(monkeypatch, opm_config_factory):
+def test_stop_during_ao_dispatch_cancels_without_completing_history(
+    monkeypatch, opm_config_factory
+):
     """Deliver the GUI stop event to AO and cancel MDA after clean AO exit."""
     config = opm_config_factory(mode="projection")
     core = MagicMock()
@@ -84,7 +86,9 @@ def test_stop_interrupts_averaged_2d_measurement():
     core = MagicMock()
     core.snap.return_value = np.ones((10, 10))
     with pytest.raises(ao.AOCancelled):
-        ao.acquire_metric_image(core, "DCT", 50, stop_requested=lambda: core.snap.call_count >= 3)
+        ao.acquire_metric_image(
+            core, "DCT", 50, stop_requested=lambda: core.snap.call_count >= 3
+        )
     assert core.snap.call_count == 3
 
 
@@ -180,7 +184,9 @@ def test_o3_optimization_acquires_real_stacks_and_saves_candidates(
         starting_mirror_coefficients=np.zeros(32),
         save_dir_path=workspace_tmp_path,
         verbose=False,
-        stop_requested=lambda: cancel_after is not None and mmc.snap.call_count >= cancel_after,
+        stop_requested=lambda: (
+            cancel_after is not None and mmc.snap.call_count >= cancel_after
+        ),
     )
     if cancel_after is not None:
         assert result is False
@@ -239,7 +245,9 @@ def test_stack_is_on_disk_before_fit_even_if_run_fails(
     sampler.context = {"kind": "probe", "mode_index": 7, "delta": -0.3}
     stage = MagicMock()
     stage.getPosition.return_value = 10.0
-    stage.setPosition.side_effect = lambda value: setattr(stage.getPosition, "return_value", value)
+    stage.setPosition.side_effect = lambda value: setattr(
+        stage.getPosition, "return_value", value
+    )
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     image = np.arange(49 * 49, dtype=np.float32).reshape(49, 49)
@@ -282,7 +290,9 @@ def test_failed_o3_return_is_recorded_before_ao_aborts(workspace_tmp_path):
             return  # Simulate both return commands being ignored.
         position[0] = value
 
-    stage = SimpleNamespace(getPosition=lambda: position[0], setPosition=move, wait=lambda: None)
+    stage = SimpleNamespace(
+        getPosition=lambda: position[0], setPosition=move, wait=lambda: None
+    )
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     with pytest.raises(RuntimeError, match="O3 RETURN FAILED"):

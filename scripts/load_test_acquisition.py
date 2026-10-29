@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
 
 from opm_v2.utils.script_io import load_json, load_tensorstore
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def summarize_array(data: np.ndarray) -> dict[str, object]:

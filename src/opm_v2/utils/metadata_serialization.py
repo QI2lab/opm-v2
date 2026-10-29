@@ -1,12 +1,20 @@
 """Convert scientific metadata to the native JSON types used by Zarr."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+
 import json
 from pathlib import Path
 
 import numpy as np
 
 
-def _json_default(value):
+def _json_default(value: object) -> Any:
     """Convert NumPy values and filesystem paths for the JSON encoder.
 
     Returns

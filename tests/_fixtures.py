@@ -318,9 +318,7 @@ class SpatialPlanStrategy:
             center_x = (x_min + x_max) / 2.0
             center_y = (y_min + y_max) / 2.0
             center_z = (
-                plane.z_at(center_x, center_y)
-                if self.with_coverslip
-                else z_anchor
+                plane.z_at(center_x, center_y) if self.with_coverslip else z_anchor
             )
             positions.append(
                 AbsolutePosition(

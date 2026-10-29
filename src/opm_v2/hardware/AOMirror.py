@@ -1,11 +1,16 @@
 """Control an Imagine Optic Mirao52E mirror with simulation support."""
 
+from __future__ import annotations
+
 import json
 import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import numpy as np
-from numpy.typing import ArrayLike, NDArray
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike, NDArray
 
 try:
     import wavekit_py as wkpy
@@ -67,7 +72,7 @@ class AOMirror:
     """
 
     @classmethod
-    def instance(cls) -> "AOMirror":
+    def instance(cls) -> AOMirror:
         """Return the process-wide AO mirror instance.
 
         Returns
@@ -105,7 +110,7 @@ class AOMirror:
         wait_after_move: bool = False,
         output_path: Path | None = None,
         simulate: bool = False,
-    ):
+    ) -> None:
         """Initialize an adaptive-optics mirror controller.
 
         Parameters
@@ -356,7 +361,7 @@ class AOMirror:
         return self._output_path
 
     @output_path.setter
-    def output_path(self, value: str | Path):
+    def output_path(self, value: str | Path) -> None:
         """Set the output path.
 
         Parameters
@@ -378,7 +383,7 @@ class AOMirror:
         return self._n_positions
 
     @n_positions.setter
-    def n_positions(self, value: int):
+    def n_positions(self, value: int) -> None:
         """Set the number of experimental "positions".
 
         Parameters
@@ -406,7 +411,7 @@ class AOMirror:
         return self._current_voltage
 
     @current_voltage.setter
-    def current_voltage(self, value: NDArray):
+    def current_voltage(self, value: NDArray) -> None:
         """Set current mirror actuator voltages.
 
         Parameters
@@ -437,7 +442,7 @@ class AOMirror:
         return self._current_coeffs
 
     @current_coeffs.setter
-    def current_coeffs(self, value: NDArray):
+    def current_coeffs(self, value: NDArray) -> None:
         """Set current modal coefficients.
 
         Parameters
@@ -467,7 +472,7 @@ class AOMirror:
         return self._optimized_voltage
 
     @optimized_voltage.setter
-    def optimized_voltage(self, value: NDArray):
+    def optimized_voltage(self, value: NDArray) -> None:
         """Set the last optimized actuator voltages.
 
         Parameters
@@ -497,7 +502,7 @@ class AOMirror:
         return self._optimized_modal_coefs
 
     @optimized_modal_coeffs.setter
-    def optimized_modal_coeffs(self, value: NDArray):
+    def optimized_modal_coeffs(self, value: NDArray) -> None:
         """Set the last optimized modal coefficients.
 
         Parameters
@@ -547,7 +552,7 @@ class AOMirror:
         self.wfc.disconnect()
         self._wfc_connected = False
 
-    def __del__(self):
+    def __del__(self) -> None:
         """Best-effort fallback when explicit application teardown was skipped."""
         try:
             self.disconnect()
@@ -618,7 +623,7 @@ class AOMirror:
     # used for applying modal coefficients
     # -------------------------------------------------#
 
-    def set_reference_state(self, state: str):
+    def set_reference_state(self, state: str) -> None:
         """Set the reference state for applying modal coefficients.
 
         Parameters
@@ -649,7 +654,7 @@ class AOMirror:
     # Methods for updating saved arrays
     # -------------------------------------------------#
 
-    def _update_current_state(self):
+    def _update_current_state(self) -> None:
         """Update mirror state tracking arrays.
 
         Voltage values from WFC
@@ -672,7 +677,7 @@ class AOMirror:
                 f"current_voltages: {self.current_voltage}"
             )
 
-    def update_positions_array(self, idx):
+    def update_positions_array(self, idx: int) -> None:
         """Update stage position arrays with the current voltage or modal coeffs.
 
         Parameters
@@ -692,7 +697,7 @@ class AOMirror:
                 f"voltages: {self.positions_voltage_array}"
             )
 
-    def update_optimized_array(self):
+    def update_optimized_array(self) -> None:
         """Update the last optimized voltage and modal arrays."""
         self._update_current_state()
         self.optimized_modal_coeffs = self.current_coeffs.copy()
@@ -711,7 +716,7 @@ class AOMirror:
     # Methods for applying saved mirror states
     # -------------------------------------------------#
 
-    def apply_factory_flat_voltage(self):
+    def apply_factory_flat_voltage(self) -> bool:
         """Apply factory-flat mirror voltages.
 
         Returns
@@ -726,13 +731,13 @@ class AOMirror:
             self._update_current_state()
             success = self._verify_current_voltage(self.factory_flat_voltage)
         except Exception as e:
-            print(f"Exception occured in setting FACTORY FLAT state:\n {e}")
+            print(f"Exception occurred in setting FACTORY FLAT state:\n {e}")
             self.set_mirror_voltage(_old_voltage)
             success = False
 
         return success
 
-    def apply_zeros_voltage(self):
+    def apply_zeros_voltage(self) -> bool:
         """Apply zero volts to every mirror actuator.
 
         Returns
@@ -747,13 +752,13 @@ class AOMirror:
             self._update_current_state()
             success = self._verify_current_voltage(self.zeros_voltage)
         except Exception as e:
-            print(f"Exception occured in setting ZEROS state:\n {e}")
+            print(f"Exception occurred in setting ZEROS state:\n {e}")
             self.set_mirror_voltage(_old_voltage)
             success = False
 
         return success
 
-    def apply_system_flat_voltage(self):
+    def apply_system_flat_voltage(self) -> bool:
         """Apply system-flat mirror voltages.
 
         Returns
@@ -768,13 +773,13 @@ class AOMirror:
             self._update_current_state()
             success = self._verify_current_voltage(self.system_flat_voltage)
         except Exception as e:
-            print(f"Exception occured in setting SYSTEM FLAT state:\n {e}")
+            print(f"Exception occurred in setting SYSTEM FLAT state:\n {e}")
             self.set_mirror_voltage(_old_voltage)
             success = False
 
         return success
 
-    def apply_optimized_voltage(self, reference_state: str | None = None):
+    def apply_optimized_voltage(self, reference_state: str | None = None) -> bool:
         """Apply the last optimized modal coefficients.
 
         Parameters
@@ -795,12 +800,12 @@ class AOMirror:
             self._update_current_state()
             success = self._verify_current_voltage(self.optimized_voltage)
         except Exception as e:
-            print(f"Exception occured in setting SYSTEM FLAT state:\n {e}")
+            print(f"Exception occurred in setting SYSTEM FLAT state:\n {e}")
             self.set_mirror_voltage(_old_voltage)
             success = False
         return success
 
-    def apply_positions_array(self, idx: int = 0):
+    def apply_positions_array(self, idx: int = 0) -> bool:
         """Set mirror positions from stored array.
 
         Used in nD acquisitions where each "position" has a unique correction.
@@ -821,12 +826,12 @@ class AOMirror:
             self._update_current_state()
             success = self._verify_current_voltage(self.positions_voltage_array[idx])
         except Exception as e:
-            print(f"Exception occured in applying POSITION ARRAY idx={idx}:\n {e}")
+            print(f"Exception occurred in applying POSITION ARRAY idx={idx}:\n {e}")
             self.set_mirror_voltage(_old_voltage)
 
         return success
 
-    def apply_wfc_voltage_file(self, wfc_path: Path):
+    def apply_wfc_voltage_file(self, wfc_path: Path) -> bool:
         """Apply actuator positions from a WFC state file.
 
         This method replaces the modal-coefficient reference state and should
@@ -864,7 +869,7 @@ class AOMirror:
     # Methods for changing mirror positions
     # -------------------------------------------------#
 
-    def set_mirror_voltage(self, positions: NDArray):
+    def set_mirror_voltage(self, positions: NDArray) -> bool:
         """Set mirror actuator voltages.
 
         Parameters
@@ -901,7 +906,7 @@ class AOMirror:
 
         return success
 
-    def set_modal_coefficients(self, amps: ArrayLike):
+    def set_modal_coefficients(self, amps: ArrayLike) -> bool:
         """Set mirror voltages from Zernike modal coefficients.
 
         Zernike modes are relative to system flat voltages!
@@ -967,7 +972,7 @@ class AOMirror:
     # Methods for saving/visualizing mirror positions
     # -------------------------------------------------#
 
-    def get_current_phase(self):
+    def get_current_phase(self) -> dict:
         """Calculate phase statistics from current modal coefficients.
 
         Returns
@@ -988,7 +993,7 @@ class AOMirror:
 
         return phase
 
-    def save_current_state(self, prefix: str = "current"):
+    def save_current_state(self, prefix: str = "current") -> None:
         """Save current mirror positions to disk.
 
         Parameters
@@ -1045,7 +1050,7 @@ class AOMirror:
         except Exception as e:
             print(f"------- AOmirror -------\nFailed to save current state!\n{e}")
 
-    def save_positions_array(self, prefix: str = "stage_position"):
+    def save_positions_array(self, prefix: str = "stage_position") -> None:
         """Save wfc positions array to disk.
 
         Parameters
@@ -1067,7 +1072,7 @@ class AOMirror:
             with open(positions_file_path, "w") as f:
                 json.dump(wfc_coeffs_list, f)
 
-    def load_positions_array(self, prefix: str = "stage_position"):
+    def load_positions_array(self, prefix: str = "stage_position") -> None:
         """Load positions from json saved using 'save_positions_array'.
 
         Parameters
@@ -1086,7 +1091,7 @@ class AOMirror:
         self.positions_modal_array = np.asarray(mode_amplitudes)
 
 
-def DM_voltage_to_map(v):
+def DM_voltage_to_map(v: ArrayLike) -> np.ndarray:
     """Reshape mirror to a map.
 
     Reshape the 52-long vector v into 2D matrix representing the actual DM aperture.
@@ -1124,9 +1129,9 @@ def plotDM(
     cmap: str = "jet",
     vmin: float = -0.25,
     vmax: float = 0.25,
-    save_dir_path: Path = None,
+    save_dir_path: Path | None = None,
     show_fig: bool = False,
-):
+) -> None:
     """Plot the current mirror state.
 
     Parameters

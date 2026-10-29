@@ -9,22 +9,32 @@ Change Log:
 2025/09/05: Synchronized opm_config options and A.O.
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from pathlib import Path
+
+    from numpy.typing import NDArray
+    from pymmcore_plus import CMMCorePlus
+    from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
+
+
 import json
 import logging
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from contextlib import contextmanager
 from copy import deepcopy
 from math import ceil
-from pathlib import Path
 from threading import Event as ThreadEvent
 from time import monotonic, sleep
 
 import numpy as np
-from numpy.typing import NDArray
 from pymmcore_plus.core import DeviceProperty
 from pymmcore_plus.core._sequencing import SequencedEvent
 from pymmcore_plus.mda import MDAEngine, SkipEvent
-from pymmcore_plus.metadata import FrameMetaV1, SummaryMetaV1
 from useq import CustomAction, MDAEvent, MDASequence
 
 from opm_v2.engine.debug_printing import (
@@ -114,7 +124,7 @@ class OPMEngineV2(MDAEngine):
 
     def __init__(
         self,
-        mmc,
+        mmc: CMMCorePlus,
         config_path: Path,
         use_hardware_sequencing: bool = True,
         simulate_hardware: bool | None = None,
@@ -180,7 +190,7 @@ class OPMEngineV2(MDAEngine):
             Callable[[Sequence[MDAEvent], int, int | None], None] | None
         ) = None
 
-    def update_config(self):
+    def update_config(self) -> None:
         """Load configuration from disk for standalone engine construction."""
         with open(self._config_path) as config_file:
             self._config = json.load(config_file)
@@ -236,7 +246,7 @@ class OPMEngineV2(MDAEngine):
         """
         self._tile_retry_prepare = callback
 
-    def configure_camera(self, data_dict: dict, setting: str = None):
+    def configure_camera(self, data_dict: dict, setting: str | None = None) -> None:
         """Set the camera ROI and exposure.
 
         Parameters
@@ -322,8 +332,13 @@ class OPMEngineV2(MDAEngine):
                 f"0 ms; received {active_exposures}"
             )
         if is_simultaneous(data_dict["DAQ"].get("laser_mode")):
-            validate_simultaneous_exposures(active_exposures, data_dict["DAQ"]["laser_mode"])
-        elif data_dict["DAQ"].get("interleaved", True) or data_dict["DAQ"].get("mode") == "mirror":
+            validate_simultaneous_exposures(
+                active_exposures, data_dict["DAQ"]["laser_mode"]
+            )
+        elif (
+            data_dict["DAQ"].get("interleaved", True)
+            or data_dict["DAQ"].get("mode") == "mirror"
+        ):
             validate_interleaved_exposures(active_exposures)
         return active_exposures
 
@@ -345,7 +360,7 @@ class OPMEngineV2(MDAEngine):
                 self.mmcore.setProperty(camera, property_name, value)
                 self.mmcore.waitForDevice(camera)
 
-    def configure_lasers(self, data_dict: dict, setting: str):
+    def configure_lasers(self, data_dict: dict, setting: str) -> float | None:
         """Set laser powers.
 
         Parameters
@@ -565,7 +580,7 @@ class OPMEngineV2(MDAEngine):
         return int(self.mmcore.getTimeoutMs())
 
     @contextmanager
-    def _temporary_xy_stage_timeout(self, timeout_ms: int):
+    def _temporary_xy_stage_timeout(self, timeout_ms: int) -> Iterator[None]:
         """Temporarily override only the XY-stage wait timeout."""
         xy_stage = self.mmcore.getXYStageDevice()
         if self.simulate_hardware or not xy_stage:
@@ -732,13 +747,13 @@ class OPMEngineV2(MDAEngine):
             include_initial_move=False,
         )
         use_accelerated_speed = self._is_stage_explorer_preview or is_large_move
-        multiplier = (
-            LARGE_STAGE_MOVE_SPEED_MULTIPLIER if use_accelerated_speed else 1.0
+        multiplier = LARGE_STAGE_MOVE_SPEED_MULTIPLIER if use_accelerated_speed else 1.0
+        accepted = self._apply_stage_move_speeds(
+            {
+                "move_speed_x_mm_s": normal_speed_x * multiplier,
+                "move_speed_y_mm_s": normal_speed_y * multiplier,
+            }
         )
-        accepted = self._apply_stage_move_speeds({
-            "move_speed_x_mm_s": normal_speed_x * multiplier,
-            "move_speed_y_mm_s": normal_speed_y * multiplier,
-        })
         speed_x = accepted.get("x", normal_speed_x * multiplier)
         speed_y = accepted.get("y", normal_speed_y * multiplier)
         timeout_ms, estimated_duration_s = self._stage_move_timeout_ms(
@@ -986,10 +1001,12 @@ class OPMEngineV2(MDAEngine):
                 requested_speed_x = normal_stage_move_speed_x * speed_multiplier
                 requested_speed_y = normal_stage_move_speed_y * speed_multiplier
 
-                accepted_speeds = self._apply_stage_move_speeds({
-                    "move_speed_x_mm_s": requested_speed_x,
-                    "move_speed_y_mm_s": requested_speed_y,
-                })
+                accepted_speeds = self._apply_stage_move_speeds(
+                    {
+                        "move_speed_x_mm_s": requested_speed_x,
+                        "move_speed_y_mm_s": requested_speed_y,
+                    }
+                )
                 stage_move_speed_x = accepted_speeds.get("x", requested_speed_x)
                 stage_move_speed_y = accepted_speeds.get("y", requested_speed_y)
                 move_timeout_ms, estimated_duration_s = self._stage_move_timeout_ms(
@@ -1222,7 +1239,9 @@ class OPMEngineV2(MDAEngine):
                         channel_states=data_dict["DAQ"]["channel_states"],
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
-                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
+                        simultaneous=is_simultaneous(
+                            data_dict["DAQ"].get("laser_mode")
+                        ),
                     )
                 elif str(data_dict["DAQ"]["mode"]) == "projection":
                     self.opmDAQ.set_acquisition_params(
@@ -1233,7 +1252,9 @@ class OPMEngineV2(MDAEngine):
                         ),
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
-                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
+                        simultaneous=is_simultaneous(
+                            data_dict["DAQ"].get("laser_mode")
+                        ),
                     )
                     # # Setup camera in progressive scan mode
                     # self.mmcore.setProperty(
@@ -1253,7 +1274,9 @@ class OPMEngineV2(MDAEngine):
                         ),
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
-                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
+                        simultaneous=is_simultaneous(
+                            data_dict["DAQ"].get("laser_mode")
+                        ),
                     )
                 elif str(data_dict["DAQ"]["mode"]) == "2d":
                     self.opmDAQ.set_acquisition_params(
@@ -1261,7 +1284,9 @@ class OPMEngineV2(MDAEngine):
                         channel_states=data_dict["DAQ"]["channel_states"],
                         laser_blanking=bool(data_dict["DAQ"]["blanking"]),
                         exposure_ms=exposure_ms,
-                        simultaneous=is_simultaneous(data_dict["DAQ"].get("laser_mode")),
+                        simultaneous=is_simultaneous(
+                            data_dict["DAQ"].get("laser_mode")
+                        ),
                     )
                 self.opmDAQ.generate_waveforms()
                 self.opmDAQ.program_daq_waveforms()
@@ -1316,18 +1341,14 @@ class OPMEngineV2(MDAEngine):
         if not isinstance(action, CustomAction):
             return
         if action.name == ACTION_STAGE_MOVE:
-            self._tile_setup_events = {
-                ACTION_STAGE_MOVE: event.model_copy(deep=True)
-            }
+            self._tile_setup_events = {ACTION_STAGE_MOVE: event.model_copy(deep=True)}
         elif action.name == ACTION_DAQ:
             self._tile_setup_events[ACTION_DAQ] = event.model_copy(deep=True)
             self._tile_setup_events.pop(ACTION_ASI_SETUP_SCAN, None)
         elif action.name == ACTION_ASI_SETUP_SCAN:
-            self._tile_setup_events[ACTION_ASI_SETUP_SCAN] = event.model_copy(
-                deep=True
-            )
+            self._tile_setup_events[ACTION_ASI_SETUP_SCAN] = event.model_copy(deep=True)
 
-    def post_sequence_started(self, event):
+    def post_sequence_started(self, event: MDAEvent) -> None:
         """Start configured ASI hardware after the camera sequence is ready.
 
         Parameters
@@ -1631,7 +1652,7 @@ class OPMEngineV2(MDAEngine):
             # payloads already queued to the asynchronous output-handler relay.
             # Retry storage must drain exactly those callbacks before it takes
             # its metadata-slot snapshot.
-            setattr(exc, "opm_received_frames", received)
+            exc.opm_received_frames = received
             raise
 
         if canceled:
@@ -1784,7 +1805,7 @@ class OPMEngineV2(MDAEngine):
             "Circular buffer cleared without starting GUI Live mode",
         )
 
-    def teardown_event(self, event):
+    def teardown_event(self, event: MDAEvent) -> None:
         """Release per-event state after execution.
 
         Parameters

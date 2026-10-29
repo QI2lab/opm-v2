@@ -119,8 +119,10 @@ def test_spots_with_subpixel_sigma_but_fwhm_above_one_are_valid(widths):
     camera.snap.return_value = image
     _, score = ao.acquire_metric_image(camera, "gauss_2d", gaussian_prior=prior)
     sx, sy = widths
-    expected = (5000 / image.max()) / (sx * sy) ** 2 * np.exp(
-        -4 * ((sx - sy) / (sx + sy)) ** 2
+    expected = (
+        (5000 / image.max())
+        / (sx * sy) ** 2
+        * np.exp(-4 * ((sx - sy) / (sx + sy)) ** 2)
     )
     assert score == pytest.approx(expected, rel=1e-4)
 

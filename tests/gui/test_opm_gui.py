@@ -27,7 +27,11 @@ from opm_v2.utils.laser_modes import is_simultaneous
 
 @pytest.mark.parametrize("write_succeeds", [True, False])
 def test_projection_dispatch_commits_displayed_range(
-    workspace_tmp_path, qtbot, opm_config_factory, monkeypatch, write_succeeds,
+    workspace_tmp_path,
+    qtbot,
+    opm_config_factory,
+    monkeypatch,
+    write_succeeds,
 ):
     """Starting MDA must use the displayed range, even with a stale snapshot."""
     config_path = opm_config_factory.write(
@@ -513,7 +517,11 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
         "spbx_mode_alpha": ("acq_config", "AO", "mode_alpha"),
         "spbx_metric_precision": ("acq_config", "AO", "metric_precision"),
         "spbx_averaged_frames": ("acq_config", "AO", "num_averaged_frames"),
-        "spbx_alignment_refocus": ("acq_config", "AO", "alignment_refocus_every_n_modes"),
+        "spbx_alignment_refocus": (
+            "acq_config",
+            "AO",
+            "alignment_refocus_every_n_modes",
+        ),
         "spbx_num_scan_positions": ("acq_config", "AO", "num_scan_positions"),
         "spbx_num_tile_positions": ("acq_config", "AO", "num_tile_positions"),
         "spbx_readout_time": ("acq_config", "AO", "readout_ms"),
@@ -573,9 +581,10 @@ def test_every_custom_numeric_channel_and_boolean_control_persists(
             scale = control.property("config_scale") or 1.0
             persisted_value = _nested_value(_read_config(config_path), config_keys)
             assert persisted_value == control.value() * scale
-            if isinstance(control, QSpinBox) and control.property(
-                "config_scale"
-            ) is None:
+            if (
+                isinstance(control, QSpinBox)
+                and control.property("config_scale") is None
+            ):
                 assert type(persisted_value) is int
 
     expected_slider_names = {
@@ -847,8 +856,7 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
             scenario["expected_daq_mode"]
         }
         assert all(
-            frame["event_metadata"]["DAQ"]["channel_states"]
-            == expected_states
+            frame["event_metadata"]["DAQ"]["channel_states"] == expected_states
             for frame in stored_frames
         )
         if mode == "stage":
@@ -866,13 +874,11 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
         else:
             stored_exposures = expected_exposures
         assert all(
-            frame["event_metadata"]["DAQ"]["exposure_channels_ms"]
-            == stored_exposures
+            frame["event_metadata"]["DAQ"]["exposure_channels_ms"] == stored_exposures
             for frame in stored_frames
         )
         assert all(
-            frame["event_metadata"]["DAQ"]["laser_powers"]
-            == expected_powers
+            frame["event_metadata"]["DAQ"]["laser_powers"] == expected_powers
             for frame in stored_frames
         )
         assert {

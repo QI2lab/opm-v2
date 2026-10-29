@@ -7,6 +7,14 @@ O3 moves along the tilted optical axis.
 Shepherd 11/2022
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+
+
 import numpy as np
 from pymmcore_plus import CMMCorePlus
 from pymmcore_plus.core import StageDevice
@@ -78,10 +86,10 @@ def find_best_O3_focus_metric(
     mmc: CMMCorePlus,
     shutter_controller: PicardShutter,
     O3_stage_name: str,
-    verbose=False,
+    verbose: bool = False,
     *,
-    control_shutter=True,
-    stop_requested=None,
+    control_shutter: bool = True,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> float:
     """Optimize the position of O3 with respect to O2.
 
@@ -133,8 +141,7 @@ def find_best_O3_focus_metric(
             metrics[index] = calculate_focus_metric(image)
             if verbose:
                 print(
-                    f"Current position: {position_um}; "
-                    f"Focus metric: {metrics[index]}"
+                    f"Current position: {position_um}; Focus metric: {metrics[index]}"
                 )
         return metrics
 
@@ -175,13 +182,9 @@ def find_best_O3_focus_metric(
                 print("AF failed on fine align, check shutter!")
                 fine_best_um = rough_best_um
             else:
-                fine_best_um = float(
-                    fine_positions[int(np.argmax(fine_metrics))]
-                )
+                fine_best_um = float(fine_positions[int(np.argmax(fine_metrics))])
             if verbose:
-                print(
-                    f"Fine align position: {fine_best_um} vs rough: {rough_best_um}"
-                )
+                print(f"Fine align position: {fine_best_um} vs rough: {rough_best_um}")
             if np.abs(fine_best_um - rough_best_um) < 0.5:
                 best_um = fine_best_um
             else:
@@ -217,7 +220,7 @@ def manage_O3_focus(
     mmc: CMMCorePlus | None = None,
     *,
     control_shutter: bool = True,
-    stop_requested=None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> float:
     """Manage the focus of O3 with respect to fixed O2.
 
@@ -246,8 +249,12 @@ def manage_O3_focus(
 
     # determine optimal O3 stage position
     updated_O3_stage_position = find_best_O3_focus_metric(
-        mmc, shutter_controller, O3_stage_name, verbose,
-        control_shutter=control_shutter, stop_requested=stop_requested,
+        mmc,
+        shutter_controller,
+        O3_stage_name,
+        verbose,
+        control_shutter=control_shutter,
+        stop_requested=stop_requested,
     )
 
     return updated_O3_stage_position

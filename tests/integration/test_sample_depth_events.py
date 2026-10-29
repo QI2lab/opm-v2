@@ -54,7 +54,7 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
                     # This bound is slightly thicker than one simulated
                     # camera footprint in every parameterized OPM mode.
                     "sample_depth_end_um": 17.0,
-                }
+                },
             }
         },
     )
@@ -259,9 +259,10 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
     assert first_grid_idx < min(
         image_event_indices_by_position[index][0] for index in first_indices
     )
-    assert max(
-        image_event_indices_by_position[index][-1] for index in first_indices
-    ) < second_grid_idx
+    assert (
+        max(image_event_indices_by_position[index][-1] for index in first_indices)
+        < second_grid_idx
+    )
     assert second_grid_idx < min(
         event_idx
         for event_idx, event in apply_events

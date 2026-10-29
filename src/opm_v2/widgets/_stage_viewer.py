@@ -14,7 +14,7 @@ from pymmcore_widgets.control._stage_explorer._stage_viewer import (
 from vispy import scene
 from vispy.scene.visuals import Image
 
-from ._mosaic_compositor import (
+from opm_v2.widgets._mosaic_compositor import (
     IncompatibleMosaicError,
     MosaicChunk,
     MosaicCompositor,
@@ -24,11 +24,13 @@ from ._mosaic_compositor import (
 if TYPE_CHECKING:
     from collections.abc import Hashable
 
+    from pymmcore_gui._qt.QtWidgets import QWidget
+
 
 class StageViewer(BaseStageViewer):
     """Keep feather blending and mosaic storage inside OPM."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self._blending_enabled = False
         self._blend_session_key = None

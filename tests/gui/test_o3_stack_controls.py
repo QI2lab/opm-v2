@@ -7,7 +7,9 @@ from opm_v2.engine.opm_custom_events import create_ao_optimize_event
 from opm_v2.utils.ao_o3_stack import METRIC_NAME
 
 
-def test_retired_energy_metric_removed_from_saved_config(qtbot, workspace_tmp_path, opm_config_factory):
+def test_retired_energy_metric_removed_from_saved_config(
+    qtbot, workspace_tmp_path, opm_config_factory
+):
     """Old configurations cannot re-enable the removed experimental metric."""
     config = opm_config_factory(mode="projection")
     config["OPM"]["ao_metrics"].append("energy_3d_o3")
@@ -32,7 +34,12 @@ def test_o3_stack_controls_migrate_old_config_and_reach_events(
     config = opm_config_factory(mode="projection")
     config["OPM"]["ao_metrics"] = ["DCT", "gauss_2d"]
     config["acq_config"]["AO"]["metric"] = "DCT"
-    for key in ("o3_stack_range_um", "o3_stack_step_um", "o3_tilt_deg", "o3_pixel_size_um"):
+    for key in (
+        "o3_stack_range_um",
+        "o3_stack_step_um",
+        "o3_tilt_deg",
+        "o3_pixel_size_um",
+    ):
         config["acq_config"]["AO"].pop(key, None)
     path = workspace_tmp_path / "o3-controls.json"
     path.write_text(json.dumps(config))

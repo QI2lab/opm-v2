@@ -92,7 +92,9 @@ def test_restoration_measurement_saved_without_changing_history(
     ao_loop, monkeypatch, restored_metric
 ):
     """Persist fresh images and readbacks without promoting any diagnostic score."""
-    monkeypatch.setattr(sensorless_ao, "_measure_restored_correction", ao_loop.real_verify)
+    monkeypatch.setattr(
+        sensorless_ao, "_measure_restored_correction", ao_loop.real_verify
+    )
     metrics = iter([1.0, 0.2, 0.8, 0.2, 0.7, restored_metric])
     states = []
 
@@ -121,19 +123,28 @@ def test_restoration_measurement_saved_without_changing_history(
     assert attrs["metric_valid"] == bool(np.isfinite(restored_metric))
     if np.isfinite(restored_metric):
         assert attrs["measured_metric"] == restored_metric
-    np.testing.assert_array_equal(attrs["requested_voltage"], attrs["reported_voltage_before"])
-    np.testing.assert_array_equal(attrs["requested_voltage"], attrs["reported_voltage_after"])
+    np.testing.assert_array_equal(
+        attrs["requested_voltage"], attrs["reported_voltage_before"]
+    )
+    np.testing.assert_array_equal(
+        attrs["requested_voltage"], attrs["reported_voltage_after"]
+    )
     assert ao_loop.acquire.call_args.kwargs == ao_loop.acquire.call_args_list[0].kwargs
 
 
-@pytest.mark.parametrize("interval,expected", [(0, []), (2, [2, 4]), (1, [1, 2, 3, 4, 5])])
-def test_alignment_autofocus_cadence_preserves_accepted_state(ao_loop, monkeypatch, interval, expected):
+@pytest.mark.parametrize(
+    "interval,expected", [(0, []), (2, [2, 4]), (1, [1, 2, 3, 4, 5])]
+)
+def test_alignment_autofocus_cadence_preserves_accepted_state(
+    ao_loop, monkeypatch, interval, expected
+):
     """Count attempted modes across iterations without refocusing after the final mode."""
     from opm_v2.utils import autofocus_remote_unit as af
 
     monkeypatch.setattr(sensorless_ao, "spherical_modes", [7, 14, 23])
     ao_loop.acquire.side_effect = lambda *a, **kw: (
-        ao_loop.image, 1.0 if ao_loop.acquire.call_count == 1 else 0.1
+        ao_loop.image,
+        1.0 if ao_loop.acquire.call_count == 1 else 0.1,
     )
     af_calls = []
 
@@ -146,8 +157,10 @@ def test_alignment_autofocus_cadence_preserves_accepted_state(ao_loop, monkeypat
 
     monkeypatch.setattr(af, "manage_O3_focus", focus)
     assert sensorless_ao.run_ao_optimization(
-        **{**ao_loop.kwargs, "num_iterations": 2}, daq_mode="2d",
-        alignment_refocus_every_n_modes=interval, mode_acceptance="optimal",
+        **{**ao_loop.kwargs, "num_iterations": 2},
+        daq_mode="2d",
+        alignment_refocus_every_n_modes=interval,
+        mode_acceptance="optimal",
         num_averaged_frames=51 if interval == 0 else 5,
     )
     records = ao_loop.saved.call_args.kwargs["metadata"]["alignment_refocus"]
@@ -155,7 +168,9 @@ def test_alignment_autofocus_cadence_preserves_accepted_state(ao_loop, monkeypat
     assert len(af_calls) == len(expected)
     assert all(r["best_um"] == 12.5 for r in records)
     if expected:
-        journal = zarr.open_group(str(ao_loop.kwargs["save_dir_path"] / "ao_alignment_focus.zarr"), mode="r")
+        journal = zarr.open_group(
+            str(ao_loop.kwargs["save_dir_path"] / "ao_alignment_focus.zarr"), mode="r"
+        )
         assert len(list(journal.group_keys())) == len(expected)
 
 
@@ -165,13 +180,21 @@ def test_alignment_autofocus_stop_keeps_mirror_and_stops_daq(ao_loop, monkeypatc
 
     monkeypatch.setattr(sensorless_ao, "spherical_modes", [7, 14])
     ao_loop.acquire.side_effect = lambda *a, **kw: (
-        ao_loop.image, 1.0 if ao_loop.acquire.call_count == 1 else 0.1
+        ao_loop.image,
+        1.0 if ao_loop.acquire.call_count == 1 else 0.1,
     )
-    monkeypatch.setattr(af, "manage_O3_focus", MagicMock(side_effect=sensorless_ao.AOCancelled()))
-    assert sensorless_ao.run_ao_optimization(
-        **ao_loop.kwargs, daq_mode="2d", alignment_refocus_every_n_modes=1,
-        mode_acceptance="optimal",
-    ) is False
+    monkeypatch.setattr(
+        af, "manage_O3_focus", MagicMock(side_effect=sensorless_ao.AOCancelled())
+    )
+    assert (
+        sensorless_ao.run_ao_optimization(
+            **ao_loop.kwargs,
+            daq_mode="2d",
+            alignment_refocus_every_n_modes=1,
+            mode_acceptance="optimal",
+        )
+        is False
+    )
     np.testing.assert_array_equal(ao_loop.mirror.current_coeffs, ao_loop.seed)
     ao_loop.daq.stop_waveform_playback.assert_called()
     ao_loop.saved.assert_not_called()
@@ -182,10 +205,13 @@ def test_restoration_verification_failure_stops_with_correction_retained(
     ao_loop, monkeypatch, cancel
 ):
     """Camera failure and STOP leave the restored command in place and stop DAQ."""
-    monkeypatch.setattr(sensorless_ao, "_measure_restored_correction", ao_loop.real_verify)
+    monkeypatch.setattr(
+        sensorless_ao, "_measure_restored_correction", ao_loop.real_verify
+    )
     failure = sensorless_ao.AOCancelled() if cancel else RuntimeError("Camera failed")
     ao_loop.acquire.side_effect = [
-        *[(ao_loop.image, m) for m in [1.0, 0.2, 0.8, 0.2, 0.7]], failure
+        *[(ao_loop.image, m) for m in [1.0, 0.2, 0.8, 0.2, 0.7]],
+        failure,
     ]
     if cancel:
         assert sensorless_ao.run_ao_optimization(**ao_loop.kwargs) is False
@@ -197,18 +223,27 @@ def test_restoration_verification_failure_stops_with_correction_retained(
     ao_loop.saved.assert_not_called()
 
 
-def test_restoration_journal_preserves_distinct_command_and_readbacks(ao_loop, monkeypatch):
+def test_restoration_journal_preserves_distinct_command_and_readbacks(
+    ao_loop, monkeypatch
+):
     """Record actual controller reports independently of the requested voltage."""
     mirror = ao_loop.mirror
     assert mirror.set_modal_coefficients(ao_loop.seed)
     requested = mirror.last_requested_voltage.copy()
     reports = iter([requested + 0.001, requested + 0.002])
-    monkeypatch.setattr(mirror, "_update_current_state", lambda: setattr(
-        mirror, "current_voltage", next(reports)
-    ))
+    monkeypatch.setattr(
+        mirror,
+        "_update_current_state",
+        lambda: setattr(mirror, "current_voltage", next(reports)),
+    )
     ao_loop.acquire.return_value = (ao_loop.image, 0.5)
     ao_loop.real_verify(
-        mirror, ao_loop.mmc, ao_loop.daq, "gauss_2d", 3, {},
+        mirror,
+        ao_loop.mmc,
+        ao_loop.daq,
+        "gauss_2d",
+        3,
+        {},
         {"step_index": 0, "historical_best_metric": 1.0, "zero_probe_metric": 0.7},
         ao_loop.kwargs["save_dir_path"],
     )
@@ -228,7 +263,7 @@ def test_zero_probe_refreshes_best_metric_without_a_coefficient_change(
     """Retain the user's 0.949010 zero observation when the candidate is worse."""
     metrics = [0.809557, 0.005450, 0.949010, 0.011100, 0.93942]
     images = [np.full((4, 4), i) for i in range(len(metrics))]
-    ao_loop.acquire.side_effect = list(zip(images, metrics))
+    ao_loop.acquire.side_effect = list(zip(images, metrics, strict=False))
     sensorless_ao.run_ao_optimization(**ao_loop.kwargs, mode_acceptance=acceptance)
     saved = ao_loop.saved.call_args.kwargs
     assert saved["optimal_metrics"][0] == pytest.approx(0.949010)
@@ -246,7 +281,7 @@ def test_optimal_keeps_best_measured_probe_with_matching_coefficients(
     """Prefer a measured peak to an inferior fit, but reject a failed reapplication."""
     metrics = [1.0, 0.7, 1.4, 1.1, 1.3, 0.8, 1.2]
     images = [np.full((4, 4), i) for i in range(len(metrics))]
-    ao_loop.acquire.side_effect = list(zip(images, metrics))
+    ao_loop.acquire.side_effect = list(zip(images, metrics, strict=False))
     apply = ao_loop.mirror.set_modal_coefficients
     attempts = []
 

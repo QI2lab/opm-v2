@@ -49,8 +49,10 @@ from opm_v2.utils.coverslip import (
 def test_camera_crop_virtual_device_declares_all_five_states() -> None:
     """Keep the 128-pixel preset inside a valid initialized state device."""
     config_lines = (
-        Path(__file__).resolve().parents[2] / "OPM_mmgr.cfg"
-    ).read_text(encoding="utf-8").splitlines()
+        (Path(__file__).resolve().parents[2] / "OPM_mmgr.cfg")
+        .read_text(encoding="utf-8")
+        .splitlines()
+    )
     position_lines = [
         line for line in config_lines if line.startswith("Label,ImageCameraCrop,")
     ]
@@ -406,16 +408,20 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             (0.0, -pixel_size_um, 0.0, pixel_size_um, 0.0, 0.0),
         )
         explorer._on_pixel_size_affine_changed()
-        assert list(explorer._affine_state.system_affine[:2, :2].flat) == pytest.approx([
-            0.0,
-            -pixel_size_um,
-            pixel_size_um,
-            0.0,
-        ])
-        assert explorer._fov_w_h() == pytest.approx((
-            demo_core.getImageHeight() * pixel_size_um,
-            demo_core.getImageWidth() * pixel_size_um,
-        ))
+        assert list(explorer._affine_state.system_affine[:2, :2].flat) == pytest.approx(
+            [
+                0.0,
+                -pixel_size_um,
+                pixel_size_um,
+                0.0,
+            ]
+        )
+        assert explorer._fov_w_h() == pytest.approx(
+            (
+                demo_core.getImageHeight() * pixel_size_um,
+                demo_core.getImageWidth() * pixel_size_um,
+            )
+        )
         assert explorer.roi_manager._fov_size == pytest.approx(explorer._fov_w_h())
 
         roi = RectangleROI(
@@ -426,7 +432,14 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         )
         if polygon:
             roi = ROI(
-                vertices=[(100, 200), (110, 200), (110, 202), (104, 202), (104, 205), (100, 205)],
+                vertices=[
+                    (100, 200),
+                    (110, 200),
+                    (110, 202),
+                    (104, 202),
+                    (104, 205),
+                    (100, 205),
+                ],
                 text="sample",
                 fov_size=explorer._fov_w_h(),
             )
@@ -610,10 +623,9 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
             assert roi.fov_size == pytest.approx(expected_footprint)
             marker = explorer._stage_pos_marker
             assert marker is not None
-            marker_world_size = (
-                np.abs(explorer._affine_state.system_affine[:2, :2])
-                @ np.asarray((marker._rect.width, marker._rect.height))
-            )
+            marker_world_size = np.abs(
+                explorer._affine_state.system_affine[:2, :2]
+            ) @ np.asarray((marker._rect.width, marker._rect.height))
             assert marker_world_size == pytest.approx(expected_footprint)
 
         camera_footprint = explorer._fov_w_h()
@@ -662,7 +674,9 @@ def test_stage_explorer_uses_mirror_footprint_only_while_acquiring(
         # Clearing the mirror override must also restore automatic ROI updates.
         demo_core.setROI(0, 0, 64, 16)
         restored_projection_footprint = (16 * pixel_size_um, 64 * pixel_size_um)
-        assert explorer.roi_manager._fov_size == pytest.approx(restored_projection_footprint)
+        assert explorer.roi_manager._fov_size == pytest.approx(
+            restored_projection_footprint
+        )
         assert roi.fov_size == pytest.approx(restored_projection_footprint)
 
         for mode in ("projection", "stage"):
@@ -734,7 +748,14 @@ def test_stage_explorer_selected_roi_uses_current_mm_channel_preset(
         )
         if polygon:
             roi = ROI(
-                vertices=[(100, 200), (110, 200), (110, 202), (104, 202), (104, 205), (100, 205)],
+                vertices=[
+                    (100, 200),
+                    (110, 200),
+                    (110, 202),
+                    (104, 202),
+                    (104, 205),
+                    (100, 205),
+                ],
                 text="direct_scan",
                 fov_size=(fov_width, fov_height),
             )
@@ -810,10 +831,12 @@ def test_stage_explorer_preview_uses_four_times_y_speed_for_both_axes() -> None:
     }[prop]
     accelerated = _stage_explorer_accelerated_speeds(mmc)
 
-    assert accelerated == pytest.approx({
-        "move_speed_x_mm_s": 0.32,
-        "move_speed_y_mm_s": 0.32,
-    })
+    assert accelerated == pytest.approx(
+        {
+            "move_speed_x_mm_s": 0.32,
+            "move_speed_y_mm_s": 0.32,
+        }
+    )
     mmc.setProperty.assert_called_once_with("XYStage", "MotorSpeedX-S(mm/s)", 0.08)
 
 
@@ -833,10 +856,12 @@ def test_stage_explorer_preview_caps_speed_at_adapter_limit() -> None:
 
     accelerated = _stage_explorer_accelerated_speeds(mmc)
 
-    assert accelerated == pytest.approx({
-        "move_speed_x_mm_s": 1.2864,
-        "move_speed_y_mm_s": 1.2864,
-    })
+    assert accelerated == pytest.approx(
+        {
+            "move_speed_x_mm_s": 1.2864,
+            "move_speed_y_mm_s": 1.2864,
+        }
+    )
 
 
 def test_stage_explorer_speed_property_failure_does_not_disable_interaction() -> None:
@@ -1222,11 +1247,13 @@ def test_real_live_preview_excludes_stage_explorer_updates(
                 _BoundedLivePreviewTimer,
             )
             qtbot.waitUntil(
-                lambda: hasattr(preview, "_opm_refresh_interval_ms"),
+                lambda preview=preview: hasattr(preview, "_opm_refresh_interval_ms"),
                 timeout=5000,
             )
             assert preview._opm_refresh_interval_ms == LIVE_DISPLAY_INTERVAL_MS
-            qtbot.waitUntil(lambda: preview._timer_id is not None, timeout=5000)
+            qtbot.waitUntil(
+                lambda preview=preview: preview._timer_id is not None, timeout=5000
+            )
 
             demo_core.stopSequenceAcquisition()
             qtbot.waitUntil(lambda: not demo_core.isSequenceRunning(), timeout=5000)

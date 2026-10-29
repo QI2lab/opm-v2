@@ -28,14 +28,19 @@ from opm_v2.handlers.live_acquisition import acquisition_sidecar_paths
         ("timelapse", setup_timelapse),
     ],
 )
-@pytest.mark.parametrize("laser_mode,pair,name", [
-    ("simultaneous", (1, 3), "488 + 637"),
-    ("simultaneous 488/637", (1, 3), "488 + 637"),
-    ("simultaneous 561/637", (2, 3), "561 + 637"),
-    ("simultaneous 488/561", (1, 2), "488 + 561"),
-])
+@pytest.mark.parametrize(
+    "laser_mode,pair,name",
+    [
+        ("simultaneous", (1, 3), "488 + 637"),
+        ("simultaneous 488/637", (1, 3), "488 + 637"),
+        ("simultaneous 561/637", (2, 3), "561 + 637"),
+        ("simultaneous 488/561", (1, 2), "488 + 561"),
+    ],
+)
 def test_simultaneous_planning_and_engine_powers(
-    laser_mode, pair, name,
+    laser_mode,
+    pair,
+    name,
     mode,
     build,
     demo_core,
@@ -46,7 +51,9 @@ def test_simultaneous_planning_and_engine_powers(
 ):
     """Store one combined channel while driving both lasers at independent powers."""
     first, second = pair
-    canonical_mode = "simultaneous 488/637" if laser_mode == "simultaneous" else laser_mode
+    canonical_mode = (
+        "simultaneous 488/637" if laser_mode == "simultaneous" else laser_mode
+    )
     config = opm_config_factory(
         mode=mode,
         active_channels=(0, first, second, 4),
@@ -60,7 +67,9 @@ def test_simultaneous_planning_and_engine_powers(
     assert plan["active_count"] == 1
     assert plan["active_names"] == [name]
     assert plan["states"] == [i in pair for i in range(5)]
-    assert plan["powers"] == [23 if i == first else 41 if i == second else 0 for i in range(5)]
+    assert plan["powers"] == [
+        23 if i == first else 41 if i == second else 0 for i in range(5)
+    ]
     sequence = MDASequence(
         grid_plan=GridFromEdges(bottom=0, top=4, left=0, right=0),
         time_plan={"interval": 0, "loops": 1},
@@ -93,8 +102,12 @@ def test_simultaneous_planning_and_engine_powers(
         np.testing.assert_array_equal(waveform[:, first], waveform[:, second])
         assert waveform[::2, first].all()
         assert not waveform[:, [i for i in range(5) if i not in pair]].any()
-        assert engine.simulated_laser_powers[config["Lasers"]["laser_names"][first]] == 23
-        assert engine.simulated_laser_powers[config["Lasers"]["laser_names"][second]] == 41
+        assert (
+            engine.simulated_laser_powers[config["Lasers"]["laser_names"][first]] == 23
+        )
+        assert (
+            engine.simulated_laser_powers[config["Lasers"]["laser_names"][second]] == 41
+        )
     manifest_path, _ = acquisition_sidecar_paths(output)
     manifest = json.loads(manifest_path.read_text())
     assert manifest["channels"][0]["name"] == name
@@ -106,12 +119,17 @@ def test_simultaneous_planning_and_engine_powers(
 
 
 @pytest.mark.parametrize("exposures", [(10, 11), (0, 0), (float("nan"), 10)])
-@pytest.mark.parametrize("laser_mode,pair", [
-    ("simultaneous", (1, 3)),
-    ("simultaneous 561/637", (2, 3)),
-    ("simultaneous 488/561", (1, 2)),
-])
-def test_simultaneous_rejects_invalid_exposures(opm_config_factory, exposures, laser_mode, pair):
+@pytest.mark.parametrize(
+    "laser_mode,pair",
+    [
+        ("simultaneous", (1, 3)),
+        ("simultaneous 561/637", (2, 3)),
+        ("simultaneous 488/561", (1, 2)),
+    ],
+)
+def test_simultaneous_rejects_invalid_exposures(
+    opm_config_factory, exposures, laser_mode, pair
+):
     """Reject incompatible exposures before creating events or commanding hardware."""
     config = opm_config_factory(
         mode="projection",

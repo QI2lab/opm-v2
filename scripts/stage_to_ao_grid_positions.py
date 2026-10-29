@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 if __package__:
-    from .ao_positions import build_parser, main
+    from scripts.ao_positions import build_parser, main
 else:
     from ao_positions import build_parser, main
 

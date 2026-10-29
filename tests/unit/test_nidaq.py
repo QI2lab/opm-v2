@@ -16,7 +16,9 @@ from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 def test_external_alignment_beam_uses_a_blank_stationary_camera_cycle():
     """Run camera timing without enabling an imaging laser or mirror sweep."""
     daq = MockOPMNIDAQ()
-    daq.set_acquisition_params(scan_type="2d", channel_states=[False]*5, laser_blanking=True)
+    daq.set_acquisition_params(
+        scan_type="2d", channel_states=[False] * 5, laser_blanking=True
+    )
     daq.generate_waveforms()
     daq.program_daq_waveforms()
     daq.start_waveform_playback()
@@ -174,9 +176,13 @@ def test_simultaneous_lasers_share_one_exposure_and_mirror_step(scan_type, blank
     """Use one frame per plane and gate both laser outputs on identical edges."""
     daq = MockOPMNIDAQ(exposure_ms=10.0)
     daq.set_acquisition_params(
-        scan_type=scan_type, channel_states=[False, True, False, True, False],
-        exposure_ms=10, image_mirror_range_um=4, image_mirror_step_um=1,
-        laser_blanking=blanking, simultaneous=True,
+        scan_type=scan_type,
+        channel_states=[False, True, False, True, False],
+        exposure_ms=10,
+        image_mirror_range_um=4,
+        image_mirror_step_um=1,
+        laser_blanking=blanking,
+        simultaneous=True,
     )
     daq.generate_waveforms()
     waveform = daq.digital_waveform
@@ -187,7 +193,9 @@ def test_simultaneous_lasers_share_one_exposure_and_mirror_step(scan_type, blank
     assert not waveform[:, [0, 2, 4, 5, 6, 7]].any()
     np.testing.assert_array_equal(waveform[1::2, 1], np.full(n_planes, not blanking))
     if scan_type == "mirror":
-        np.testing.assert_allclose(np.diff(daq.analog_waveform[::2, 0]), daq.image_mirror_calibration)
+        np.testing.assert_allclose(
+            np.diff(daq.analog_waveform[::2, 0]), daq.image_mirror_calibration
+        )
 
     daq.program_daq_waveforms()
     # A subsequent ordinary acquisition (including AO) resets simultaneous mode.

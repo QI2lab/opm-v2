@@ -51,11 +51,15 @@ def laser_mode_for_channel(channel: str) -> str:
     str
         Corresponding illumination mode.
     """
-    return next((mode for mode, name in SIMULTANEOUS_PRESETS.items() if name == channel), INTERLEAVED)
+    return next(
+        (mode for mode, name in SIMULTANEOUS_PRESETS.items() if name == channel),
+        INTERLEAVED,
+    )
 
 
 def validate_interleaved_exposures(
-    exposures: Sequence[float], names: Sequence[str] | None = None,
+    exposures: Sequence[float],
+    names: Sequence[str] | None = None,
 ) -> None:
     """Require identical positive exposures for a camera-clocked channel cycle.
 
@@ -65,10 +69,19 @@ def validate_interleaved_exposures(
         If an active exposure is invalid or differs from the others.
     """
     values = [float(value) for value in exposures]
-    if (not values or any(not math.isfinite(value) or value <= 0 for value in values)
-            or any(value != values[0] for value in values)):
-        labels = names if names is not None else [f"channel {i + 1}" for i in range(len(values))]
-        settings = ", ".join(f"{name}: {value:g} ms" for name, value in zip(labels, values, strict=True))
+    if (
+        not values
+        or any(not math.isfinite(value) or value <= 0 for value in values)
+        or any(value != values[0] for value in values)
+    ):
+        labels = (
+            names
+            if names is not None
+            else [f"channel {i + 1}" for i in range(len(values))]
+        )
+        settings = ", ".join(
+            f"{name}: {value:g} ms" for name, value in zip(labels, values, strict=True)
+        )
         raise ValueError(
             "Interleaved acquisition requires equal, positive exposure times for "
             "all enabled channels because the camera clocks the laser and mirror waveform. "
@@ -76,7 +89,9 @@ def validate_interleaved_exposures(
         )
 
 
-def simultaneous_channel_indices(channel_names: Sequence[str], mode: str = SIMULTANEOUS) -> tuple[int, int]:
+def simultaneous_channel_indices(
+    channel_names: Sequence[str], mode: str = SIMULTANEOUS
+) -> tuple[int, int]:
     """Locate the physical lasers contributing to the combined channel.
 
     Returns
@@ -98,7 +113,9 @@ def simultaneous_channel_indices(channel_names: Sequence[str], mode: str = SIMUL
     return names.index(pair[0]), names.index(pair[1])
 
 
-def validate_simultaneous_exposures(exposures: Sequence[float], mode: str = SIMULTANEOUS) -> None:
+def validate_simultaneous_exposures(
+    exposures: Sequence[float], mode: str = SIMULTANEOUS
+) -> None:
     """Require one finite, positive exposure shared by both physical lasers.
 
     Raises

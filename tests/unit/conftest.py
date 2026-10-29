@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 
@@ -11,6 +11,9 @@ from opm_v2.hardware.APump import APump
 from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.hardware.OPMNIDAQ import OPMNIDAQ
 from opm_v2.hardware.PicardShutter import PicardShutter
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 _SINGLETON_HARDWARE = (
     AOMirror,

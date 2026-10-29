@@ -3,15 +3,18 @@
 from __future__ import annotations
 
 from types import SimpleNamespace
+from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, call
 
 import numpy as np
 import pytest
-from pymmcore_plus import CMMCorePlus
 
 from opm_v2.engine.opm_custom_events import create_ao_grid_event
 from opm_v2.utils import sensorless_ao
 from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
+
+if TYPE_CHECKING:
+    from pymmcore_plus import CMMCorePlus
 
 
 def _camera_with_transient_snap_failure(image: np.ndarray) -> MagicMock:
@@ -325,9 +328,7 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
     z1_result = sensorless_ao.run_ao_grid_mapping(
         ao_dict=ao_dict,
         stage_positions=[{**position, "z": 50.0} for position in stage_positions],
-        position_indices=list(
-            range(acquisition_grid_size, 2 * acquisition_grid_size)
-        ),
+        position_indices=list(range(acquisition_grid_size, 2 * acquisition_grid_size)),
         previous_grid_coefficients=z0_result.modal_coefficients,
         previous_grid_reference_state=z0_result.reference_state,
         num_tile_positions=2,

@@ -161,16 +161,18 @@ def test_opm_data_handler_round_trips_pixels_and_all_extra_metadata(
             if index == {"t": 0, "p": 0, "c": 0, "z": 0}:
                 assert handler.get_view().shape == (1, 2, 2, 2, 3, 4)
                 assert handler.get_preview_state() == (1, index)
-            expected_frames_by_position[position].append({
-                "event_index": index,
-                "delta_t": value / 1000.0,
-                "exposure_time": (10.0 + channel) / 1000.0,
-                "position_x": float(position * 10),
-                "position_y": float(position * 20),
-                "position_z": float(plane),
-                "event_metadata": expected_event_metadata,
-                "storage_index": [0, channel, plane],
-            })
+            expected_frames_by_position[position].append(
+                {
+                    "event_index": index,
+                    "delta_t": value / 1000.0,
+                    "exposure_time": (10.0 + channel) / 1000.0,
+                    "position_x": float(position * 10),
+                    "position_y": float(position * 20),
+                    "position_z": float(plane),
+                    "event_metadata": expected_event_metadata,
+                    "storage_index": [0, channel, plane],
+                }
+            )
     finally:
         handler.sequenceFinished(sequence)
 
@@ -378,8 +380,7 @@ def test_tile_retry_waits_for_queued_failed_pass_metadata(
     """Snapshot retry slots only after asynchronous frame callbacks drain."""
     output = workspace_tmp_path / "queued-retry.ome.zarr"
     events = tuple(
-        MDAEvent(index={"t": 0, "p": 0, "z": plane, "c": 0})
-        for plane in range(3)
+        MDAEvent(index={"t": 0, "p": 0, "z": plane, "c": 0}) for plane in range(3)
     )
     sequence = MDASequence()
     handler = OpmDataHandler(

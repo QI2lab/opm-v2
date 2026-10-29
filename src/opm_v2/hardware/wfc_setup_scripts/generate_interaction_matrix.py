@@ -3,7 +3,7 @@
 """Generate the interaction matrix from the WaveKit example workflow.
 
 - Requires both WFC and WFS be connected
-- Modify output path prefix for different correction callibrations.
+- Modify output path prefix for different correction calibrations.
 """
 
 from pathlib import Path

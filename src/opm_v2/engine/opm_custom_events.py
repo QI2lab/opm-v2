@@ -2,15 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from math import isfinite
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from useq import CustomAction, MDAEvent
 
 from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
 from opm_v2.utils.laser_modes import is_simultaneous, normalize_laser_mode
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
 ACTION_FLUIDICS = "Fluidics"
 ACTION_AO_OPTIMIZE = "AO-optimize"
@@ -98,6 +100,8 @@ def _custom_event(
         Custom action name.
     data : Mapping[str, Any]
         Action payload.
+    **event_fields : Any
+        Additional fields passed to the acquisition event.
 
     Returns
     -------
@@ -237,7 +241,9 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
         "mirror_state": policies["starting_correction"],
         **policies,
         "metric_acceptance": str(ao_config["metric_acceptance"]),
-        "daq_mode": "2d" if ao_config["metric"] == O3_STACK_METRIC else str(ao_config["daq_mode"]),
+        "daq_mode": "2d"
+        if ao_config["metric"] == O3_STACK_METRIC
+        else str(ao_config["daq_mode"]),
         "o3_stack_settings": {
             "range_um": float(ao_config.get("o3_stack_range_um", 4.0)),
             "step_um": float(ao_config.get("o3_stack_step_um", 0.5)),
@@ -255,7 +261,8 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
             int(ao_config.get("alignment_refocus_every_n_modes", 0))
             if ao_config.get("ao_mode") == "optimize now"
             and ao_config.get("daq_mode") == "2d"
-            and ao_config["metric"] != O3_STACK_METRIC else 0
+            and ao_config["metric"] != O3_STACK_METRIC
+            else 0
         ),
         "modal_alpha": float(ao_config["mode_alpha"]),
         "iterations": int(ao_config["num_iterations"]),
@@ -263,7 +270,9 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
         "metric": str(ao_config["metric"]),
         "modes_to_optimize": str(ao_config["modes_to_optimize"]),
         "image_mirror_range_um": ao_config["image_mirror_range_um"],
-        "lightsheet_mode": "off" if ao_config["metric"] == O3_STACK_METRIC else str(ao_config["lightsheet_mode"]),
+        "lightsheet_mode": "off"
+        if ao_config["metric"] == O3_STACK_METRIC
+        else str(ao_config["lightsheet_mode"]),
         "readout_ms": float(ao_config["readout_ms"]),
         "apply_existing": False,
         "pos_idx": 0,

@@ -9,14 +9,13 @@ from __future__ import annotations
 
 import time
 import traceback
-from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from time import sleep
+from typing import TYPE_CHECKING
 
 import numpy as np
 import zarr
-from numpy.typing import NDArray
 from pymmcore_plus import CMMCorePlus
 from scipy.fft import dct
 from scipy.ndimage import center_of_mass, laplace
@@ -26,9 +25,16 @@ from opm_v2.engine.debug_printing import info, warning
 from opm_v2.utils.ao_cancel import AOCancelled, check_ao_stop
 from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
 from opm_v2.utils.ao_o3_stack import O3StackMetric, O3StackSettings
-from opm_v2.utils.ao_policy import AOCorrectionHistory
 from opm_v2.utils.metadata_serialization import json_metadata
 from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+    from typing import Any
+
+    from numpy.typing import NDArray
+
+    from opm_v2.utils.ao_policy import AOCorrectionHistory
 
 try:
     from opm_v2.hardware.AOMirror import AOMirror
@@ -41,8 +47,8 @@ DEBUGGING = True
 
 # Metric global parameters
 MAXIMUM_MODE_DELTA = 0.5
-DEFUALT_PSF_RADIUS_PX = 3
-DEFUALT_SIGN_FIGS = 6
+DEFAULT_PSF_RADIUS_PX = 3
+DEFAULT_SIGN_FIGS = 6
 
 
 @dataclass
@@ -61,6 +67,7 @@ class AOGridResult:
     modal_coefficients: NDArray
     actuator_positions: NDArray
     reference_state: str
+
 
 # Modes to optimize lists
 focusing_modes = [2, 7, 14, 23]
@@ -209,7 +216,7 @@ mode_names = [
 def get_metric(
     image: NDArray,
     metric_to_use: str,
-    psf_radius_px: int = DEFUALT_PSF_RADIUS_PX,
+    psf_radius_px: int = DEFAULT_PSF_RADIUS_PX,
     *,
     gaussian_prior: GaussianSpotPrior | None = None,
 ) -> float:
@@ -403,7 +410,7 @@ def acquire_metric_image(
     *,
     gaussian_prior: GaussianSpotPrior | None = None,
     o3_sampler: O3StackMetric | None = None,
-    stop_requested=None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> tuple[NDArray, float]:
     """Acquire images and calculate a consistent adaptive-optics metric.
 
@@ -431,7 +438,8 @@ def acquire_metric_image(
     tuple[numpy.ndarray, float]
         Averaged camera image and its metric value.
     """
-    def snap():
+
+    def snap() -> np.ndarray:
         check_ao_stop(stop_requested)
         return _snap_ao_image(mmc, opm_nidaq)
 
@@ -489,7 +497,7 @@ def metric_from_fit(a: float, b: float, c: float, delta: float) -> float:
     return a * delta**2 + b * delta + c
 
 
-def round_to_sigfigs(x: float, signif_figs: int = DEFUALT_SIGN_FIGS) -> float:
+def round_to_sigfigs(x: float, signif_figs: int = DEFAULT_SIGN_FIGS) -> float:
     """Round value to given significant figures.
 
     Parameters
@@ -497,7 +505,7 @@ def round_to_sigfigs(x: float, signif_figs: int = DEFUALT_SIGN_FIGS) -> float:
     x : float
         value to round
     signif_figs : int, optional
-        number of significant figures, by default DEFUALT_SIGN_FIGS
+        number of significant figures, by default DEFAULT_SIGN_FIGS
 
     Returns
     -------
@@ -541,8 +549,14 @@ def _restore_ao_correction(
 
 
 def _measure_restored_correction(
-    mirror, mmc, daq, metric_to_use, num_averaged_frames,
-    metric_options, record, save_dir_path,
+    mirror: AOMirror,
+    mmc: CMMCorePlus,
+    daq: OPMNIDAQ | None,
+    metric_to_use: str,
+    num_averaged_frames: int,
+    metric_options: dict[str, Any],
+    record: dict[str, Any],
+    save_dir_path: Path | None,
 ) -> None:
     """Measure the restored state without changing the accepted AO history.
 
@@ -572,10 +586,12 @@ def _measure_restored_correction(
         metric_valid=bool(np.isfinite(metric)),
         reported_voltage_after=mirror.current_voltage.copy(),
     )
-    record["max_voltage_readback_error"] = float(max(
-        np.max(np.abs(record[key] - record["requested_voltage"]))
-        for key in ("reported_voltage_before", "reported_voltage_after")
-    ))
+    record["max_voltage_readback_error"] = float(
+        max(
+            np.max(np.abs(record[key] - record["requested_voltage"]))
+            for key in ("reported_voltage_before", "reported_voltage_after")
+        )
+    )
     if save_dir_path is not None:
         save_dir_path.mkdir(parents=True, exist_ok=True)
         root = zarr.open_group(str(save_dir_path / "ao_restore_checks.zarr"), mode="a")
@@ -600,7 +616,7 @@ def run_ao_optimization(
     num_mode_samples: int = 3,
     starting_coef_delta: float = 0.25,
     coef_delta_scale: float = 0.9,
-    metric_precision: int = DEFUALT_SIGN_FIGS,
+    metric_precision: int = DEFAULT_SIGN_FIGS,
     modes_to_optimize: str = "spherical first",
     starting_mirror_state: str = "last optimized",
     starting_mirror_coefficients: NDArray | None = None,
@@ -608,14 +624,14 @@ def run_ao_optimization(
     starting_coefficients_source: str | None = None,
     mode_acceptance: str = "zero",
     num_averaged_frames: int = 50,
-    pos_idx: int = None,
+    pos_idx: int | None = None,
     save_dir_path: Path | None = None,
     save_prefix: str | None = None,
     verbose: bool = True,
     initialization_metadata: dict | None = None,
     o3_stack_settings: dict | None = None,
     alignment_refocus_every_n_modes: int = 0,
-    stop_requested=None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> bool:
     """Run sensorless adaptive optics.
 
@@ -672,6 +688,9 @@ def run_ao_optimization(
     verbose : bool
         Whether to print optimization progress.
 
+    stop_requested : callable or None
+        Cooperative cancellation predicate checked between hardware operations.
+
     Returns
     -------
     bool
@@ -688,11 +707,15 @@ def run_ao_optimization(
     ValueError
         If a mirror state or mode selection is invalid.
     """
-    if (isinstance(alignment_refocus_every_n_modes, bool)
-            or not isinstance(alignment_refocus_every_n_modes, (int, np.integer))
-            or alignment_refocus_every_n_modes < 0):
+    if (
+        isinstance(alignment_refocus_every_n_modes, bool)
+        or not isinstance(alignment_refocus_every_n_modes, (int, np.integer))
+        or alignment_refocus_every_n_modes < 0
+    ):
         raise ValueError("Alignment refocus interval must be a nonnegative integer")
-    if alignment_refocus_every_n_modes and (daq_mode != "2d" or metric_to_use == O3_STACK_METRIC):
+    if alignment_refocus_every_n_modes and (
+        daq_mode != "2d" or metric_to_use == O3_STACK_METRIC
+    ):
         raise ValueError("Periodic alignment autofocus requires 2D, non-stack AO")
     if verbose:
         print("\n+++++++++++      RUNNING SENSORLESS AO      +++++++++++\n")
@@ -840,7 +863,7 @@ def run_ao_optimization(
     starting_coeffs: Mirror coefficients at the start of optimization.
     update_status: A list of bools indicating whether modes are updated.
 
-    -- Arrays for tracking modal coefficients and applying pertubations to the Mirror
+    -- Arrays for tracking modal coefficients and applying perturbations to the Mirror
     current_coeffs: Mirror modal coefficients initiated at the start of each iteration.
                     Array is updated when new modal coefficients are accepted.
     iteration_optimal_metrics: Optimal metrics initiated with starting or prior optimal
@@ -909,11 +932,12 @@ def run_ao_optimization(
     if o3_sampler is not None:
         metric_options = {"o3_sampler": o3_sampler}
         o3_sampler.context = {
-            "kind": "starting", "modal_coefficients": starting_coeffs.tolist()
+            "kind": "starting",
+            "modal_coefficients": starting_coeffs.tolist(),
         }
 
     metric_options["stop_requested"] = stop_requested
-    # Aqcuire starting image and metric
+    # Acquire starting image and metric
     try:
         starting_image, starting_metric = acquire_metric_image(
             mmc,
@@ -949,7 +973,7 @@ def run_ao_optimization(
                 "\n\n",
                 "-------------------------------------------------------------------",
                 f"Optimization iteration: {k + 1} / {num_iterations}",
-                f"Coeff pertubation amplitude: {mode_deltas[k]:.6f}",
+                f"Coeff perturbation amplitude: {mode_deltas[k]:.6f}",
                 f"Starting mirror coefficients: \n{current_coeffs}",
                 "-------------------------------------------------------------------",
                 sep="\n",
@@ -962,29 +986,45 @@ def run_ao_optimization(
                 opmNIDAQ_local.stop_waveform_playback()
                 return False
             completed_modes = len(optimal_metrics)
-            if (alignment_refocus_every_n_modes and completed_modes
-                    and completed_modes % alignment_refocus_every_n_modes == 0):
+            if (
+                alignment_refocus_every_n_modes
+                and completed_modes
+                and completed_modes % alignment_refocus_every_n_modes == 0
+            ):
                 _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
-                stage_name = (o3_stack_settings or {}).get("stage_name", "MCL NanoDrive Z Stage")
+                stage_name = (o3_stack_settings or {}).get(
+                    "stage_name", "MCL NanoDrive Z Stage"
+                )
                 try:
                     stage = mmc.getDeviceObject(stage_name)
                     stage.wait()
                     start_um = float(stage.getPosition())
                     best_um = manage_O3_focus(
-                        stage_name, verbose=verbose, mmc=mmc,
-                        control_shutter=False, stop_requested=stop_requested,
+                        stage_name,
+                        verbose=verbose,
+                        mmc=mmc,
+                        control_shutter=False,
+                        stop_requested=stop_requested,
                     )
                     record = {
-                        "after_modes": completed_modes, "start_um": start_um,
-                        "best_um": float(best_um), "timestamp_unix_s": time.time(),
+                        "after_modes": completed_modes,
+                        "start_um": start_um,
+                        "best_um": float(best_um),
+                        "timestamp_unix_s": time.time(),
                         "modal_coefficients": current_coeffs.tolist(),
                     }
                     metadata["alignment_refocus"].append(record)
                     if save_dir_path is not None:
                         save_dir_path.mkdir(parents=True, exist_ok=True)
-                        journal = zarr.open_group(str(save_dir_path / "ao_alignment_focus.zarr"), mode="a")
-                        journal.create_group(f"after_{completed_modes:06d}").attrs.update(json_metadata(record))
-                    print(f"AO alignment refocus after {completed_modes} modes: {start_um:.3f} -> {best_um:.3f} um")
+                        journal = zarr.open_group(
+                            str(save_dir_path / "ao_alignment_focus.zarr"), mode="a"
+                        )
+                        journal.create_group(
+                            f"after_{completed_modes:06d}"
+                        ).attrs.update(json_metadata(record))
+                    print(
+                        f"AO alignment refocus after {completed_modes} modes: {start_um:.3f} -> {best_um:.3f} um"
+                    )
                 except AOCancelled:
                     opmNIDAQ_local.stop_waveform_playback()
                     return False
@@ -1033,8 +1073,10 @@ def run_ao_optimization(
                         raise ConnectionError("DAQ is not running, check for errors")
                     if o3_sampler is not None:
                         o3_sampler.context = {
-                            "kind": "probe", "iteration": k + 1,
-                            "mode_index": int(mode), "mode_name": mode_names[mode],
+                            "kind": "probe",
+                            "iteration": k + 1,
+                            "mode_index": int(mode),
+                            "mode_name": mode_names[mode],
                             "delta": float(modal_coeff_deltas[ii]),
                             "modal_coefficients": modal_coeff.tolist(),
                         }
@@ -1047,7 +1089,9 @@ def run_ao_optimization(
                             **metric_options,
                         )
                     except AOCancelled:
-                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
                         opmNIDAQ_local.stop_waveform_playback()
                         return False
                     except Exception as e:
@@ -1090,11 +1134,15 @@ def run_ao_optimization(
                     # Are metrics monotonic, if so use the maximum
                     is_increasing = all(
                         x < y
-                        for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:])
+                        for x, y in zip(
+                            np.asarray(metrics), np.asarray(metrics)[1:], strict=False
+                        )
                     )
                     is_decreasing = all(
                         x > y
-                        for x, y in zip(np.asarray(metrics), np.asarray(metrics)[1:])
+                        for x, y in zip(
+                            np.asarray(metrics), np.asarray(metrics)[1:], strict=False
+                        )
                     )
                     if is_increasing or is_decreasing:
                         optimal_delta = modal_coeff_deltas[np.argmax(metrics)]
@@ -1143,7 +1191,7 @@ def run_ao_optimization(
                 optimal_metric = np.nan
                 optimal_image = np.zeros_like(starting_image)
                 if verbose:
-                    print("\n------- WARNING -------\n Error occured in metrics!")
+                    print("\n------- WARNING -------\n Error occurred in metrics!")
 
             # ---------------------------------------------#
             # Validate the optimal delta
@@ -1153,7 +1201,10 @@ def run_ao_optimization(
             zero_metric_index = num_mode_samples // 2
             # Zero delta is the same correction already accepted. Retain a
             # higher observed score and its image even when the candidate loses.
-            if np.isfinite(metrics[zero_metric_index]) and metrics[zero_metric_index] > current_opt_metric:
+            if (
+                np.isfinite(metrics[zero_metric_index])
+                and metrics[zero_metric_index] > current_opt_metric
+            ):
                 current_opt_metric = metrics[zero_metric_index]
                 current_opt_image = probe_images[zero_metric_index]
             update = False
@@ -1180,8 +1231,10 @@ def run_ao_optimization(
                         raise ConnectionError("DAQ is not running, check for errors")
                     if o3_sampler is not None:
                         o3_sampler.context = {
-                            "kind": "candidate", "iteration": k + 1,
-                            "mode_index": int(mode), "mode_name": mode_names[mode],
+                            "kind": "candidate",
+                            "iteration": k + 1,
+                            "mode_index": int(mode),
+                            "mode_name": mode_names[mode],
                             "delta": float(optimal_delta),
                             "modal_coefficients": active_coeffs.tolist(),
                         }
@@ -1194,7 +1247,9 @@ def run_ao_optimization(
                             **metric_options,
                         )
                     except AOCancelled:
-                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
                         opmNIDAQ_local.stop_waveform_playback()
                         return False
                     except Exception as e:
@@ -1232,7 +1287,8 @@ def run_ao_optimization(
             # rather than discarding it in favor of the fitted candidate.
             # Failed fits/commands/measurements still invalidate the mode.
             if (
-                "optimal" in mode_acceptance and fit_valid
+                "optimal" in mode_acceptance
+                and fit_valid
                 and (candidate_valid or optimal_delta == 0)
             ):
                 best_probe = int(np.argmax(metrics))
@@ -1244,7 +1300,9 @@ def run_ao_optimization(
                     try:
                         success = AOMirror_local.set_modal_coefficients(selected_coeffs)
                     except Exception:
-                        _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
+                        _restore_ao_correction(
+                            AOMirror_local, current_coeffs, opmNIDAQ_local
+                        )
                         raise
                     update = bool(success)
                     if update:
@@ -1261,13 +1319,15 @@ def run_ao_optimization(
             if update:
                 current_coeffs[mode] += optimal_delta
             else:
-                _restore_ao_correction(
-                    AOMirror_local, current_coeffs, opmNIDAQ_local
-                )
+                _restore_ao_correction(AOMirror_local, current_coeffs, opmNIDAQ_local)
                 try:
                     _measure_restored_correction(
-                        AOMirror_local, mmc, opmNIDAQ_local, metric_to_use,
-                        num_averaged_frames, metric_options,
+                        AOMirror_local,
+                        mmc,
+                        opmNIDAQ_local,
+                        metric_to_use,
+                        num_averaged_frames,
+                        metric_options,
                         {
                             "step_index": len(optimal_metrics),
                             "iteration": k + 1,
@@ -1284,7 +1344,9 @@ def run_ao_optimization(
                     return False
                 except Exception as exc:
                     opmNIDAQ_local.stop_waveform_playback()
-                    raise RuntimeError("Failed to verify restored AO correction") from exc
+                    raise RuntimeError(
+                        "Failed to verify restored AO correction"
+                    ) from exc
                 optimal_image = current_opt_image
                 optimal_metric = current_opt_metric
 
@@ -1364,8 +1426,11 @@ def run_ao_optimization(
                 update_status=update_status,
                 metadata=metadata,
                 save_dir_path=save_dir_path,
-                **({"o3_stacks": np.asarray(o3_sampler.measured_stacks)}
-                   if o3_sampler is not None else {}),
+                **(
+                    {"o3_stacks": np.asarray(o3_sampler.measured_stacks)}
+                    if o3_sampler is not None
+                    else {}
+                ),
             )
             results_step = "Loading saved AO results"
             ao_results = load_optimization_results(
@@ -1406,9 +1471,9 @@ def run_ao_optimization(
 def plot_zernike_coeffs(
     ao_results: dict,
     zernike_mode_names: NDArray,
-    save_dir_path: Path = None,
+    save_dir_path: Path | None = None,
     show_fig: bool | None = False,
-    x_range=0.1,
+    x_range: float = 0.1,
 ) -> None:
     """Plot the Zernike coefficient values per iteration.
 
@@ -1417,6 +1482,7 @@ def plot_zernike_coeffs(
     ao_results : dict
         Optimization results and metadata.
     zernike_mode_names : NDArray
+        Display labels for the mirror modes.
     save_dir_path : Path, optional
         Path to save figure, by default None
     show_fig : Optional[bool], optional
@@ -1431,14 +1497,16 @@ def plot_zernike_coeffs(
         matplotlib.use("Agg")
     from matplotlib.ticker import FormatStrFormatter
 
-    plt.rcParams.update({
-        "font.size": 14,  # base font size
-        "axes.titlesize": 18,  # title size
-        "axes.labelsize": 15,  # x/y label size
-        "xtick.labelsize": 15,  # x-tick label size
-        "ytick.labelsize": 15,  # y-tick label size
-        "legend.fontsize": 14,  # legend size
-    })
+    plt.rcParams.update(
+        {
+            "font.size": 14,  # base font size
+            "axes.titlesize": 18,  # title size
+            "axes.labelsize": 15,  # x/y label size
+            "xtick.labelsize": 15,  # x-tick label size
+            "ytick.labelsize": 15,  # y-tick label size
+            "legend.fontsize": 14,  # legend size
+        }
+    )
     metadata = ao_results["metadata"]
     num_iterations = int(metadata["num_iterations"])
     optimal_coeffs = np.array(ao_results["optimal_coeffs"])
@@ -1447,9 +1515,7 @@ def plot_zernike_coeffs(
     # contain only the final correction from each iteration.
     if optimal_coeffs.shape[0] != num_iterations:
         num_modes = len(metadata["modes_to_optimize"])
-        optimal_coeffs = optimal_coeffs.reshape(
-            num_iterations, num_modes, -1
-        )[:, -1, :]
+        optimal_coeffs = optimal_coeffs.reshape(num_iterations, num_modes, -1)[:, -1, :]
 
     # Create the plot
     fig, ax = plt.subplots(figsize=(7.5, 8))
@@ -1529,7 +1595,7 @@ def plot_metric_progress_depr(
     num_iterations: int,
     modes_to_optimize: list[int],
     zernike_mode_names: list[str],
-    save_dir_path: Path = None,
+    save_dir_path: Path | None = None,
     show_fig: bool | None = False,
 ) -> None:
     """Plot the metric magnitude throughout optimization.
@@ -1537,9 +1603,13 @@ def plot_metric_progress_depr(
     Parameters
     ----------
     all_metrics : NDArray
-    num_iterations : float
-    modes_to_optimize : List[int]
-    zernike_mode_names : List[str]
+        Measured metrics in acquisition order.
+    num_iterations : int
+        Number of optimization passes.
+    modes_to_optimize : list[int]
+        Mirror mode indices represented by the measurements.
+    zernike_mode_names : list[str]
+        Display labels for the mirror modes.
     save_dir_path : Path, optional
         Path to save figure, by default None
     show_fig : Optional[bool], optional
@@ -1552,14 +1622,16 @@ def plot_metric_progress_depr(
 
         matplotlib.use("Agg")
 
-    plt.rcParams.update({
-        "font.size": 14,  # base font size
-        "axes.titlesize": 18,  # title size
-        "axes.labelsize": 15,  # x/y label size
-        "xtick.labelsize": 15,  # x-tick label size
-        "ytick.labelsize": 15,  # y-tick label size
-        "legend.fontsize": 14,  # legend size
-    })
+    plt.rcParams.update(
+        {
+            "font.size": 14,  # base font size
+            "axes.titlesize": 18,  # title size
+            "axes.labelsize": 15,  # x/y label size
+            "xtick.labelsize": 15,  # x-tick label size
+            "ytick.labelsize": 15,  # y-tick label size
+            "legend.fontsize": 14,  # legend size
+        }
+    )
     num_modes = len(modes_to_optimize)
     samples_per_mode = np.ceil(
         (len(all_metrics) - 1) // num_iterations / len(modes_to_optimize)
@@ -1614,7 +1686,7 @@ def plot_metric_progress(
     zernike_mode_names: list[str],
     display_optimal: bool = True,
     display_zero: bool = True,
-    save_dir_path: Path = None,
+    save_dir_path: Path | None = None,
     show_fig: bool | None = False,
 ) -> None:
     """Plot the metric magnitude throughout optimization.
@@ -1641,14 +1713,16 @@ def plot_metric_progress(
 
         matplotlib.use("Agg")
 
-    plt.rcParams.update({
-        "font.size": 14,  # base font size
-        "axes.titlesize": 18,  # title size
-        "axes.labelsize": 15,  # x/y label size
-        "xtick.labelsize": 15,  # x-tick label size
-        "ytick.labelsize": 15,  # y-tick label size
-        "legend.fontsize": 14,  # legend size
-    })
+    plt.rcParams.update(
+        {
+            "font.size": 14,  # base font size
+            "axes.titlesize": 18,  # title size
+            "axes.labelsize": 15,  # x/y label size
+            "xtick.labelsize": 15,  # x-tick label size
+            "ytick.labelsize": 15,  # y-tick label size
+            "legend.fontsize": 14,  # legend size
+        }
+    )
     metadata = ao_results["metadata"]
     num_mode_samples = int(metadata["num_mode_samples"])
     num_iterations = int(metadata["num_iterations"])
@@ -1718,7 +1792,9 @@ def plot_metric_progress(
         plt.close(fig)
 
 
-def plot_phase(phase: dict, save_dir_path: Path = None, show_fig: bool = False) -> None:
+def plot_phase(
+    phase: dict, save_dir_path: Path | None = None, show_fig: bool = False
+) -> None:
     """Plot the 2d Phase for a given set of modal coeffs.
 
     Parameters
@@ -1736,14 +1812,16 @@ def plot_phase(phase: dict, save_dir_path: Path = None, show_fig: bool = False) 
     if not show_fig:
         matplotlib.use("Agg")
     # --- Set rcParams (this affects all plots until you change/reset it) ---
-    plt.rcParams.update({
-        "font.size": 14,  # base font size
-        "axes.titlesize": 18,  # title size
-        "axes.labelsize": 16,  # x/y label size
-        "xtick.labelsize": 14,  # x-tick label size
-        "ytick.labelsize": 14,  # y-tick label size
-        "legend.fontsize": 14,  # legend size
-    })
+    plt.rcParams.update(
+        {
+            "font.size": 14,  # base font size
+            "axes.titlesize": 18,  # title size
+            "axes.labelsize": 16,  # x/y label size
+            "xtick.labelsize": 14,  # x-tick label size
+            "ytick.labelsize": 14,  # y-tick label size
+            "legend.fontsize": 14,  # legend size
+        }
+    )
     # Create the plot
     fig, ax = plt.subplots(figsize=(10, 6))
     vrange = np.max([np.abs(phase["min"]), np.abs(phase["max"])])
@@ -1761,8 +1839,12 @@ def plot_phase(phase: dict, save_dir_path: Path = None, show_fig: bool = False) 
 
 
 def plot_2d_localization_fit_summary(
-    fit_results, img, coords_2d, save_dir_path: Path = None, showfig: bool = False
-):
+    fit_results: dict[str, Any],
+    img: np.ndarray,
+    coords_2d: tuple[np.ndarray, ...],
+    save_dir_path: Path | None = None,
+    showfig: bool = False,
+) -> None:
     """Generate a figure showing the localization an fit results.
 
     Parameters
@@ -1897,7 +1979,7 @@ def plot_2d_localization_fit_summary(
 
 def get_image_center(image: NDArray, threshold: float) -> tuple[int, int]:
     """
-    Calculate the center of an image using a thresh-holded binary mask.
+    Calculate the center of an image using a thresh-held binary mask.
 
     Parameters
     ----------
@@ -2220,7 +2302,9 @@ def quadratic_fit(x: NDArray, y: NDArray) -> Sequence[float]:
     return coeffs
 
 
-def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
+def normalize_roi(
+    roi: np.ndarray, bg_percentile: float = 25.0, debug_mode: bool = False
+) -> np.ndarray:
     """Normalize an image region to the interval from zero to one.
 
     Scale values between the configured low percentile and the maximum.
@@ -2262,14 +2346,14 @@ def normalize_roi(roi, bg_percentile=25.0, debug_mode=False):
 
 
 def localize_2d_img(
-    img,
-    dxy,
-    localize_psf_filters=None,
-    save_dir_path: Path = None,
+    img: np.ndarray,
+    dxy: float,
+    localize_psf_filters: dict | None = None,
+    save_dir_path: Path | None = None,
     label: str = "",
     showfig: bool = False,
     verbose: bool = True,
-):
+) -> dict:
     """TODO.
 
     Parameters
@@ -2311,7 +2395,7 @@ def localize_2d_img(
 
     # Define fitting model and coordinates
     model = gaussian3d_psf_model()
-    coords_3d = get_coords((1,) + img.shape, (1, dxy, dxy))
+    coords_3d = get_coords((1, *img.shape), (1, dxy, dxy))
     coords_2d = get_coords(img.shape, (dxy, dxy))
 
     # Set fit bounds and parameter filters
@@ -2364,10 +2448,10 @@ def localize_2d_img(
 
 def metric_brightness(
     image: NDArray,
-    crop_size: int = None,
+    crop_size: int | None = None,
     threshold: float | None = 100,
     percentile: float | None = None,
-    image_center: int = None,
+    image_center: int | None = None,
     return_image: bool | None = False,
 ) -> float:
     """Compute weighted metric for 2D Gaussian.
@@ -2418,9 +2502,9 @@ def metric_brightness(
 def metric_shannon_dct(
     image: NDArray,
     psf_radius_px: float = 3,
-    crop_size: int = None,
+    crop_size: int | None = None,
     threshold: float | None = 300,
-    image_center: int = None,
+    image_center: int | None = None,
     return_image: bool | None = False,
 ) -> float:
     """Compute the Shannon entropy metric using DCT.
@@ -2601,7 +2685,7 @@ def metric_gauss2d(
     float or tuple[float, NDArray]
         Weighted amplitude/width/symmetry score (NaN for invalid fits),
         optionally with the normalized crop.
-    """  # noqa: DOC501 - validation exceptions are caught and logged below.
+    """
     image = np.asarray(image, dtype=float)
     weighted_metric = np.nan
     try:
@@ -2623,7 +2707,7 @@ def metric_gauss2d(
             raise ValueError("Invalid initial spot center or center bounding box")
         origin_x = origin_y = 0
         if crop_size:
-            crop_center = (int(round(center[0])), int(round(center[1])))
+            crop_center = (round(center[0]), round(center[1]))
             origin_x = max(crop_center[0] - crop_size, 0)
             origin_y = max(crop_center[1] - crop_size, 0)
             image = get_cropped_image(image, crop_size, crop_center)
@@ -2742,12 +2826,12 @@ def run_ao_grid_mapping(
     previous_grid_reference_state: str | None = None,
     num_tile_positions: int = 1,
     num_scan_positions: int = 1,
-    save_dir_path: Path = None,
+    save_dir_path: Path | None = None,
     verbose: bool = True,
     correction_history: AOCorrectionHistory | None = None,
     time_idx: int = 0,
     z_idx: int = 0,
-    stop_requested=None,
+    stop_requested: Callable[[], bool] | None = None,
 ) -> AOGridResult | None:
     """Run adaptive optics on a grid and interpolate across stage positions.
 
@@ -2780,6 +2864,9 @@ def run_ao_grid_mapping(
         Logical acquisition timepoint.
     z_idx : int
         Logical acquisition depth layer.
+
+    stop_requested : callable or None
+        Cooperative cancellation predicate checked between grid positions.
 
     Returns
     -------
@@ -2858,14 +2945,18 @@ def run_ao_grid_mapping(
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
-    ao_grid_wfc_coeffs = np.zeros((
-        num_ao_pos,
-        AOMirror_local.positions_modal_array.shape[1],
-    ))
-    ao_grid_wfc_positions = np.zeros((
-        num_ao_pos,
-        AOMirror_local.positions_voltage_array.shape[1],
-    ))
+    ao_grid_wfc_coeffs = np.zeros(
+        (
+            num_ao_pos,
+            AOMirror_local.positions_modal_array.shape[1],
+        )
+    )
+    ao_grid_wfc_positions = np.zeros(
+        (
+            num_ao_pos,
+            AOMirror_local.positions_voltage_array.shape[1],
+        )
+    )
     if previous_grid_coefficients is not None:
         previous_grid_coefficients = np.asarray(previous_grid_coefficients)
         if previous_grid_coefficients.shape != ao_grid_wfc_coeffs.shape:
@@ -2885,7 +2976,9 @@ def run_ao_grid_mapping(
         grid_reference_state = "zeros_voltage"
         gui_start_coefficients = np.zeros_like(AOMirror_local.current_coeffs)
     elif "optimized" in mirror_state:
-        grid_reference_state = getattr(AOMirror_local, "optimized_reference_state", "system_flat")
+        grid_reference_state = getattr(
+            AOMirror_local, "optimized_reference_state", "system_flat"
+        )
         gui_start_coefficients = AOMirror_local.optimized_modal_coeffs.copy()
     elif "system" in mirror_state:
         grid_reference_state = "system_flat"
@@ -3024,8 +3117,7 @@ def run_ao_grid_mapping(
         if DEBUGGING:
             print(
                 f"\n\n ++++ AO grid position: {ao_stage_positions[ao_grid_idx]} ++++",
-                f"\n ++++ Exp. stage position: "
-                f"{stage_positions[local_pos_idx]} ++++",
+                f"\n ++++ Exp. stage position: {stage_positions[local_pos_idx]} ++++",
             )
     AOMirror_local.positions_modal_array = position_wfc_coeffs
     AOMirror_local.positions_voltage_array = position_wfc_positions
@@ -3040,7 +3132,7 @@ def run_ao_grid_mapping(
 
 
 # -------------------------------------------------#
-# Helper functions for saving optmization results
+# Helper functions for saving optimization results
 # -------------------------------------------------#
 
 
@@ -3070,7 +3162,7 @@ def save_optimization_results(
     all_metrics : NDArray
         all metrics measured during optimization
     optimal_images : NDArray
-        optimal images per interation, including the starting image
+        optimal images per iteration, including the starting image
     optimal_metrics : NDArray
         optmial metrics per iteration, including the starting metric
     optimal_coeffs : NDArray
@@ -3114,7 +3206,7 @@ def save_optimization_results(
         root.create_array("o3_measured_stacks", data=o3_stacks)
 
 
-def load_optimization_results(results_path: Path):
+def load_optimization_results(results_path: Path) -> dict:
     """Load optimization results from a Zarr store.
 
     Parameters

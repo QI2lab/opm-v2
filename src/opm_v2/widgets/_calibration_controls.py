@@ -11,7 +11,7 @@ from qtpy.QtWidgets import QMenu, QToolButton
 from vispy.scene.visuals import Markers
 
 if TYPE_CHECKING:
-    from ._stage_explorer import StageExplorer
+    from opm_v2.widgets._stage_explorer import StageExplorer
 
 
 class StageExplorerCalibrationControls(QObject):

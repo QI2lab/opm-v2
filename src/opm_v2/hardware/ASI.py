@@ -1,13 +1,21 @@
 #!/usr/bin/python
 """Provide low-level ASI Tiger stage and PLC hardware commands."""
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from pymmcore_plus import CMMCorePlus
+
+
 # ----------------------------------------------------------------------------------------
 # Import
 # ----------------------------------------------------------------------------------------
 import time
 
 
-def check_if_busy(mmcore_stage):
+def check_if_busy(mmcore_stage: CMMCorePlus) -> None:
     """Wait until the ASI Tiger controller is no longer busy.
 
     Parameters
@@ -30,7 +38,9 @@ def check_if_busy(mmcore_stage):
     mmcore_stage.setProperty("TigerCommHub", "OnlySendSerialCommandOnChange", "Yes")
 
 
-def set_joystick_mode(mmcore_stage, x_stage_name, z_stage_name, joystick_mode):
+def set_joystick_mode(
+    mmcore_stage: CMMCorePlus, x_stage_name: str, z_stage_name: str, joystick_mode: bool
+) -> None:
     """Enable or disable ASI Tiger joystick input.
 
     Parameters
@@ -52,7 +62,7 @@ def set_joystick_mode(mmcore_stage, x_stage_name, z_stage_name, joystick_mode):
         mmcore_stage.setProperty(z_stage_name, "JoystickInput", "0 - none")
 
 
-def set_axis_speed(mmcore_stage, axis, axis_speed):
+def set_axis_speed(mmcore_stage: CMMCorePlus, axis: str, axis_speed: float) -> None:
     """Change ASI Tiger X- or Y-axis movement speed.
 
     Parameters
@@ -72,7 +82,7 @@ def set_axis_speed(mmcore_stage, axis, axis_speed):
         mmcore_stage.setProperty("TigerCommHub", "SerialCommand", command)
 
 
-def set_xy_position(mmcore_stage, stage_x, stage_y):
+def set_xy_position(mmcore_stage: CMMCorePlus, stage_x: float, stage_y: float) -> None:
     """Set the ASI Tiger XY-stage position.
 
     Parameters
@@ -88,7 +98,7 @@ def set_xy_position(mmcore_stage, stage_x, stage_y):
     mmcore_stage.waitForDevice(mmcore_stage.getXYStageDevice())
 
 
-def set_z_position(mmcore_stage, stage_z):
+def set_z_position(mmcore_stage: CMMCorePlus, stage_z: float) -> None:
     """Set the ASI Tiger Z-stage position.
 
     Parameters
@@ -102,7 +112,7 @@ def set_z_position(mmcore_stage, stage_z):
     mmcore_stage.waitForDevice(mmcore_stage.getFocusDevice())
 
 
-def set_1d_stage_scan(mmcore_stage):
+def set_1d_stage_scan(mmcore_stage: CMMCorePlus) -> None:
     """Configure a constant-speed X-axis stage scan.
 
     Parameters
@@ -114,7 +124,9 @@ def set_1d_stage_scan(mmcore_stage):
     mmcore_stage.setProperty("TigerCommHub", "SerialCommand", command)
 
 
-def set_1d_stage_scan_area(mmcore_stage, scan_axis_start_mm, scan_axis_end_mm):
+def set_1d_stage_scan_area(
+    mmcore_stage: CMMCorePlus, scan_axis_start_mm: float, scan_axis_end_mm: float
+) -> None:
     """Configure X-axis stage-scan limits.
 
     Parameters
@@ -134,7 +146,7 @@ def set_1d_stage_scan_area(mmcore_stage, scan_axis_start_mm, scan_axis_end_mm):
     mmcore_stage.setProperty("TigerCommHub", "SerialCommand", command)
 
 
-def setup_start_trigger_output(mmcore_stage):
+def setup_start_trigger_output(mmcore_stage: CMMCorePlus) -> None:
     """Configure the ASI PLC stage-sync output.
 
     Parameters
@@ -152,7 +164,7 @@ def setup_start_trigger_output(mmcore_stage):
     mmcore_stage.setProperty(plcName, propCellConfig, addrStageSync)
 
 
-def start_1d_stage_scan(mmcore_stage):
+def start_1d_stage_scan(mmcore_stage: CMMCorePlus) -> None:
     """Start the configured constant-speed stage scan.
 
     Call this after the camera acquisition sequence is ready.
@@ -166,7 +178,7 @@ def start_1d_stage_scan(mmcore_stage):
     mmcore_stage.setProperty("TigerCommHub", "SerialCommand", command)
 
 
-def get_xyz_position(mmcore_stage):
+def get_xyz_position(mmcore_stage: CMMCorePlus) -> tuple[float, float, float]:
     """Read the ASI Tiger XYZ-stage position.
 
     Parameters

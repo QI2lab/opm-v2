@@ -10,7 +10,9 @@ from pymmcore_gui._qt.QtAds import CDockWidget
 from pymmcore_gui._qt.QtCore import QObject
 
 if TYPE_CHECKING:
+    from ndv import ArrayViewer
     from pymmcore_gui import MicroManagerGUI
+    from useq import MDASequence
 
 
 @dataclass
@@ -42,11 +44,11 @@ class AcquisitionViewerCleanup(QObject):
         for uid, viewer in self._manager._seq_viewers.items():
             self._track_viewer(viewer, uid)
 
-    def _on_viewer_created(self, viewer, sequence) -> None:
+    def _on_viewer_created(self, viewer: ArrayViewer, sequence: MDASequence) -> None:
         """Configure a newly created acquisition dock after upstream slots run."""
         self._track_viewer(viewer, str(sequence.uid))
 
-    def _track_viewer(self, viewer, sequence_uid: str) -> None:
+    def _track_viewer(self, viewer: ArrayViewer, sequence_uid: str) -> None:
         """Keep the viewer's resources tied to its acquisition dock."""
         dock = next(
             (

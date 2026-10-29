@@ -36,26 +36,26 @@ from pymmcore_widgets.control._stage_explorer._stage_explorer import (
 from pymmcore_widgets.control._stage_explorer._stage_explorer import (
     StageExplorerToolbar as BaseStageExplorerToolbar,
 )
-from pymmcore_widgets.control._stage_explorer._stage_position_marker import (
-    StagePositionMarker,
-)
 from qtpy.QtCore import Slot
 from superqt import QIconifyIcon
 from useq import OrderMode
 
-from ._stage_viewer import StageViewer
+from opm_v2.widgets._stage_viewer import StageViewer
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Hashable, Iterable
 
     from pymmcore_gui._qt.QtGui import QCloseEvent
+    from pymmcore_widgets.control._stage_explorer._stage_position_marker import (
+        StagePositionMarker,
+    )
     from vispy.app.canvas import MouseEvent
 
 
 class StageExplorerToolbar(BaseStageExplorerToolbar):
     """Add OPM's blend control to the upstream toolbar."""
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.blend_action = QAction(
             QIconifyIcon("mdi:image-filter-center-focus-weak", color=GRAY),
@@ -77,7 +77,7 @@ class StageExplorer(BaseStageExplorer):
 
     def __init__(
         self, parent: QWidget | None = None, mmcore: CMMCorePlus | None = None
-    ):
+    ) -> None:
         # Upstream construction fixes the viewer and toolbar types. Initialize
         # Qt here to supply OPM's subclasses while inheriting upstream behavior.
         QWidget.__init__(self, parent)

@@ -190,9 +190,7 @@ def test_stage_scan_applies_exported_plane_at_each_segment_and_tile(
         channel_powers=(10.0,),
         channel_exposures_ms=(10.0,),
         scan_axis_step_um=2.0,
-        updates={
-            "acq_config": {"stage_scan": {"max_stage_scan_range_um": 100.0}}
-        },
+        updates={"acq_config": {"stage_scan": {"max_stage_scan_range_um": 100.0}}},
     )
     plane = CoverslipPlane(100.0, 200.0, 7.0, 0.01, -0.02)
     region = AbsolutePosition(
@@ -221,9 +219,7 @@ def test_stage_scan_applies_exported_plane_at_each_segment_and_tile(
         for event in events
         if getattr(event.action, "name", None) == ACTION_STAGE_MOVE
     ]
-    unique_moves = {
-        (move["x_pos"], move["y_pos"], move["z_pos"]) for move in moves
-    }
+    unique_moves = {(move["x_pos"], move["y_pos"], move["z_pos"]) for move in moves}
 
     assert len({move[0] for move in unique_moves}) > 1
     assert len({move[1] for move in unique_moves}) > 1
@@ -303,10 +299,12 @@ def test_stage_scan_events_preserve_requested_reconstructed_overlap(
         * demo_core.getPixelSizeUm()
         * np.cos(np.deg2rad(config["OPM"]["angle_deg"]))
     )
-    raw_overlaps_um = np.asarray([
-        end - next_start
-        for end, next_start in zip(ends_um[:-1], starts_um[1:])
-    ])
+    raw_overlaps_um = np.asarray(
+        [
+            end - next_start
+            for end, next_start in zip(ends_um[:-1], starts_um[1:], strict=False)
+        ]
+    )
     assert raw_overlaps_um == pytest.approx(
         np.full(len(raw_overlaps_um), requested_overlap_um + camera_scan_footprint_um),
         abs=0.002,

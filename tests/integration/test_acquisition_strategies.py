@@ -70,9 +70,7 @@ def _matching_region(
             and y_min - 1e-6 <= y_um <= y_max + 1e-6
         ):
             return region_index, bounds, plane
-    raise AssertionError(
-        f"Position ({x_um}, {y_um}) was outside every exported ROI"
-    )
+    raise AssertionError(f"Position ({x_um}, {y_um}) was outside every exported ROI")
 
 
 def test_every_mode_spatial_plan_combination(
@@ -102,11 +100,7 @@ def test_every_mode_spatial_plan_combination(
         camera_shape=(64, 32),
         scan_range_um=4.0,
         scan_axis_step_um=2.0,
-        updates={
-            "acq_config": {
-                "stage_scan": {"max_stage_scan_range_um": 100.0}
-            }
-        },
+        updates={"acq_config": {"stage_scan": {"max_stage_scan_range_um": 100.0}}},
     )
     output = workspace_tmp_path / f"{mode}-{strategy.name}.ome.zarr"
     unsupported_expectation = _unsupported_expectation(mode, strategy.name)
@@ -127,8 +121,9 @@ def test_every_mode_spatial_plan_combination(
             range(handler.index_sizes["p"])
         )
         spatial_summary = handler.acquisition_metadata["resolved_spatial_plan"]
-        assert spatial_summary["resolved_stage_positions"]["count"] == (
-            handler.index_sizes["p"]
+        assert (
+            spatial_summary["resolved_stage_positions"]["count"]
+            == (handler.index_sizes["p"])
         )
         if strategy.kind == "stage_explorer":
             expected_source = (

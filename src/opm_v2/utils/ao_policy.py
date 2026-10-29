@@ -1,9 +1,18 @@
 """Choose AO initial conditions within one acquisition."""
 
-from collections.abc import Hashable
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Hashable
+
+    from numpy.typing import NDArray
+
+    from opm_v2.hardware.AOMirror import AOMirror
+
 
 import numpy as np
-from numpy.typing import NDArray
 
 USE_START = "use starting correction"
 PREVIOUS_AO = "previous AO result"
@@ -46,7 +55,7 @@ def correction_settings(config: dict) -> dict[str, str]:
 class AOCorrectionHistory:
     """Own a fixed starting correction and completed results for one acquisition."""
 
-    def __init__(self, mirror, config: dict) -> None:
+    def __init__(self, mirror: AOMirror, config: dict) -> None:
         self.settings = correction_settings(config)
         starting = self.settings["starting_correction"]
         self.reference_state = {

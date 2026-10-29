@@ -20,7 +20,7 @@ The goal is to utilize [Pymmcore-plus](https://github.com/pymmcore-plus/pymmcore
 - Fluidics program compatible
 - Remote autofocus
 - Configurator for setting custom acquisition settings
-- Custom multi-dimensional acquisition event strutures
+- Custom multi-dimensional acquisition event structures
 - OME-Zarr data handler using *ome-writers* with the TensorStore backend
 
 ## Installation
@@ -75,6 +75,20 @@ Install the official Micro-Manager test adapters and run the behavior suite:
 uv run mmcore install --test-adapters --plain-output
 uv run pytest
 ```
+
+## Development checks
+
+Install the development tools and enable the local commit hooks:
+
+```bash
+uv sync --extra test --group lint --locked
+uv run --group lint prek install
+uv run --group lint prek run --all-files
+```
+
+The Ruff rules and hook versions follow `QI2lab/merfish3d-analysis`. GitHub Actions
+runs the same hooks on pushes and pull requests, plus the complete test suite on
+Linux and Windows with Python 3.12 and 3.13. Tests use simulated hardware.
 
 ## AO correction initialization
 

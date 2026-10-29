@@ -8,13 +8,17 @@ import pytest
 from opm_v2._update_config_widget import OPMSettingsV2
 
 
-@pytest.mark.parametrize("mode,pair", [
-    ("simultaneous 488/637", (1, 3)),
-    ("simultaneous 561/637", (2, 3)),
-    ("simultaneous 488/561", (1, 2)),
-])
+@pytest.mark.parametrize(
+    "mode,pair",
+    [
+        ("simultaneous 488/637", (1, 3)),
+        ("simultaneous 561/637", (2, 3)),
+        ("simultaneous 488/561", (1, 2)),
+    ],
+)
 def test_simultaneous_selector_preserves_powers_and_exposures(
-    mode, pair,
+    mode,
+    pair,
     qtbot,
     workspace_tmp_path,
     opm_config_factory,
@@ -78,7 +82,9 @@ def test_combined_channel_preset_is_valid_and_does_not_set_powers(demo_core, nam
     assert demo_core.getProperty("Laser", "Label") == name
 
 
-def test_legacy_simultaneous_setting_migrates(qtbot, workspace_tmp_path, opm_config_factory):
+def test_legacy_simultaneous_setting_migrates(
+    qtbot, workspace_tmp_path, opm_config_factory
+):
     """Preserve the original pair when opening a legacy GUI configuration."""
     config = opm_config_factory(mode="mirror")
     config["acq_config"]["DAQ"]["laser_mode"] = "simultaneous"
@@ -86,4 +92,7 @@ def test_legacy_simultaneous_setting_migrates(qtbot, workspace_tmp_path, opm_con
     widget = OPMSettingsV2(path)
     qtbot.addWidget(widget)
     assert widget.cmbx_laser_mode.currentText() == "simultaneous 488/637"
-    assert json.loads(path.read_text())["acq_config"]["DAQ"]["laser_mode"] == "simultaneous 488/637"
+    assert (
+        json.loads(path.read_text())["acq_config"]["DAQ"]["laser_mode"]
+        == "simultaneous 488/637"
+    )

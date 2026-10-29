@@ -35,17 +35,23 @@ def test_alignment_refocus_event_reaches_engine(opm_config_factory):
     """Forward the alignment-only interval and configured O3 device through dispatch."""
     config = opm_config_factory(mode="2d")
     config["acq_config"]["AO"].update(
-        ao_mode="optimize now", daq_mode="2d", metric="gauss_2d",
+        ao_mode="optimize now",
+        daq_mode="2d",
+        metric="gauss_2d",
         alignment_refocus_every_n_modes=3,
     )
     config["O2O3-autofocus"]["O3_stage_name"] = "Alignment O3"
     engine = object.__new__(OPMEngineV2)
     engine.AOMirror = _mirror()
     engine.simulate_hardware = False
-    with patch("opm_v2.engine.opm_engine.run_ao_optimization", return_value=True) as optimize:
+    with patch(
+        "opm_v2.engine.opm_engine.run_ao_optimization", return_value=True
+    ) as optimize:
         engine.exec_event(create_ao_optimize_event(config))
     assert optimize.call_args.kwargs["alignment_refocus_every_n_modes"] == 3
-    assert optimize.call_args.kwargs["o3_stack_settings"]["stage_name"] == "Alignment O3"
+    assert (
+        optimize.call_args.kwargs["o3_stack_settings"]["stage_name"] == "Alignment O3"
+    )
 
 
 def test_logical_position_annotations_follow_depth_shift(opm_config_factory):

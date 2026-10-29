@@ -135,7 +135,9 @@ def test_missing_beam_is_invalid_without_losing_the_measured_stack():
     """Keep the data and explanation for an invalid measurement."""
     stage = MagicMock()
     stage.getPosition.return_value = 10.0
-    stage.setPosition.side_effect = lambda value: setattr(stage.getPosition, "return_value", value)
+    stage.setPosition.side_effect = lambda value: setattr(
+        stage.getPosition, "return_value", value
+    )
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     metric = O3StackMetric()
@@ -160,13 +162,17 @@ def test_failed_return_is_retried_or_aborts(failed_returns):
                 return
         position[0] = value
 
-    stage = SimpleNamespace(getPosition=lambda: position[0], setPosition=move, wait=lambda: None)
+    stage = SimpleNamespace(
+        getPosition=lambda: position[0], setPosition=move, wait=lambda: None
+    )
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     sampler = O3StackMetric()
     snap = MagicMock(side_effect=list(synthetic_stack()))
     if failed_returns == 2:
-        with pytest.raises(RuntimeError, match="O3 RETURN FAILED.*read back 12.000000"):
+        with pytest.raises(
+            RuntimeError, match=r"O3 RETURN FAILED.*read back 12\.000000"
+        ):
             sampler.acquire(mmc, snap)
         assert not sampler.diagnostics
     else:
@@ -180,7 +186,9 @@ def test_return_target_is_fixed_across_stacks():
     """Do not adopt an externally displaced position as the new return target."""
     stage = MagicMock()
     stage.getPosition.return_value = 10.0
-    stage.setPosition.side_effect = lambda value: setattr(stage.getPosition, "return_value", value)
+    stage.setPosition.side_effect = lambda value: setattr(
+        stage.getPosition, "return_value", value
+    )
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     sampler = O3StackMetric()
@@ -198,7 +206,9 @@ def test_failed_scan_move_returns_home_before_aborting():
     mmc = MagicMock()
     mmc.getDeviceObject.return_value = stage
     snap = MagicMock()
-    with pytest.raises(RuntimeError, match="requested 8.000000.*read back 10.000000"):
+    with pytest.raises(
+        RuntimeError, match=r"requested 8\.000000.*read back 10\.000000"
+    ):
         O3StackMetric().acquire(mmc, snap)
     snap.assert_not_called()
     stage.setPosition.assert_called_with(10.0)
