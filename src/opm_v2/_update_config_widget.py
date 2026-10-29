@@ -1423,7 +1423,13 @@ class OPMSettingsV2(QWidget):
             self.settings_changed.emit(self.value())
 
     def acquisition_snapshot(self) -> dict:
-        """Commit pending numeric edits before constructing acquisition events."""
+        """Commit pending numeric edits before constructing acquisition events.
+
+        Returns
+        -------
+        dict
+            Current configuration after pending numeric edits have been committed.
+        """
         for widget in self.findChildren(QDoubleSpinBox) + self.findChildren(QSpinBox):
             widget.interpretText()
         self.update_config()

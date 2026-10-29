@@ -469,10 +469,10 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
         message.clickedButton.return_value = replace_button
 
         with patch(
-            "pymmcore_gui.widgets._stage_explorer.QMessageBox",
+            "opm_v2.widgets._stage_explorer.QMessageBox",
             return_value=message,
         ):
-            explorer._on_send_to_mda()
+            explorer._send_to_mda_action.trigger()
 
         assert mda_widget.tab_wdg.isChecked(mda_widget.stage_positions)
         assert not mda_widget.tab_wdg.isChecked(mda_widget.grid_plan)
@@ -544,10 +544,10 @@ def test_stage_explorer_export_activates_unambiguous_mda_positions(
             cancel_button,
         ]
         with patch(
-            "pymmcore_gui.widgets._stage_explorer.QMessageBox",
+            "opm_v2.widgets._stage_explorer.QMessageBox",
             return_value=message,
         ):
-            explorer._on_send_to_mda()
+            explorer._send_to_mda_action.trigger()
 
         literal = mda_widget.value().stage_positions[0]
         assert literal.sequence is None
@@ -853,6 +853,8 @@ def test_stage_explorer_speed_property_failure_does_not_disable_interaction() ->
     stage_explorer = SimpleNamespace(
         window=MagicMock(return_value=SimpleNamespace(opm_controller=controller)),
         sendToMDARequested=MagicMock(),
+        _send_to_mda_action=MagicMock(),
+        _on_send_to_mda=MagicMock(),
         set_scan_handler=MagicMock(),
         set_snap_lifecycle=MagicMock(),
         set_roi_position_transform=MagicMock(),

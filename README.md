@@ -28,8 +28,8 @@ The goal is to utilize [Pymmcore-plus](https://github.com/pymmcore-plus/pymmcore
 Clone the repository:
 
 ```bash
-git clone https://github.com/QI2lab/opm-v2.git
-cd opm-v2
+git clone https://github.com/QI2lab/opm_v2.git
+cd opm_v2
 ```
 Install the locked Python environment with [uv](https://docs.astral.sh/uv/):
 
@@ -39,6 +39,11 @@ uv sync --extra test --locked
 
 `pymmcore` is intentionally not a direct project dependency. The pinned GitHub
 revision of `pymmcore-plus` installs the compatible prebuilt `pymmcore` wheel.
+The locked environment's GUI and widget dependencies also use pinned, unmodified
+upstream GitHub revisions. No sibling repositories, local editable dependencies, or patched
+dependency installations are needed. OPM's Stage Explorer and viewer lifecycle
+extensions live in this package. The versioned `uv.lock` records the environment
+used by the installation command and CI.
 
 Install Micro-Manager and its device adapters through the pymmcore-plus CLI:
 

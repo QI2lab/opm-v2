@@ -3,7 +3,7 @@
         "mode": "projection",
         "active_channels": [0, 1],
         "channel_powers": [11.0, 22.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -39,7 +39,7 @@
         "mode": "timelapse",
         "active_channels": [2, 3],
         "channel_powers": [33.0, 44.0],
-        "channel_exposures_ms": [6.0, 8.0],
+        "channel_exposures_ms": [8.0, 8.0],
         "camera_shape": [64, 32],
         "scan_range_um": 4.0,
         "scan_axis_step_um": 2.0,
@@ -58,7 +58,7 @@
         "mode": "projection",
         "active_channels": [2, 4],
         "channel_powers": [33.0, 55.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -96,7 +96,7 @@
         "mode": "projection",
         "active_channels": [0, 4],
         "channel_powers": [11.0, 55.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -114,7 +114,7 @@
         "mode": "mirror",
         "active_channels": [0, 3],
         "channel_powers": [11.0, 44.0],
-        "channel_exposures_ms": [6.0, 8.0],
+        "channel_exposures_ms": [8.0, 8.0],
         "camera_shape": [64, 32],
         "scan_range_um": 4.0,
         "scan_axis_step_um": 2.0,
@@ -196,7 +196,7 @@
             "c"
         ],
         "expected_daq_mode": "projection",
-        "laser_mode": "simultaneous"
+        "laser_mode": "simultaneous 488/637"
     },
     "mirror_simultaneous": {
         "mode": "mirror",
@@ -248,7 +248,7 @@
             "c"
         ],
         "expected_daq_mode": "mirror",
-        "laser_mode": "simultaneous"
+        "laser_mode": "simultaneous 488/637"
     },
     "stage_simultaneous": {
         "mode": "stage",
@@ -302,7 +302,7 @@
             "c"
         ],
         "expected_daq_mode": "stage",
-        "laser_mode": "simultaneous"
+        "laser_mode": "simultaneous 488/637"
     },
     "timelapse_simultaneous": {
         "mode": "timelapse",
@@ -355,6 +355,6 @@
             "c"
         ],
         "expected_daq_mode": "2d",
-        "laser_mode": "simultaneous"
+        "laser_mode": "simultaneous 488/637"
     }
 }

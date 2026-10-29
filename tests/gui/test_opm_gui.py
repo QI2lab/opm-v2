@@ -22,6 +22,7 @@ from opm_v2.engine.opm_custom_events import (
     ACTION_O2O3_AUTOFOCUS,
 )
 from opm_v2.engine.opm_engine import OPMEngineV2
+from opm_v2.utils.laser_modes import is_simultaneous
 
 
 @pytest.mark.parametrize("write_succeeds", [True, False])
@@ -627,7 +628,7 @@ def run_custom_gui_selection_reaches_engine_and_tensorstore(
     scenario = gui_integration_scenario
     mode = scenario["mode"]
     ao_options = scenario["ao_options"]
-    simultaneous = scenario.get("laser_mode") == "simultaneous"
+    simultaneous = is_simultaneous(scenario.get("laser_mode"))
     config = opm_config_from_scenario(scenario)
     config_path = opm_config_factory.write(
         config, workspace_tmp_path / f"{scenario['name']}_gui.json"

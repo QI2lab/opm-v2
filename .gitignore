@@ -89,7 +89,6 @@ celerybeat-schedule
 # virtualenv
 .venv
 .uv-cache/
-uv.lock
 .pytest_tmp/
 pytest_workspace/
 venv/

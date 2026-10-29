@@ -19,15 +19,16 @@ from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QEvent, QObject, Qt, QTimer
 from pymmcore_gui._qt.QtWidgets import (
     QApplication,
+    QHeaderView,
     QMessageBox,
     QTabBar,
 )
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
 from pymmcore_plus import CMMCorePlus
 from pymmcore_plus.core import DeviceProperty
-from pymmcore_widgets import StageExplorerCalibrationControls
 
 from opm_v2._update_config_widget import OPMSettingsV2
+from opm_v2._viewer_cleanup import install_acquisition_viewer_cleanup
 from opm_v2.engine.debug_printing import debug, info, warning
 from opm_v2.engine.opm_custom_events import STAGE_MOVE_SPEED_METADATA_KEY
 from opm_v2.engine.opm_engine import OPMEngineV2
@@ -46,6 +47,8 @@ from opm_v2.utils.coverslip import (
     fit_coverslip_plane,
 )
 from opm_v2.utils.laser_modes import COMBINED_CHANNELS
+from opm_v2.widgets._calibration_controls import StageExplorerCalibrationControls
+from opm_v2.widgets._stage_explorer import StageExplorer
 
 DEBUGGING = True
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
@@ -868,7 +871,12 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     stage_explorer.blending_enabled = True
     _install_stage_explorer_coverslip_controls(stage_explorer)
 
-    def _on_send_to_mda(_positions: list, _clear: bool) -> None:
+    def _on_send_to_mda(positions: list, clear: bool) -> None:
+        if clear:
+            mda_widget.stage_positions.setValue(positions)
+        else:
+            current = list(mda_widget.stage_positions.value() or [])
+            mda_widget.stage_positions.setValue(current + positions)
         # Exported positions own the spatial plan.  Leaving the global Grid tab
         # active would make useq clear X/Y and would cause the OPM builders to ignore
         # the exported regions.
@@ -900,6 +908,9 @@ def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
 def _ensure_opm_widget_registered() -> None:
     """Register the OPM settings widget with pymmcore-gui exactly once."""
     _install_safe_core_action_initializers()
+    WidgetActionInfo.for_key(WidgetAction.STAGE_EXPLORER).create_widget = (
+        _create_opm_stage_explorer
+    )
     try:
         WidgetActionInfo.for_key(OPM_WIDGET_KEY)
     except KeyError:
@@ -909,6 +920,19 @@ def _ensure_opm_widget_registered() -> None:
             create_widget=_create_opm_settings_widget,
             dock_area=DockWidgetArea.LeftDockWidgetArea,
         )
+
+
+def _create_opm_stage_explorer(parent) -> StageExplorer:
+    """Create OPM's explorer through the upstream widget registration API.
+
+    Returns
+    -------
+    StageExplorer
+        Instrument-specific explorer backed by unmodified upstream widgets.
+    """
+    window = parent if isinstance(parent, MicroManagerGUI) else parent.window()
+    core = window.mmcore if isinstance(window, MicroManagerGUI) else CMMCorePlus.instance()
+    return StageExplorer(parent=parent, mmcore=core)
 
 
 def enhance_main_window(main_window: MicroManagerGUI) -> OPMSettingsV2:
@@ -1157,6 +1181,10 @@ class OPMAppController:
         self.win.installEventFilter(self._window_close_filter)
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
+        header = self.mda_widget.stage_positions._table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+            header.setMinimumSectionSize(75)
         self.disable_native_mda_channels()
         self.configure_transposed_mda_grid_bounds()
 
@@ -1552,6 +1580,7 @@ class OPMAppController:
 
         viewers_manager = getattr(self.win, "_viewers_manager", None)
         if viewers_manager is not None:
+            install_acquisition_viewer_cleanup(self.win)
             viewers_manager.previewViewerCreated.connect(_configure_live_preview)
             _configure_live_preview(viewers_manager._current_image_preview)
 
