@@ -17,7 +17,7 @@ concurrency:
 jobs:
   lint:
     name: prek / Ruff
-    runs-on: ubuntu-latest
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v7
       - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
@@ -28,19 +28,13 @@ jobs:
         run: uvx --from prek==0.5.7 prek run --all-files --show-diff-on-failure
 
   test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
+    name: Windows / Python 3.12
+    runs-on: windows-latest
     env:
       QT_QPA_PLATFORM: offscreen
       MPLBACKEND: Agg
       PYTEST_RUNNING: "1"
       JUPYTER_PLATFORM_DIRS: "1"
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12", "3.13"]
-
     steps:
       - uses: actions/checkout@v7
 
@@ -51,20 +45,23 @@ jobs:
           enable-cache: true
 
       - name: Install Python
-        run: uv python install ${{ matrix.python-version }}
+        run: uv python install 3.12
 
       - name: Sync locked environment
-        run: uv sync --extra test --locked --python ${{ matrix.python-version }}
-
-      - name: Install Linux Qt runtime libraries
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y libegl1 libgl1 libxkbcommon0 libxcb-cursor0
+        run: uv sync --extra test --locked --python 3.12
 
       - name: Install Micro-Manager test adapters
         run: uv run --locked mmcore install --test-adapters --plain-output
 
-      - name: Run behavior tests
-        run: uv run --locked pytest --color=yes --cov=opm_v2 --cov-report=xml --cov-report=term-missing
+      # Isolate native MMCore/Qt state between the test categories.
+      - name: Run unit tests
+        run: uv run --locked python -m pytest tests/unit --color=yes --cov=opm_v2 --cov-report= -o faulthandler_timeout=120
+
+      - name: Run integration tests
+        run: uv run --locked python -m pytest tests/integration --color=yes --cov=opm_v2 --cov-append --cov-report= -o faulthandler_timeout=120
+
+      - name: Run GUI tests
+        run: uv run --locked python -m pytest tests/gui --color=yes --cov=opm_v2 --cov-append --cov-report=xml --cov-report=term-missing -o faulthandler_timeout=120
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7

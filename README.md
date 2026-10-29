@@ -88,7 +88,8 @@ uv run --group lint prek run --all-files
 
 The Ruff rules and hook versions follow `QI2lab/merfish3d-analysis`. GitHub Actions
 runs the same hooks on pushes and pull requests, plus the complete test suite on
-Linux and Windows with Python 3.12 and 3.13. Tests use simulated hardware.
+Windows with Python 3.12. Each test category runs in a separate process with
+combined coverage. Tests use simulated hardware.
 
 ## AO correction initialization
 

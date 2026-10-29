@@ -15,7 +15,11 @@ uv run pytest tests/gui
 uv run pytest tests/integration
 ```
 
-The equivalent markers are `unit`, `gui`, and `integration`. The full suite is:
+The equivalent markers are `unit`, `gui`, and `integration`. Windows CI runs all
+three categories in separate processes and accumulates their coverage. This
+keeps native MMCore and Qt initialization isolated from other test collections.
+
+The full suite can also be collected in one process:
 
 ```powershell
 uv run pytest
