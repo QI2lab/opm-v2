@@ -66,13 +66,12 @@ jobs:
       - name: Upload coverage
         uses: codecov/codecov-action@v7
 
-  deploy:
-    name: Deploy
+  release:
+    name: GitHub release
     needs: [lint, test]
     if: success() && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:
-      id-token: write
       contents: write
 
     steps:
@@ -87,9 +86,6 @@ jobs:
 
       - name: Build distributions
         run: uv build
-
-      - name: Publish to PyPI
-        uses: pypa/gh-action-pypi-publish@release/v1
 
       - uses: softprops/action-gh-release@v3
         with:
