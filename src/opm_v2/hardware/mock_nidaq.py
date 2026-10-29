@@ -125,12 +125,8 @@ class MockOPMNIDAQ(OPMNIDAQ):
         self.clear_tasks()
         self._device_generation += 1
         self._reset_in_progress = True
-        self._ao_waveform = np.asarray(
-            [self._ao_neutral_positions], dtype=float
-        )
-        self._do_waveform = np.zeros(
-            (1, self._num_do_channels), dtype=np.uint8
-        )
+        self._ao_waveform = np.asarray([self._ao_neutral_positions], dtype=float)
+        self._do_waveform = np.zeros((1, self._num_do_channels), dtype=np.uint8)
         if self._hold_next_reset:
             self._hold_next_reset = False
             return
@@ -141,18 +137,14 @@ class MockOPMNIDAQ(OPMNIDAQ):
         self.operation_log.append("reset:ao")
         self._maybe_fail("reset_ao")
         self.clear_tasks()
-        self._ao_waveform = np.asarray(
-            [self._ao_neutral_positions], dtype=float
-        )
+        self._ao_waveform = np.asarray([self._ao_neutral_positions], dtype=float)
 
     def reset_do_channels(self) -> None:
         """Clear tasks and set every simulated digital output low."""
         self.operation_log.append("reset:do")
         self._maybe_fail("reset_do")
         self.clear_tasks()
-        self._do_waveform = np.zeros(
-            (1, self._num_do_channels), dtype=np.uint8
-        )
+        self._do_waveform = np.zeros((1, self._num_do_channels), dtype=np.uint8)
 
     def program_daq_waveforms(self) -> None:
         """Allocate routed DI, DO, and AO tasks for generated waveforms.

@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
 from math import isfinite
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from useq import CustomAction, MDAEvent
+
+from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
+from opm_v2.utils.laser_modes import is_simultaneous, normalize_laser_mode
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
 ACTION_FLUIDICS = "Fluidics"
 ACTION_AO_OPTIMIZE = "AO-optimize"
@@ -95,6 +100,8 @@ def _custom_event(
         Custom action name.
     data : Mapping[str, Any]
         Action payload.
+    **event_fields : Any
+        Additional fields passed to the acquisition event.
 
     Returns
     -------
@@ -158,6 +165,8 @@ def _ao_camera_crop(config: dict) -> tuple[int, int, int, int]:
     camera_center_x = int(acq_config["camera_roi"]["center_x"])
 
     daq_mode = str(ao_config["daq_mode"])
+    if ao_config.get("metric") == O3_STACK_METRIC:
+        daq_mode = "2d"
     if "2d" in daq_mode:
         camera_crop_y = int(acq_config["camera_roi"]["crop_y"])
     elif "projection" in daq_mode:
@@ -190,6 +199,8 @@ def _ao_channel_settings(config: dict) -> tuple[list[bool], list[float]]:
     """
     ao_config = config["acq_config"]["AO"]
     channel_ids = config["OPM"]["channel_ids"]
+    if ao_config.get("metric") == O3_STACK_METRIC:
+        return [False] * len(channel_ids), [0.0] * len(channel_ids)
     active_channel_id = ao_config["active_channel_id"]
 
     channel_states = [channel_id == active_channel_id for channel_id in channel_ids]
@@ -219,25 +230,49 @@ def _ao_payload(config: dict, output_dir_path: Path | None = None) -> dict:
     dict
         AO custom-action payload.
     """
+    from opm_v2.utils.ao_policy import correction_settings
+
     ao_config = config["acq_config"]["AO"]
+    policies = correction_settings(ao_config)
     channel_states, channel_powers = _ao_channel_settings(config)
     return {
         "channel_states": channel_states,
         "channel_powers": channel_powers,
-        "mirror_state": str(ao_config["mirror_state"]),
+        "mirror_state": policies["starting_correction"],
+        **policies,
         "metric_acceptance": str(ao_config["metric_acceptance"]),
-        "daq_mode": str(ao_config["daq_mode"]),
+        "daq_mode": "2d"
+        if ao_config["metric"] == O3_STACK_METRIC
+        else str(ao_config["daq_mode"]),
+        "o3_stack_settings": {
+            "range_um": float(ao_config.get("o3_stack_range_um", 4.0)),
+            "step_um": float(ao_config.get("o3_stack_step_um", 0.5)),
+            "tilt_deg": float(ao_config.get("o3_tilt_deg", 30.0)),
+            "pixel_size_um": float(ao_config.get("o3_pixel_size_um", 0.115)),
+            "stage_name": config.get("O2O3-autofocus", {}).get(
+                "O3_stage_name", "MCL NanoDrive Z Stage"
+            ),
+        },
         "exposure_ms": float(ao_config["exposure_ms"]),
         "modal_delta": float(ao_config["mode_delta"]),
         "metric_precision": int(ao_config["metric_precision"]),
         "num_averaged_frames": int(ao_config["num_averaged_frames"]),
+        "alignment_refocus_every_n_modes": (
+            int(ao_config.get("alignment_refocus_every_n_modes", 0))
+            if ao_config.get("ao_mode") == "optimize now"
+            and ao_config.get("daq_mode") == "2d"
+            and ao_config["metric"] != O3_STACK_METRIC
+            else 0
+        ),
         "modal_alpha": float(ao_config["mode_alpha"]),
         "iterations": int(ao_config["num_iterations"]),
         "num_mode_samples": int(ao_config["num_mode_samples"]),
         "metric": str(ao_config["metric"]),
         "modes_to_optimize": str(ao_config["modes_to_optimize"]),
         "image_mirror_range_um": ao_config["image_mirror_range_um"],
-        "lightsheet_mode": str(ao_config["lightsheet_mode"]),
+        "lightsheet_mode": "off"
+        if ao_config["metric"] == O3_STACK_METRIC
+        else str(ao_config["lightsheet_mode"]),
         "readout_ms": float(ao_config["readout_ms"]),
         "apply_existing": False,
         "pos_idx": 0,
@@ -464,6 +499,7 @@ def create_daq_event(
     camera_center: Sequence[int] | None = None,
     camera_crop: Sequence[int] | None = None,
     interleaved: bool = False,
+    laser_mode: str = "interleaved",
     laser_blanking: bool = True,
     image_mirror_range_um: float | None = 0,
     image_mirror_step_um: float | None = 0.4,
@@ -486,6 +522,8 @@ def create_daq_event(
         Camera ROI width and height.
     interleaved : bool
         Whether channels share an interleaved scan.
+    laser_mode : str
+        Interleaved physical lasers or simultaneous 488 + 637 illumination.
     laser_blanking : bool
         Whether camera exposure gates laser output.
     image_mirror_range_um : float or None
@@ -519,7 +557,8 @@ def create_daq_event(
                 "mode": mode,
                 "channel_states": channel_states,
                 "channel_powers": channel_powers,
-                "interleaved": bool(interleaved),
+                "interleaved": bool(interleaved) and not is_simultaneous(laser_mode),
+                "laser_mode": normalize_laser_mode(laser_mode),
                 "blanking": bool(laser_blanking),
                 "image_mirror_range_um": image_mirror_range_um,
                 "image_mirror_step_um": image_mirror_step_um,

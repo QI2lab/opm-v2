@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import json
 from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
@@ -129,9 +130,7 @@ class OpmDataHandler:
         self._was_canceled = False
         self._finish_reason_getter: Callable[[], object] | None = None
         self._tile_retry_range: tuple[int, int] | None = None
-        self._tile_retry_metadata_slots: dict[
-            tuple[int, tuple[int, ...]], int
-        ] = {}
+        self._tile_retry_metadata_slots: dict[tuple[int, tuple[int, ...]], int] = {}
         self._write_condition = Condition()
         self._write_error: Exception | None = None
         self._publisher = (
@@ -289,9 +288,7 @@ class OpmDataHandler:
             raise IndexError(
                 f"Event index {dict(event.index)} exceeds configured frame count"
             )
-        retry_attempt = int(
-            event.metadata.get(TILE_RETRY_ATTEMPT_METADATA_KEY, 0)
-        )
+        retry_attempt = int(event.metadata.get(TILE_RETRY_ATTEMPT_METADATA_KEY, 0))
         if target_frame < self._next_frame:
             if retry_attempt <= 0 or not self._is_tile_retry_frame(target_frame):
                 raise ValueError(
@@ -407,9 +404,7 @@ class OpmDataHandler:
                 chunk_buffer.flush_all_partial()
 
         metadata_slots: dict[tuple[int, tuple[int, ...]], int] = {}
-        retry_positions = {
-            self._storage_route(event)[0] for event in events
-        }
+        retry_positions = {self._storage_route(event)[0] for event in events}
         for position_index in retry_positions:
             group_path = backend._image_group_paths[position_index]
             mirror = backend._meta_mirrors[group_path]
@@ -439,10 +434,7 @@ class OpmDataHandler:
         """
         deadline = monotonic() + TILE_RETRY_STORAGE_DRAIN_TIMEOUT_S
         with self._write_condition:
-            while (
-                self._next_frame < expected_next_frame
-                and self._write_error is None
-            ):
+            while self._next_frame < expected_next_frame and self._write_error is None:
                 remaining = deadline - monotonic()
                 if remaining <= 0:
                     raise TimeoutError(
@@ -504,9 +496,7 @@ class OpmDataHandler:
         ]
         permutation = settings.storage_index_permutation
         if permutation is not None:
-            acquisition_indices = [
-                acquisition_indices[index] for index in permutation
-            ]
+            acquisition_indices = [acquisition_indices[index] for index in permutation]
         position_index = (
             int(event.index.get(dimensions[position_axis].name, 0))
             if position_axis is not None
@@ -846,15 +836,17 @@ class OpmDataHandler:
                     if daq.get(key) is not None:
                         return abs(float(daq[key]))
         if axis == "t":
-            times = sorted({
-                float(event.min_start_time)
-                for event in self._events
-                if event.min_start_time is not None
-            })
+            times = sorted(
+                {
+                    float(event.min_start_time)
+                    for event in self._events
+                    if event.min_start_time is not None
+                }
+            )
             if len(times) > 1:
                 return min(
                     later - earlier
-                    for earlier, later in zip(times, times[1:], strict=False)
+                    for earlier, later in itertools.pairwise(times)
                     if later > earlier
                 )
         return None
@@ -917,11 +909,13 @@ class OpmDataHandler:
             / 1000.0,
         }
         if position := meta.get("position"):
-            result.update({
-                f"position_{axis}": float(value)
-                for axis, value in position.items()
-                if axis in "xyz" and value is not None
-            })
+            result.update(
+                {
+                    f"position_{axis}": float(value)
+                    for axis, value in position.items()
+                    if axis in "xyz" and value is not None
+                }
+            )
         if event.metadata:
             result["event_metadata"] = _json_safe(event.metadata)
         return result

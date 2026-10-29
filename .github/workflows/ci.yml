@@ -2,25 +2,39 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: ["**"]
     tags: ["v*"]
   pull_request:
   workflow_dispatch:
+
+permissions:
+  contents: read
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
-    name: ${{ matrix.os }} / Python ${{ matrix.python-version }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-        python-version: ["3.12", "3.13"]
+  lint:
+    name: prek / Ruff
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@08807647e7069bb48b6ef5acd8ec9567f424441b # v8.1.0
+        with:
+          version: "0.11.29"
+          enable-cache: true
+      - name: Run the same hooks as local commits
+        run: uvx --from prek==0.5.7 prek run --all-files --show-diff-on-failure
 
+  test:
+    name: Windows / Python 3.12
+    runs-on: windows-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+      MPLBACKEND: Agg
+      PYTEST_RUNNING: "1"
+      JUPYTER_PLATFORM_DIRS: "1"
     steps:
       - uses: actions/checkout@v7
 
@@ -31,29 +45,30 @@ jobs:
           enable-cache: true
 
       - name: Install Python
-        run: uv python install ${{ matrix.python-version }}
+        run: uv python install 3.12
 
       - name: Sync locked environment
-        run: uv sync --extra test --locked --python ${{ matrix.python-version }}
+        run: uv sync --extra test --locked --python 3.12
 
       - name: Install Micro-Manager test adapters
         run: uv run --locked mmcore install --test-adapters --plain-output
 
-      - name: Check Ruff formatting
-        run: uv run --locked ruff format --check .
+      # Isolate native MMCore/Qt state between the test categories.
+      - name: Run unit tests
+        run: uv run --locked python -m pytest tests/unit --color=yes --cov=opm_v2 --cov-report= -o faulthandler_timeout=120
 
-      - name: Check source and test-support docstrings
-        run: uv run --locked ruff check src tests/conftest.py
+      - name: Run integration tests
+        run: uv run --locked python -m pytest tests/integration --color=yes --cov=opm_v2 --cov-append --cov-report= -o faulthandler_timeout=120
 
-      - name: Run behavior tests
-        run: uv run --locked pytest --color=yes --cov=opm_v2 --cov-report=xml --cov-report=term-missing
+      - name: Run GUI tests
+        run: uv run --locked python -m pytest tests/gui --color=yes --cov=opm_v2 --cov-append --cov-report=xml --cov-report=term-missing -o faulthandler_timeout=120
 
       - name: Upload coverage
         uses: codecov/codecov-action@v7
 
   deploy:
     name: Deploy
-    needs: test
+    needs: [lint, test]
     if: success() && startsWith(github.ref, 'refs/tags/')
     runs-on: ubuntu-latest
     permissions:

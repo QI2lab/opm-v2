@@ -152,6 +152,10 @@ class OpmConfigFactory:
             Independent configuration bound to Micro-Manager demo hardware.
         """
         config = deepcopy(self.template)
+        # Instrument GUI choices must not override each test's explicit legacy
+        # or current AO policy. New policies can still be supplied via updates.
+        for key in ("starting_correction", "sequential_correction"):
+            config["acq_config"]["AO"].pop(key, None)
         channel_count = len(config["OPM"]["channel_ids"])
         powers = _channel_values(channel_count, active_channels, channel_powers)
         exposures = _channel_values(
@@ -194,6 +198,7 @@ class OpmConfigFactory:
                         "num_averaged_frames": 1,
                     },
                     "DAQ": {
+                        "laser_mode": "interleaved",
                         "channel_states": states,
                         "channel_powers": powers,
                         "channel_exposures_ms": exposures,
@@ -313,9 +318,7 @@ class SpatialPlanStrategy:
             center_x = (x_min + x_max) / 2.0
             center_y = (y_min + y_max) / 2.0
             center_z = (
-                plane.z_at(center_x, center_y)
-                if self.with_coverslip
-                else z_anchor
+                plane.z_at(center_x, center_y) if self.with_coverslip else z_anchor
             )
             positions.append(
                 AbsolutePosition(
@@ -708,7 +711,10 @@ def opm_config_from_scenario(
                         "ao_mode": scenario["ao_mode"],
                         **scenario.get("ao_options", {}),
                     },
-                    "DAQ": {"laser_blanking": scenario["laser_blanking"]},
+                    "DAQ": {
+                        "laser_blanking": scenario["laser_blanking"],
+                        "laser_mode": scenario.get("laser_mode", "interleaved"),
+                    },
                     "stage_scan": {
                         "excess_start_frames": scenario.get("excess_start_frames", 0),
                         "excess_end_frames": scenario.get("excess_end_frames", 0),

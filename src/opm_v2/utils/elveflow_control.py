@@ -8,7 +8,7 @@ import time
 from opm_v2.hardware.ElveFlow import OB1Controller
 
 
-def run_fluidic_program(verbose: bool = False):
+def run_fluidic_program(verbose: bool = False) -> bool:
     """Send a trigger pulse to OB1 Controller and wait for a return pulse.
 
     Requires the fluidics sequence to be running with a IF step before sequences to be run,
@@ -47,7 +47,7 @@ def run_fluidic_program(verbose: bool = False):
     if verbose:
         now = datetime.datetime.now()
         print(
-            f"\nOB1 trigger recieved, ESI sequence complete: {now.strftime('%Y-%m-%d %H:%M:%S')}"
+            f"\nOB1 trigger received, ESI sequence complete: {now.strftime('%Y-%m-%d %H:%M:%S')}"
         )
 
     opmOB1_local.close_board()

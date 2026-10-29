@@ -9,13 +9,23 @@ douglas.shepherd@asu.edu
 ----------------------------------------------------------------------------------------
 """
 
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from typing import Any
+
+    from opm_v2.hardware.APump import APump
+
+
 import sys
 import time
 
 import numpy as np
 
 
-def lookup_valve(source_name):
+def lookup_valve(source_name: str) -> list[int] | None:
     """Convert an ASU well name to an MVP valve position.
 
     Parameters
@@ -64,7 +74,9 @@ def lookup_valve(source_name):
     return valve_position
 
 
-def run_fluidic_program(r_idx, df_program, mvp_controller, pump_controller):
+def run_fluidic_program(
+    r_idx: int, df_program: Any, mvp_controller: Any, pump_controller: APump
+) -> bool:
     """Run one round from an ASU fluidics program.
 
     Parameters
@@ -87,7 +99,7 @@ def run_fluidic_program(r_idx, df_program, mvp_controller, pump_controller):
     df_current_program = df_program[(df_program["round"] == r_idx + 1)]
 
     print("Executing iterative round " + str(r_idx + 1) + ".")
-    for index, row in df_current_program.iterrows():
+    for _index, row in df_current_program.iterrows():
         # extract source name
         source_name = str(row["source"]).strip()
 

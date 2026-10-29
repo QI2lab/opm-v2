@@ -3,7 +3,7 @@
         "mode": "projection",
         "active_channels": [0, 1],
         "channel_powers": [11.0, 22.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -11,7 +11,7 @@
         "fluidics": "none",
         "o2o3_mode": "none",
         "ao_mode": "none",
-        "ao_options": {"mirror_state": "system flat", "metric": "DCT", "metric_acceptance": "zero", "modes_to_optimize": "spherical first", "daq_mode": "2d", "active_channel_id": "405nm", "lightsheet_mode": "on"},
+        "ao_options": {"mirror_state": "system flat", "metric": "DCT", "metric_acceptance": "zero", "modes_to_optimize": "spherical first", "daq_mode": "2d", "active_channel_id": "405nm", "lightsheet_mode": "on", "starting_correction": "system flat", "sequential_correction": "use starting correction"},
         "laser_blanking": true,
         "expected_shape": [1, 2, 8, 64],
         "expected_acquisition_order": ["t", "p", "c"],
@@ -29,7 +29,7 @@
         "fluidics": "1",
         "o2o3_mode": "once at start",
         "ao_mode": "once at start",
-        "ao_options": {"mirror_state": "last optimized", "metric": "localize_gauss_2d", "metric_acceptance": "optimal", "modes_to_optimize": "all modes", "daq_mode": "projection", "active_channel_id": "488nm", "lightsheet_mode": "off"},
+        "ao_options": {"mirror_state": "last optimized", "metric": "localize_gauss_2d", "metric_acceptance": "optimal", "modes_to_optimize": "all modes", "daq_mode": "projection", "active_channel_id": "488nm", "lightsheet_mode": "off", "starting_correction": "last optimized", "sequential_correction": "use starting correction"},
         "laser_blanking": true,
         "expected_shape": [1, 2, 2, 32, 64],
         "expected_acquisition_order": ["t", "p", "z", "c"],
@@ -39,7 +39,7 @@
         "mode": "timelapse",
         "active_channels": [2, 3],
         "channel_powers": [33.0, 44.0],
-        "channel_exposures_ms": [6.0, 8.0],
+        "channel_exposures_ms": [8.0, 8.0],
         "camera_shape": [64, 32],
         "scan_range_um": 4.0,
         "scan_axis_step_um": 2.0,
@@ -48,7 +48,7 @@
         "fluidics": "none",
         "o2o3_mode": "none",
         "ao_mode": "none",
-        "ao_options": {"mirror_state": "factory flat", "metric": "gauss_2d", "metric_acceptance": "accept all", "modes_to_optimize": "focusing only", "daq_mode": "2d", "active_channel_id": "561nm", "lightsheet_mode": "on"},
+        "ao_options": {"mirror_state": "factory flat", "metric": "gauss_2d", "metric_acceptance": "accept all", "modes_to_optimize": "focusing only", "daq_mode": "2d", "active_channel_id": "561nm", "lightsheet_mode": "on", "starting_correction": "factory flat", "sequential_correction": "previous AO result"},
         "laser_blanking": true,
         "expected_shape": [2, 2, 2, 32, 64],
         "expected_acquisition_order": ["p", "z", "t", "c"],
@@ -58,7 +58,7 @@
         "mode": "projection",
         "active_channels": [2, 4],
         "channel_powers": [33.0, 55.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -66,7 +66,7 @@
         "fluidics": "2",
         "o2o3_mode": "per timepoint",
         "ao_mode": "at timepoints",
-        "ao_options": {"mirror_state": "zeros", "metric": "gauss_2d", "metric_acceptance": "optimal", "modes_to_optimize": "all modes", "daq_mode": "2d", "active_channel_id": "561nm", "lightsheet_mode": "off"},
+        "ao_options": {"mirror_state": "zeros", "metric": "gauss_2d", "metric_acceptance": "optimal", "modes_to_optimize": "all modes", "daq_mode": "2d", "active_channel_id": "561nm", "lightsheet_mode": "off", "starting_correction": "zeros", "sequential_correction": "use starting correction"},
         "laser_blanking": true,
         "expected_shape": [2, 2, 8, 64],
         "expected_acquisition_order": ["t", "p", "c"],
@@ -84,7 +84,7 @@
         "fluidics": "8",
         "o2o3_mode": "per xyz position",
         "ao_mode": "at xyz position",
-        "ao_options": {"mirror_state": "zeros", "metric": "brightness", "metric_acceptance": "zero", "modes_to_optimize": "spherical only", "daq_mode": "projection", "active_channel_id": "637nm", "lightsheet_mode": "off"},
+        "ao_options": {"mirror_state": "system flat", "metric": "brightness", "metric_acceptance": "zero", "modes_to_optimize": "spherical only", "daq_mode": "projection", "active_channel_id": "637nm", "lightsheet_mode": "off", "starting_correction": "system flat", "sequential_correction": "previous AO result"},
         "laser_blanking": true,
         "excess_start_frames": 1,
         "excess_end_frames": 1,
@@ -96,7 +96,7 @@
         "mode": "projection",
         "active_channels": [0, 4],
         "channel_powers": [11.0, 55.0],
-        "channel_exposures_ms": [6.0, 7.0],
+        "channel_exposures_ms": [7.0, 7.0],
         "camera_shape": [64, 32],
         "scan_range_um": 8.0,
         "scan_axis_step_um": 2.0,
@@ -104,7 +104,7 @@
         "fluidics": "11",
         "o2o3_mode": "none",
         "ao_mode": "grid at start",
-        "ao_options": {"mirror_state": "system flat", "metric": "fourier_ratio", "metric_acceptance": "optimal", "modes_to_optimize": "stationary only", "daq_mode": "2d", "active_channel_id": "730nm", "lightsheet_mode": "on"},
+        "ao_options": {"mirror_state": "system flat", "metric": "fourier_ratio", "metric_acceptance": "optimal", "modes_to_optimize": "stationary only", "daq_mode": "2d", "active_channel_id": "730nm", "lightsheet_mode": "on", "starting_correction": "system flat", "sequential_correction": "corresponding position in previous Z layer"},
         "laser_blanking": true,
         "expected_shape": [11, 2, 8, 64],
         "expected_acquisition_order": ["t", "p", "c"],
@@ -114,7 +114,7 @@
         "mode": "mirror",
         "active_channels": [0, 3],
         "channel_powers": [11.0, 44.0],
-        "channel_exposures_ms": [6.0, 8.0],
+        "channel_exposures_ms": [8.0, 8.0],
         "camera_shape": [64, 32],
         "scan_range_um": 4.0,
         "scan_axis_step_um": 2.0,
@@ -122,10 +122,10 @@
         "fluidics": "16",
         "o2o3_mode": "once at start",
         "ao_mode": "grid at timepoints",
-        "ao_options": {"mirror_state": "last optimized", "metric": "DCT", "metric_acceptance": "accept all", "modes_to_optimize": "high order first", "daq_mode": "projection", "active_channel_id": "405nm", "lightsheet_mode": "off"},
+        "ao_options": {"mirror_state": "last optimized", "metric": "DCT", "metric_acceptance": "accept all", "modes_to_optimize": "high order first", "daq_mode": "projection", "active_channel_id": "405nm", "lightsheet_mode": "off", "starting_correction": "last optimized", "sequential_correction": "previous AO result"},
         "laser_blanking": true,
         "expected_shape": [16, 2, 2, 32, 64],
-        "expected_acquisition_order": ["t", "p", "c", "z"],
+        "expected_acquisition_order": ["t", "p", "z", "c"],
         "expected_daq_mode": "mirror"
     },
     "stage_zc_blanking_off": {
@@ -140,12 +140,221 @@
         "fluidics": "none",
         "o2o3_mode": "none",
         "ao_mode": "none",
-        "ao_options": {"mirror_state": "factory flat", "metric": "localize_gauss_2d", "metric_acceptance": "zero", "modes_to_optimize": "spherical first", "daq_mode": "2d", "active_channel_id": "488nm", "lightsheet_mode": "on"},
+        "ao_options": {"mirror_state": "factory flat", "metric": "localize_gauss_2d", "metric_acceptance": "zero", "modes_to_optimize": "spherical first", "daq_mode": "2d", "active_channel_id": "488nm", "lightsheet_mode": "on", "starting_correction": "factory flat", "sequential_correction": "use starting correction"},
         "laser_blanking": false,
         "excess_start_frames": 0,
         "excess_end_frames": 0,
         "expected_shape": [1, 2, 5, 32, 64],
         "expected_acquisition_order": ["t", "p", "z", "c"],
         "expected_daq_mode": "stage"
+    },
+    "projection_simultaneous": {
+        "mode": "projection",
+        "active_channels": [
+            1,
+            3
+        ],
+        "channel_powers": [
+            23.0,
+            41.0
+        ],
+        "channel_exposures_ms": [
+            10.0,
+            10.0
+        ],
+        "camera_shape": [
+            64,
+            32
+        ],
+        "scan_range_um": 8.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "pc",
+        "fluidics": "none",
+        "o2o3_mode": "none",
+        "ao_mode": "none",
+        "ao_options": {
+            "mirror_state": "system flat",
+            "metric": "DCT",
+            "metric_acceptance": "zero",
+            "modes_to_optimize": "spherical first",
+            "daq_mode": "2d",
+            "active_channel_id": "405nm",
+            "lightsheet_mode": "on",
+            "starting_correction": "system flat",
+            "sequential_correction": "use starting correction"
+        },
+        "laser_blanking": true,
+        "expected_shape": [
+            1,
+            1,
+            8,
+            64
+        ],
+        "expected_acquisition_order": [
+            "t",
+            "p",
+            "c"
+        ],
+        "expected_daq_mode": "projection",
+        "laser_mode": "simultaneous 488/637"
+    },
+    "mirror_simultaneous": {
+        "mode": "mirror",
+        "active_channels": [
+            1,
+            3
+        ],
+        "channel_powers": [
+            23.0,
+            41.0
+        ],
+        "channel_exposures_ms": [
+            10.0,
+            10.0
+        ],
+        "camera_shape": [
+            64,
+            32
+        ],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "tpzc",
+        "fluidics": "1",
+        "o2o3_mode": "once at start",
+        "ao_mode": "once at start",
+        "ao_options": {
+            "mirror_state": "last optimized",
+            "metric": "localize_gauss_2d",
+            "metric_acceptance": "optimal",
+            "modes_to_optimize": "all modes",
+            "daq_mode": "projection",
+            "active_channel_id": "488nm",
+            "lightsheet_mode": "off",
+            "starting_correction": "last optimized",
+            "sequential_correction": "use starting correction"
+        },
+        "laser_blanking": true,
+        "expected_shape": [
+            1,
+            1,
+            2,
+            32,
+            64
+        ],
+        "expected_acquisition_order": [
+            "t",
+            "p",
+            "z",
+            "c"
+        ],
+        "expected_daq_mode": "mirror",
+        "laser_mode": "simultaneous 488/637"
+    },
+    "stage_simultaneous": {
+        "mode": "stage",
+        "active_channels": [
+            1,
+            3
+        ],
+        "channel_powers": [
+            23.0,
+            41.0
+        ],
+        "channel_exposures_ms": [
+            10.0,
+            10.0
+        ],
+        "camera_shape": [
+            64,
+            32
+        ],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "tpgzc",
+        "fluidics": "none",
+        "o2o3_mode": "none",
+        "ao_mode": "none",
+        "ao_options": {
+            "mirror_state": "factory flat",
+            "metric": "localize_gauss_2d",
+            "metric_acceptance": "zero",
+            "modes_to_optimize": "spherical first",
+            "daq_mode": "2d",
+            "active_channel_id": "488nm",
+            "lightsheet_mode": "on",
+            "starting_correction": "factory flat",
+            "sequential_correction": "use starting correction"
+        },
+        "laser_blanking": true,
+        "excess_start_frames": 0,
+        "excess_end_frames": 0,
+        "expected_shape": [
+            1,
+            1,
+            5,
+            32,
+            64
+        ],
+        "expected_acquisition_order": [
+            "t",
+            "p",
+            "z",
+            "c"
+        ],
+        "expected_daq_mode": "stage",
+        "laser_mode": "simultaneous 488/637"
+    },
+    "timelapse_simultaneous": {
+        "mode": "timelapse",
+        "active_channels": [
+            1,
+            3
+        ],
+        "channel_powers": [
+            23.0,
+            41.0
+        ],
+        "channel_exposures_ms": [
+            10.0,
+            10.0
+        ],
+        "camera_shape": [
+            64,
+            32
+        ],
+        "scan_range_um": 4.0,
+        "scan_axis_step_um": 2.0,
+        "axis_order": "pztc",
+        "time_loops": 2,
+        "fluidics": "none",
+        "o2o3_mode": "none",
+        "ao_mode": "none",
+        "ao_options": {
+            "mirror_state": "factory flat",
+            "metric": "gauss_2d",
+            "metric_acceptance": "accept all",
+            "modes_to_optimize": "focusing only",
+            "daq_mode": "2d",
+            "active_channel_id": "561nm",
+            "lightsheet_mode": "on",
+            "starting_correction": "factory flat",
+            "sequential_correction": "previous AO result"
+        },
+        "laser_blanking": true,
+        "expected_shape": [
+            2,
+            1,
+            2,
+            32,
+            64
+        ],
+        "expected_acquisition_order": [
+            "p",
+            "z",
+            "t",
+            "c"
+        ],
+        "expected_daq_mode": "2d",
+        "laser_mode": "simultaneous 488/637"
     }
 }

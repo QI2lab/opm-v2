@@ -5,11 +5,14 @@ from __future__ import annotations
 import argparse
 import json
 import time
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from opm_v2.hardware.ElveFlow import OB1Controller
 from opm_v2.utils.elveflow_control import run_fluidic_program
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 DEFAULT_CONFIG = Path(__file__).resolve().parents[1] / "opm_config.json"
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 from numpy.typing import ArrayLike, NDArray
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 FloatArray = NDArray[np.float64]
 
@@ -188,9 +190,7 @@ def sample_depth_levels_um(
         raise ValueError("Sample-depth end must be greater than or equal to start")
 
     span_um = end_um - start_um
-    if span_um <= axial_footprint_um or np.isclose(
-        span_um, axial_footprint_um
-    ):
+    if span_um <= axial_footprint_um or np.isclose(span_um, axial_footprint_um):
         return np.asarray([float(start_um)], dtype=float)
 
     maximum_step_um = float(axial_footprint_um) * (1.0 - overlap_fraction)
@@ -280,9 +280,7 @@ def apply_oblique_scan_correction(
         # opposite lab-frame direction.  The configured sign describes the
         # physical stage direction for increasing biological depth; lab2cam
         # consumes the corresponding sample-coordinate displacement.
-        lab_z_offset_um = -stage_sign * (
-            float(position["z"]) - scan_reference_z_um
-        )
+        lab_z_offset_um = -stage_sign * (float(position["z"]) - scan_reference_z_um)
         _, _, raw_scan = lab2cam(
             0.0,
             lab_scan_um,
@@ -444,8 +442,7 @@ def split_stage_scan_bounds(
     # 0.01 mm rounding was separately fixed because it erased small scans.
     scan_count = int(np.ceil(distance_um / float(max_raw_scan_length_um)))
     raw_scan_length_um = (
-        distance_um / scan_count
-        + (scan_count - 1) * effective_overlap_um / scan_count
+        distance_um / scan_count + (scan_count - 1) * effective_overlap_um / scan_count
     )
     raw_stride_um = raw_scan_length_um - effective_overlap_um
     if raw_stride_um <= 0:

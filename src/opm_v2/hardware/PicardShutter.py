@@ -10,18 +10,27 @@ from typing import Any
 
 _piusb_dll_directory = None
 _piusb_import_error: Exception | None = None
+PiUsbNet: Any | None = None
 
-try:
-    import clr
 
-    package_dir = Path(__file__).resolve().parent.parent
-    if hasattr(os, "add_dll_directory"):
-        _piusb_dll_directory = os.add_dll_directory(str(package_dir))
-    clr.AddReference(str(package_dir / "PiUsbNet.dll"))
-    import PiUsbNet  # type: ignore[import-not-found]
-except Exception as exc:
-    PiUsbNet = None
-    _piusb_import_error = exc
+def _load_piusb() -> None:
+    """Load the vendor runtime only when physical shutter control is requested."""
+    global PiUsbNet, _piusb_dll_directory, _piusb_import_error
+    if PiUsbNet is not None:
+        return
+    try:
+        import clr
+
+        package_dir = Path(__file__).resolve().parent.parent
+        if hasattr(os, "add_dll_directory") and _piusb_dll_directory is None:
+            _piusb_dll_directory = os.add_dll_directory(str(package_dir))
+        clr.AddReference(str(package_dir / "PiUsbNet.dll"))
+        import PiUsbNet as driver  # type: ignore[import-not-found]
+
+        PiUsbNet = driver
+        _piusb_import_error = None
+    except Exception as exc:
+        _piusb_import_error = exc
 
 
 _instance_shutter = None
@@ -104,6 +113,7 @@ class PicardShutter:
         if self.simulate:
             self.is_connected = True
             return
+        _load_piusb()
         if PiUsbNet is None:
             raise RuntimeError(
                 "PiUsbNet could not be loaded. Install the Picard driver or "

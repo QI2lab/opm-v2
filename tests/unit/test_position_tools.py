@@ -184,16 +184,14 @@ def test_stage_split_preserves_fully_sampled_scan_overlap(
     configured_overlap_um: float,
 ) -> None:
     """Leave the configured overlap after accounting for the deskew footprint."""
-    starts, ends, effective_overlap_um, camera_scan_extent_um = (
-        split_stage_scan_bounds(
-            0.0,
-            250.0,
-            100.0,
-            configured_overlap_um,
-            camera_crop_y,
-            pixel_size_um,
-            angle_deg,
-        )
+    starts, ends, effective_overlap_um, camera_scan_extent_um = split_stage_scan_bounds(
+        0.0,
+        250.0,
+        100.0,
+        configured_overlap_um,
+        camera_crop_y,
+        pixel_size_um,
+        angle_deg,
     )
 
     assert starts[0] == pytest.approx(0.0)

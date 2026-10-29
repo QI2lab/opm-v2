@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 import zarr
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 DEPRECATED_ARRAY_KEYS = (
     "images_per_iteration",

@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 if __package__:
-    from .parse_ao_results import plot_results
+    from scripts.parse_ao_results import plot_results
 else:
     from parse_ao_results import plot_results
 

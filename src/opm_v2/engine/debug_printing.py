@@ -14,7 +14,7 @@ def _message(header: str, lines: tuple[object, ...]) -> str:
     ----------
     header : str
         Block heading.
-    *lines : object
+    lines : tuple[object, ...]
         Values to print beneath the heading.
 
     Returns

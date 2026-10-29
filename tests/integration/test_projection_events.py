@@ -11,6 +11,70 @@ from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
 
 
 @pytest.mark.parametrize(
+    "laser_mode",
+    [
+        "interleaved",
+        "simultaneous 488/637",
+        "simultaneous 561/637",
+        "simultaneous 488/561",
+    ],
+)
+def test_projection_time_plan_keeps_both_mirror_sweeps(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+    split_events,
+    laser_mode,
+):
+    """A Time plan must retain projection DAQ setup at every timepoint."""
+    import numpy as np
+
+    from opm_v2.engine.opm_engine import OPMEngineV2
+    from opm_v2.engine.setup_events import OPMEventBuilder
+
+    config = opm_config_factory(
+        mode="projection",
+        active_channels=(1, 2, 3),
+        channel_powers=[10, 10, 10],
+        channel_exposures_ms=[200, 200, 200],
+        scan_range_um=100,
+        updates={"acq_config": {"DAQ": {"laser_mode": laser_mode}}},
+    )
+    sequence = MDASequence(
+        stage_positions=[(0, 0, 0)], time_plan={"interval": 1, "loops": 3}
+    )
+    events, handler = OPMEventBuilder(demo_core, config, sequence).build(
+        workspace_tmp_path / "projection-time.ome.zarr", mode="projection"
+    )
+    images, _ = split_events(events)
+    assert handler.index_sizes["t"] == 3
+    assert {e.index["t"] for e in images} == {0, 1, 2}
+    assert all(e.metadata["DAQ"]["mode"] == "projection" for e in images)
+    assert all(e.metadata["DAQ"]["image_mirror_range_um"] == 100 for e in images)
+    engine = OPMEngineV2(
+        demo_core,
+        workspace_tmp_path / "unused.json",
+        config=config,
+        simulate_hardware=True,
+    )
+    daq_events = [e for e in events if getattr(e.action, "name", None) == ACTION_DAQ]
+    assert len(daq_events) == 3
+    for event in daq_events:
+        assert event.action.data["DAQ"]["mode"] == "projection"
+        engine.setup_event(event)
+        assert engine.opmDAQ.scan_type == "projection"
+        waveform = engine.opmDAQ.analog_waveform
+        assert waveform.shape[0] > 2
+        assert np.ptp(waveform[:, 0]) == pytest.approx(
+            100 * engine.opmDAQ.image_mirror_calibration
+        )
+        assert np.ptp(waveform[:, 1]) == pytest.approx(
+            100 * engine.opmDAQ.projection_mirror_calibration
+        )
+
+
+@pytest.mark.parametrize(
     ("active_channels", "positions"),
     [
         ((0,), [(0.0, 0.0, 0.0)]),
@@ -115,9 +179,9 @@ def test_projection_retiles_stage_explorer_region_in_physical_stage_axes(
     )
     image_events, custom_actions = split_events(events)
 
-    assert [event.metadata["Stage"]["x_pos"] for event in image_events] == pytest.approx(
-        [100.0, 102.67, 105.34]
-    )
+    assert [
+        event.metadata["Stage"]["x_pos"] for event in image_events
+    ] == pytest.approx([100.0, 102.67, 105.34])
     assert {event.metadata["Stage"]["y_pos"] for event in image_events} == {200.0}
     assert {event.metadata["Stage"]["z_pos"] for event in image_events} == {7.0}
     assert custom_actions.count(ACTION_DAQ) == 3
@@ -163,6 +227,6 @@ def test_projection_applies_exported_coverslip_plane(
     )
     image_events, _custom_actions = split_events(events)
 
-    assert [event.metadata["Stage"]["z_pos"] for event in image_events] == pytest.approx(
-        [7.0, 7.27, 7.53]
-    )
+    assert [
+        event.metadata["Stage"]["z_pos"] for event in image_events
+    ] == pytest.approx([7.0, 7.27, 7.53])

@@ -2,6 +2,21 @@
 
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from typing import Any
+
+    from pymmcore_gui._qt.QtAds import CDockWidget
+    from pymmcore_gui._qt.QtWidgets import QWidget
+    from pymmcore_gui.widgets.image_preview._ndv_preview import NDVPreview
+    from pymmcore_widgets import MDAWidget
+    from pymmcore_widgets.control._rois.roi_model import ROI
+
+    from opm_v2.handlers.opm_data_handler import OpmDataHandler
+
+
 import json
 from copy import deepcopy
 from datetime import datetime
@@ -19,15 +34,16 @@ from pymmcore_gui._qt.QtAds import DockWidgetArea
 from pymmcore_gui._qt.QtCore import QEvent, QObject, Qt, QTimer
 from pymmcore_gui._qt.QtWidgets import (
     QApplication,
+    QHeaderView,
     QMessageBox,
     QTabBar,
 )
 from pymmcore_gui.actions import ActionInfo, CoreAction, QCoreAction, WidgetActionInfo
 from pymmcore_plus import CMMCorePlus
 from pymmcore_plus.core import DeviceProperty
-from pymmcore_widgets import StageExplorerCalibrationControls
 
 from opm_v2._update_config_widget import OPMSettingsV2
+from opm_v2._viewer_cleanup import install_acquisition_viewer_cleanup
 from opm_v2.engine.debug_printing import debug, info, warning
 from opm_v2.engine.opm_custom_events import STAGE_MOVE_SPEED_METADATA_KEY
 from opm_v2.engine.opm_engine import OPMEngineV2
@@ -45,11 +61,14 @@ from opm_v2.utils.coverslip import (
     CoverslipPlane,
     fit_coverslip_plane,
 )
+from opm_v2.utils.laser_modes import COMBINED_CHANNELS
+from opm_v2.widgets._calibration_controls import StageExplorerCalibrationControls
+from opm_v2.widgets._stage_explorer import StageExplorer
 
 DEBUGGING = True
 DEFAULT_CONFIG_PATH = Path(__file__).resolve().parents[2] / "opm_config.json"
 MIN_PROJECTION_EXPOSURE = 50  # ms
-DEFUALT_PROJECTION_EXPOSURE = 150
+DEFAULT_PROJECTION_EXPOSURE = 150
 OPM_WIDGET_KEY = "opm.settings"
 OPM_PREVIEW_INTERVAL_MS = 250
 LIVE_DISPLAY_INTERVAL_MS = 33
@@ -59,12 +78,12 @@ MAX_LIVE_FRAMES_PER_TICK = 64
 class _BoundedLivePreviewTimer(QObject):
     """Drain a finite camera-buffer snapshot on each live-preview tick."""
 
-    def __init__(self, preview) -> None:
+    def __init__(self, preview: NDVPreview) -> None:
         parent = preview if isinstance(preview, QObject) else None
         super().__init__(parent)
         self._preview = preview
 
-    def eventFilter(self, watched, event) -> bool:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Replace the upstream unbounded live-buffer drain loop.
 
         Returns
@@ -99,7 +118,9 @@ class _BoundedLivePreviewTimer(QObject):
         return True
 
 
-def _disconnect_system_configuration_callback(mmc: CMMCorePlus, callback) -> None:
+def _disconnect_system_configuration_callback(
+    mmc: CMMCorePlus, callback: Callable[..., Any]
+) -> None:
     """Disconnect an action callback even if Qt has deleted the core signaler."""
     try:
         mmc.events.systemConfigurationLoaded.disconnect(callback)
@@ -153,7 +174,7 @@ def _install_safe_core_action_initializers() -> None:
     ).on_created = _initialize_live_action_safely
 
 
-def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
+def _stage_explorer_world_fov_w_h(stage_explorer: StageExplorer) -> tuple[float, float]:
     """Return camera FOV extents in physical stage-world X and Y.
 
     Returns
@@ -165,7 +186,7 @@ def _stage_explorer_world_fov_w_h(stage_explorer) -> tuple[float, float]:
 
 
 def _stage_explorer_display_footprint_w_h(
-    stage_explorer,
+    stage_explorer: StageExplorer,
 ) -> tuple[float, float]:
     """Return the footprint shown inside Stage Explorer ROI overlays.
 
@@ -206,28 +227,30 @@ def _stage_explorer_display_footprint_w_h(
     return scan_range_um, float(world_y)
 
 
-def _refresh_stage_explorer_display_footprint(stage_explorer) -> None:
+def _refresh_stage_explorer_display_footprint(stage_explorer: StageExplorer) -> None:
     """Refresh ROI cells using the active OPM acquisition footprint."""
-    display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
-    stage_explorer.set_display_fov_size_um(display_footprint)
-
     overlap = stage_explorer.roi_manager.scan_overlap
     mode = stage_explorer.roi_manager.scan_mode
     controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
         stage_explorer.window(), "opm_controller", None
     )
+    # Camera previews must follow ROI and pixel-affine changes through the
+    # widget's native signals. A fixed camera-sized override freezes that FOV.
+    display_footprint = None
     if controller is not None:
         acq_config = controller.config["acq_config"]
         if (
             controller._opm_scan_footprint_active
             and "mirror" in str(acq_config["opm_mode"]).casefold()
         ):
+            display_footprint = _stage_explorer_display_footprint_w_h(stage_explorer)
             positions = acq_config["Positions"]
             tile_overlap = float(positions["tile_axis_overlap"])
             scan_overlap = float(positions.get("scan_axis_overlap", tile_overlap))
             # OPM configuration stores overlaps as fractions, while useq and
             # Stage Explorer express GridFromEdges overlap in percent.
             overlap = (100.0 * scan_overlap, 100.0 * tile_overlap)
+    stage_explorer.set_display_fov_size_um(display_footprint)
     stage_explorer.roi_manager.set_scan_options(overlap, mode)
     stage_explorer.set_blending_overlap(overlap)
 
@@ -267,7 +290,9 @@ def _position_on_coverslip_plane(
     return position.model_copy(update={"z": plane.z_at(position.x, position.y)})
 
 
-def _stage_explorer_controller(stage_explorer):
+def _stage_explorer_controller(
+    stage_explorer: StageExplorer,
+) -> OPMAppController | None:
     """Return the OPM controller attached to a Stage Explorer instance.
 
     Returns
@@ -281,7 +306,7 @@ def _stage_explorer_controller(stage_explorer):
 
 
 def _coverslip_planes_by_roi(
-    stage_explorer,
+    stage_explorer: StageExplorer,
 ) -> WeakKeyDictionary[object, CoverslipPlane]:
     """Return Explorer-owned calibration state keyed by upstream ROI identity.
 
@@ -297,7 +322,9 @@ def _coverslip_planes_by_roi(
     return planes
 
 
-def _coverslip_plane_for_roi(stage_explorer, roi) -> CoverslipPlane | None:
+def _coverslip_plane_for_roi(
+    stage_explorer: StageExplorer, roi: ROI
+) -> CoverslipPlane | None:
     """Return the plane calibrated for one Stage Explorer ROI.
 
     Returns
@@ -308,14 +335,14 @@ def _coverslip_plane_for_roi(stage_explorer, roi) -> CoverslipPlane | None:
     return _coverslip_planes_by_roi(stage_explorer).get(roi)
 
 
-def _update_coverslip_point_visual(stage_explorer) -> None:
+def _update_coverslip_point_visual(stage_explorer: StageExplorer) -> None:
     """Show the active coverslip focus points on the Explorer canvas."""
     controls = getattr(stage_explorer, "_opm_calibration_controls", None)
     if controls is not None:
         controls.set_points(stage_explorer._opm_coverslip_points)
 
 
-def _restore_coverslip_live_mode(stage_explorer) -> None:
+def _restore_coverslip_live_mode(stage_explorer: StageExplorer) -> None:
     """Restore the Micro-Manager live-mode preset used before calibration."""
     previous = stage_explorer._opm_coverslip_previous_live_preset
     stage_explorer._opm_coverslip_previous_live_preset = None
@@ -331,7 +358,7 @@ def _restore_coverslip_live_mode(stage_explorer) -> None:
         mmc.waitForConfig("OPM-live-mode", previous)
 
 
-def _start_coverslip_calibration(stage_explorer) -> None:
+def _start_coverslip_calibration(stage_explorer: StageExplorer) -> None:
     """Begin point collection in the non-projection Standard live mode."""
     controller = _stage_explorer_controller(stage_explorer)
     if controller is None:
@@ -385,7 +412,7 @@ def _start_coverslip_calibration(stage_explorer) -> None:
     )
 
 
-def _add_coverslip_focus_point(stage_explorer) -> None:
+def _add_coverslip_focus_point(stage_explorer: StageExplorer) -> None:
     """Record the current physical sample-stage XYZ position."""
     controller = _stage_explorer_controller(stage_explorer)
     roi = stage_explorer._opm_coverslip_target_roi
@@ -411,7 +438,7 @@ def _add_coverslip_focus_point(stage_explorer) -> None:
     )
 
 
-def _fit_coverslip_calibration(stage_explorer) -> None:
+def _fit_coverslip_calibration(stage_explorer: StageExplorer) -> None:
     """Fit and attach the active focus points to the selected ROI."""
     controller = _stage_explorer_controller(stage_explorer)
     roi = stage_explorer._opm_coverslip_target_roi
@@ -439,7 +466,7 @@ def _fit_coverslip_calibration(stage_explorer) -> None:
     )
 
 
-def _clear_coverslip_calibration(stage_explorer) -> None:
+def _clear_coverslip_calibration(stage_explorer: StageExplorer) -> None:
     """Clear point collection and any plane attached to selected ROIs."""
     controller = _stage_explorer_controller(stage_explorer)
     targets = stage_explorer.roi_manager.selected_rois()
@@ -456,7 +483,7 @@ def _clear_coverslip_calibration(stage_explorer) -> None:
         controller.info("COVERSLIP PLANE CLEARED")
 
 
-def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
+def _install_stage_explorer_coverslip_controls(stage_explorer: StageExplorer) -> None:
     """Add coverslip-plane calibration actions to one Explorer toolbar."""
     _coverslip_planes_by_roi(stage_explorer)
     if hasattr(stage_explorer, "_opm_calibration_controls"):
@@ -478,7 +505,7 @@ def _install_stage_explorer_coverslip_controls(stage_explorer) -> None:
     stage_explorer._opm_calibration_controls = controls
 
 
-def _configure_live_preview(preview_dock) -> None:
+def _configure_live_preview(preview_dock: CDockWidget | None) -> None:
     """Keep live-frame display non-reentrant and bounded per timer tick."""
     preview = preview_dock.widget() if preview_dock is not None else None
     if preview is not None and hasattr(preview, "process_events_on_update"):
@@ -493,21 +520,21 @@ def _configure_live_preview(preview_dock) -> None:
         preview._opm_bounded_timer_filter = timer_filter
 
 
-def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePosition:
+def _stage_explorer_region_position(
+    stage_explorer: StageExplorer, roi: ROI
+) -> useq.AbsolutePosition:
     """Return one selected ROI as a physical Stage Explorer region.
 
     Returns
     -------
     useq.AbsolutePosition
-        Position containing the selected rectangular ROI grid.
+        Position containing the selected ROI grid.
 
     Raises
     ------
     ValueError
-        If a single-FOV ROI is not rectangular.
+        If the selected ROI produces no positions.
     """
-    if type(roi).__name__ != "RectangleROI":
-        raise ValueError("OPM Stage Explorer previews require a rectangular ROI.")
     controller = _stage_explorer_controller(stage_explorer)
     z_position = controller.mmc.getZPosition() if controller is not None else None
     positions = stage_explorer.positions_from_rois(
@@ -525,7 +552,7 @@ def _stage_explorer_region_position(stage_explorer, roi) -> useq.AbsolutePositio
 
 
 def _transform_stage_explorer_position(
-    position: useq.AbsolutePosition, roi, *, stage_explorer
+    position: useq.AbsolutePosition, roi: ROI, *, stage_explorer: StageExplorer
 ) -> useq.AbsolutePosition:
     """Apply an ROI's OPM coverslip model to a generic widget position.
 
@@ -649,7 +676,7 @@ def _stage_explorer_channel_preset(mmc: CMMCorePlus) -> tuple[str, str]:
     return channel_group, channel_preset
 
 
-def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
+def _stage_explorer_blending_session_key(stage_explorer: StageExplorer) -> tuple:
     """Return settings that must remain compatible within one preview mosaic.
 
     Returns
@@ -673,6 +700,7 @@ def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
         "opm-stage-explorer",
         str(daq.scan_type),
         tuple(bool(state) for state in daq.channel_states),
+        bool(getattr(daq, "simultaneous", False)),
         None if daq.exposure_ms is None else float(daq.exposure_ms),
         (
             None
@@ -694,7 +722,7 @@ def _stage_explorer_blending_session_key(stage_explorer) -> tuple:
     )
 
 
-def _prepare_stage_explorer_blended_preview(stage_explorer) -> None:
+def _prepare_stage_explorer_blended_preview(stage_explorer: StageExplorer) -> None:
     """Arm the active preview and select a compatible blending session.
 
     Raises
@@ -711,7 +739,7 @@ def _prepare_stage_explorer_blended_preview(stage_explorer) -> None:
     )
 
 
-def _stage_explorer_scratch_output(controller) -> AcquisitionSettings:
+def _stage_explorer_scratch_output(controller: OPMAppController) -> AcquisitionSettings:
     """Create an application-owned disk-backed Stage Explorer output.
 
     Each preview receives a unique child directory so enabling overwrite can
@@ -765,7 +793,7 @@ def _stage_explorer_scratch_output(controller) -> AcquisitionSettings:
     )
 
 
-def _scan_stage_explorer_roi(stage_explorer) -> None:
+def _scan_stage_explorer_roi(stage_explorer: StageExplorer) -> None:
     """Scan the selected ROI with the active Micro-Manager channel preset."""
     controller = getattr(stage_explorer, "_opm_controller", None) or getattr(
         stage_explorer.window(), "opm_controller", None
@@ -820,7 +848,9 @@ def _scan_stage_explorer_roi(stage_explorer) -> None:
         raise
 
 
-def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None:
+def _connect_stage_explorer_to_mda(
+    stage_explorer: StageExplorer | None = None, mda_widget: MDAWidget | None = None
+) -> None:
     """Configure one GUI-owned Stage Explorer through its public widget API."""
     if stage_explorer is None or mda_widget is None:
         return
@@ -866,7 +896,12 @@ def _connect_stage_explorer_to_mda(stage_explorer=None, mda_widget=None) -> None
     stage_explorer.blending_enabled = True
     _install_stage_explorer_coverslip_controls(stage_explorer)
 
-    def _on_send_to_mda(_positions: list, _clear: bool) -> None:
+    def _on_send_to_mda(positions: list, clear: bool) -> None:
+        if clear:
+            mda_widget.stage_positions.setValue(positions)
+        else:
+            current = list(mda_widget.stage_positions.value() or [])
+            mda_widget.stage_positions.setValue(current + positions)
         # Exported positions own the spatial plan.  Leaving the global Grid tab
         # active would make useq clear X/Y and would cause the OPM builders to ignore
         # the exported regions.
@@ -898,6 +933,9 @@ def _create_opm_settings_widget(parent: MicroManagerGUI) -> OPMSettingsV2:
 def _ensure_opm_widget_registered() -> None:
     """Register the OPM settings widget with pymmcore-gui exactly once."""
     _install_safe_core_action_initializers()
+    WidgetActionInfo.for_key(
+        WidgetAction.STAGE_EXPLORER
+    ).create_widget = _create_opm_stage_explorer
     try:
         WidgetActionInfo.for_key(OPM_WIDGET_KEY)
     except KeyError:
@@ -907,6 +945,21 @@ def _ensure_opm_widget_registered() -> None:
             create_widget=_create_opm_settings_widget,
             dock_area=DockWidgetArea.LeftDockWidgetArea,
         )
+
+
+def _create_opm_stage_explorer(parent: QWidget | None) -> StageExplorer:
+    """Create OPM's explorer through the upstream widget registration API.
+
+    Returns
+    -------
+    StageExplorer
+        Instrument-specific explorer backed by unmodified upstream widgets.
+    """
+    window = parent if isinstance(parent, MicroManagerGUI) else parent.window()
+    core = (
+        window.mmcore if isinstance(window, MicroManagerGUI) else CMMCorePlus.instance()
+    )
+    return StageExplorer(parent=parent, mmcore=core)
 
 
 def enhance_main_window(main_window: MicroManagerGUI) -> OPMSettingsV2:
@@ -998,7 +1051,7 @@ class _WindowCloseFilter(QObject):
         super().__init__(parent)
         self._controller = controller
 
-    def eventFilter(self, watched, event) -> bool:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
         """Defer a close event until any active acquisition stops safely.
 
         Returns
@@ -1030,7 +1083,7 @@ class OPMAppController:
         self,
         config_path: Path = DEFAULT_CONFIG_PATH,
         *,
-        mmcore=None,
+        mmcore: CMMCorePlus | None = None,
         mm_config: Path | str | Literal[False] | None = None,
         exec_app: bool = True,
         simulate_hardware: bool | None = None,
@@ -1155,6 +1208,10 @@ class OPMAppController:
         self.win.installEventFilter(self._window_close_filter)
 
         self.mda_widget = self.win.get_widget(WidgetAction.MDA_WIDGET)
+        header = self.mda_widget.stage_positions._table.horizontalHeader()
+        if header is not None:
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+            header.setMinimumSectionSize(75)
         self.disable_native_mda_channels()
         self.configure_transposed_mda_grid_bounds()
 
@@ -1240,7 +1297,7 @@ class OPMAppController:
         if self.win is not None:
             QTimer.singleShot(0, self.win.close)
 
-    def _cleanup(self, label: str, callback) -> None:
+    def _cleanup(self, label: str, callback: Callable[..., Any]) -> None:
         """Run one best-effort shutdown operation without skipping later ones."""
         try:
             callback()
@@ -1373,7 +1430,7 @@ class OPMAppController:
 
     def _mark_or_visit_transposed_grid_bound(
         self,
-        bounds_control,
+        bounds_control: Any,
         _checked: bool = False,
         *,
         top: bool | None = None,
@@ -1550,6 +1607,7 @@ class OPMAppController:
 
         viewers_manager = getattr(self.win, "_viewers_manager", None)
         if viewers_manager is not None:
+            install_acquisition_viewer_cleanup(self.win)
             viewers_manager.previewViewerCreated.connect(_configure_live_preview)
             _configure_live_preview(viewers_manager._current_image_preview)
 
@@ -1562,11 +1620,6 @@ class OPMAppController:
         # Changes to the mm config
         self.mmc.events.configSet.connect(self.update_live_state)
         self.update_live_state()
-
-        # Changes to the selected AO mirror state
-        self.opm_settings_widget.widgets["AO"][
-            "mirror_state"
-        ].currentIndexChanged.connect(self.update_ao_mirror_state)
 
         # Connect live preview
         self.mmc.events.continuousSequenceAcquisitionStarting.connect(
@@ -1589,7 +1642,6 @@ class OPMAppController:
             "OPM STOP button -> cooperative software-boundary stop",
             "Picard shutter button -> O2-O3 shutter state",
             "mmc.events.configSet -> update_live_state",
-            "AO mirror_state currentIndexChanged -> update_ao_mirror_state",
             "continuousSequenceAcquisitionStarting -> setup_preview_mode_callback",
             "Live start/stop -> suspend/restore Stage Explorer polling",
         )
@@ -1697,11 +1749,11 @@ class OPMAppController:
             self._set_stage_explorer_position_polling(False)
             self._schedule_live_preview_refresh_interval()
 
-    def _schedule_live_preview_refresh_interval(self, *_args) -> None:
+    def _schedule_live_preview_refresh_interval(self, *_args: object) -> None:
         """Apply throttling after upstream preview slots finish starting timers."""
         QTimer.singleShot(0, self._set_live_preview_refresh_interval)
 
-    def _set_live_preview_refresh_interval(self, *_args) -> None:
+    def _set_live_preview_refresh_interval(self, *_args: object) -> None:
         """Coalesce fast camera frames into a responsive native Live display."""
         if (
             not self.mmc.isSequenceRunning()
@@ -1715,7 +1767,7 @@ class OPMAppController:
         if preview is None or not hasattr(preview, "_timer_id"):
             return
 
-        exposure_ms = max(1, int(round(float(self.mmc.getExposure()))))
+        exposure_ms = max(1, round(float(self.mmc.getExposure())))
         interval_ms = max(LIVE_DISPLAY_INTERVAL_MS, exposure_ms)
         timer_id = preview._timer_id
         if timer_id is not None:
@@ -1856,7 +1908,7 @@ class OPMAppController:
             _connect_stage_explorer_to_mda(explorer, self.mda_widget)
             _refresh_stage_explorer_display_footprint(explorer)
 
-    def _schedule_stage_explorer_configuration(self, *_args) -> None:
+    def _schedule_stage_explorer_configuration(self, *_args: object) -> None:
         """Configure an Explorer after pymmcore-gui has created its dock."""
         QTimer.singleShot(0, self._configure_stage_explorer)
 
@@ -1869,7 +1921,9 @@ class OPMAppController:
         if explorer is not None:
             _connect_stage_explorer_to_mda(explorer, self.mda_widget)
 
-    def update_live_state(self, device_name=None, property_name=None) -> None:
+    def update_live_state(
+        self, device_name: str | None = None, property_name: str | None = None
+    ) -> None:
         """Apply one non-reentrant live camera and DAQ configuration update."""
         if getattr(self, "_updating_live_state", False):
             self.debug(
@@ -1883,7 +1937,9 @@ class OPMAppController:
         finally:
             self._updating_live_state = False
 
-    def _update_live_state_once(self, device_name=None, property_name=None) -> None:
+    def _update_live_state_once(
+        self, device_name: str | None = None, property_name: str | None = None
+    ) -> None:
         """Apply live camera, DAQ, and channel state after MM config changes.
 
         The callback may temporarily stop continuous sequence acquisition while
@@ -1949,7 +2005,7 @@ class OPMAppController:
             1,
         )
 
-        # Get the current active laser channel, limits to one channel at a time
+        # The combined live preset gates both physical lasers on the same frame.
         image_mirror_range_um = np.round(
             float(self.mmc.getProperty("ImageGalvoMirrorRange", "Position")),
             0,
@@ -1958,7 +2014,11 @@ class OPMAppController:
         # Create the channel states list needed for the DAQ waveform
         active_channel_id = self.mmc.getProperty("Laser", "Label")
         channel_states = [
-            active_channel_id == channel_id
+            (
+                channel_id in COMBINED_CHANNELS[active_channel_id]
+                if active_channel_id in COMBINED_CHANNELS
+                else active_channel_id == channel_id
+            )
             for channel_id in self.config["OPM"]["channel_ids"]
         ]
 
@@ -1969,9 +2029,9 @@ class OPMAppController:
                 self.warning(
                     "PROJECTION EXPOSURE TOO LOW",
                     f"Requested exposure: {exposure_ms} ms",
-                    f"Defualting to {DEFUALT_PROJECTION_EXPOSURE}ms",
+                    f"Defualting to {DEFAULT_PROJECTION_EXPOSURE}ms",
                 )
-                exposure_ms = DEFUALT_PROJECTION_EXPOSURE
+                exposure_ms = DEFAULT_PROJECTION_EXPOSURE
         else:
             crop_y = int(self.mmc.getProperty("ImageCameraCrop", "Label"))
 
@@ -1982,6 +2042,7 @@ class OPMAppController:
             image_mirror_range_um=image_mirror_range_um,
             exposure_ms=exposure_ms,
             laser_blanking=daq_config["laser_blanking"],
+            simultaneous=active_channel_id in COMBINED_CHANNELS,
         )
 
         # ------------------------------------------------------------------------------#
@@ -2141,11 +2202,11 @@ class OPMAppController:
         self.opm_settings_widget.set_stop_pending()
         self.info(
             "OPM STOP REQUESTED",
-            "The active hardware-triggered event will finish.",
-            "Stopping before the next software-controlled command.",
+            "AO will stop at its next frame or stage-move boundary and restore hardware.",
+            "An active hardware-triggered imaging event will finish before stopping.",
         )
 
-    def _on_mda_sequence_started(self, *_args) -> None:
+    def _on_mda_sequence_started(self, *_args: object) -> None:
         """Disable pymmcore-gui's per-frame NDV updates for an OPM sequence."""
         if not self._opm_acquisition_active:
             return
@@ -2179,7 +2240,7 @@ class OPMAppController:
         self._opm_scan_footprint_active = True
         self.refresh_stage_explorer_footprint()
 
-    def _on_mda_sequence_finished(self, *_args) -> None:
+    def _on_mda_sequence_finished(self, *_args: object) -> None:
         """Clear cooperative-stop state after any OPM MDA completion."""
         if not self._opm_acquisition_active:
             return
@@ -2201,6 +2262,7 @@ class OPMAppController:
         output : Path, str, or None
             Requested MDA output or ``"memory"`` for an in-memory acquisition.
         """
+        self.update_config_snapshot(self.opm_settings_widget.acquisition_snapshot())
         opm_mode = self.config["acq_config"]["opm_mode"]
         ao_mode = self.config["acq_config"]["AO"]["ao_mode"]
         o2o3_mode = self.config["acq_config"]["o2o3_mode"]
@@ -2342,7 +2404,7 @@ class OPMAppController:
         optimize_now: bool,
         opm_mode: str,
         output: Path | None,
-    ):
+    ) -> tuple[list[useq.MDAEvent] | None, OpmDataHandler | None]:
         """Build custom OPM events for the selected acquisition mode.
 
         Parameters
@@ -2393,7 +2455,7 @@ def launch_opm_app(
     *,
     config_path: Path | str = DEFAULT_CONFIG_PATH,
     mm_config: Path | str | Literal[False] | None = None,
-    mmcore=None,
+    mmcore: CMMCorePlus | None = None,
     exec_app: bool = True,
     simulate_hardware: bool | None = None,
 ) -> MicroManagerGUI:

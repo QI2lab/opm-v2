@@ -42,6 +42,9 @@ def _isolated_engine() -> OPMEngineV2:
     """
     engine = object.__new__(OPMEngineV2)
     engine.simulate_hardware = True
+    engine.AOMirror = MagicMock()
+    engine.AOMirror.current_coeffs = np.zeros(2)
+    engine.AOMirror.optimized_reference_state = "system_flat"
     engine.simulated_asi_state = {}
     engine.simulated_asi_transitions = []
     engine.simulated_custom_actions = []
@@ -88,9 +91,7 @@ def test_sequenced_timeout_restarts_complete_tile_once() -> None:
     engine._tile_retry_prepare = MagicMock()
     engine._tile_setup_events = {
         ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
-        ACTION_DAQ: MDAEvent(
-            action=CustomAction(name=ACTION_DAQ, data={})
-        ),
+        ACTION_DAQ: MDAEvent(action=CustomAction(name=ACTION_DAQ, data={})),
     }
 
     def _failed_attempt():
@@ -128,9 +129,7 @@ def test_repeated_sequenced_timeout_propagates_after_one_retry() -> None:
     engine._tile_retry_prepare = MagicMock()
     engine._tile_setup_events = {
         ACTION_STAGE_MOVE: create_stage_event({"x": 1, "y": 2, "z": 3}),
-        ACTION_DAQ: MDAEvent(
-            action=CustomAction(name=ACTION_DAQ, data={})
-        ),
+        ACTION_DAQ: MDAEvent(action=CustomAction(name=ACTION_DAQ, data={})),
     }
 
     def _timeout():
@@ -305,14 +304,12 @@ def test_tile_restart_replays_full_hardware_startup_order() -> None:
     engine._snap_camera_for_retry.assert_called_once_with()
     mmcore.clearCircularBuffer.assert_called_once_with()
     assert [
-        replay_call.args[0].action.name
-        for replay_call in replay_setup.call_args_list
+        replay_call.args[0].action.name for replay_call in replay_setup.call_args_list
     ] == [ACTION_STAGE_MOVE, ACTION_DAQ, ACTION_ASI_SETUP_SCAN]
     assert replay_exec.call_count == 3
     upstream_setup.assert_called_once_with(event)
     assert all(
-        image.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] == 1
-        for image in image_events
+        image.metadata[TILE_RETRY_ATTEMPT_METADATA_KEY] == 1 for image in image_events
     )
 
 
@@ -479,12 +476,14 @@ def test_asi_hardware_setup_preserves_millimetre_position_precision() -> None:
 
     engine.setup_event(event)
 
-    assert call(
-        "XYStage", "ScanFastAxisStartPosition(mm)", pytest.approx(3.167460)
-    ) in mmcore.setProperty.call_args_list
-    assert call(
-        "XYStage", "ScanFastAxisStopPosition(mm)", pytest.approx(3.168460)
-    ) in mmcore.setProperty.call_args_list
+    assert (
+        call("XYStage", "ScanFastAxisStartPosition(mm)", pytest.approx(3.167460))
+        in mmcore.setProperty.call_args_list
+    )
+    assert (
+        call("XYStage", "ScanFastAxisStopPosition(mm)", pytest.approx(3.168460))
+        in mmcore.setProperty.call_args_list
+    )
     engine.configure_stage_camera_trigger.assert_called_once_with()
 
 
@@ -611,9 +610,7 @@ def test_preview_stage_move_speed_override_is_restored() -> None:
     engine = _isolated_engine()
     mmcore = MagicMock()
     engine._mmcore_ref = weakref.ref(mmcore)
-    engine._config = {
-        "OPM": {"stage_move_speed": 0.05, "circular_buffer_mb": 64}
-    }
+    engine._config = {"OPM": {"stage_move_speed": 0.05, "circular_buffer_mb": 64}}
     mmcore.getXYStageDevice.return_value = "XYStage"
     mmcore.hasProperty.return_value = True
     mmcore.isPropertyReadOnly.return_value = False
@@ -671,9 +668,7 @@ def test_saved_acquisition_restores_pre_sequence_manual_speeds() -> None:
     engine = _isolated_engine()
     mmcore = MagicMock()
     engine._mmcore_ref = weakref.ref(mmcore)
-    engine._config = {
-        "OPM": {"stage_move_speed": 0.05, "circular_buffer_mb": 64}
-    }
+    engine._config = {"OPM": {"stage_move_speed": 0.05, "circular_buffer_mb": 64}}
     mmcore.getXYStageDevice.return_value = "XYStage"
     mmcore.hasProperty.return_value = True
     mmcore.isPropertyReadOnly.return_value = False
@@ -750,9 +745,7 @@ def test_rejected_stage_speed_keeps_current_adapter_value() -> None:
     mmcore.getProperty.return_value = "1.2864"
     mmcore.setProperty.side_effect = RuntimeError("speed rejected")
 
-    applied = engine._apply_stage_move_speeds(
-        {"move_speed_x_mm_s": 5.1456}
-    )
+    applied = engine._apply_stage_move_speeds({"move_speed_x_mm_s": 5.1456})
 
     assert applied == pytest.approx({"x": 1.2864})
 
@@ -903,14 +896,14 @@ def test_stage_move_selects_speed_and_timeout_from_motion_context(
         engine.setup_event(event)
 
     mmcore.setTimeoutMs.assert_not_called()
-    mmcore.setDeviceTimeoutMs.assert_called_once_with(
-        "XYStage", expected_timeout_ms
-    )
+    mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", expected_timeout_ms)
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
-    apply_speeds.assert_called_once_with({
-        "move_speed_x_mm_s": expected_speed_mm_s,
-        "move_speed_y_mm_s": expected_speed_mm_s,
-    })
+    apply_speeds.assert_called_once_with(
+        {
+            "move_speed_x_mm_s": expected_speed_mm_s,
+            "move_speed_y_mm_s": expected_speed_mm_s,
+        }
+    )
     upstream_setup.assert_called_once_with(event)
     mmcore.setXYPosition.assert_not_called()
     assert engine._stage_move_count == move_count + 1
@@ -1048,9 +1041,7 @@ def test_saved_teardown_uses_4x_speed_for_large_return_then_restores() -> None:
         "MotorSpeedX-S(mm/s)",
         "MotorSpeedY-S(mm/s)",
     }
-    mmcore.hasProperty.side_effect = (
-        lambda _device, prop: prop in speed_properties
-    )
+    mmcore.hasProperty.side_effect = lambda _device, prop: prop in speed_properties
     mmcore.isPropertyReadOnly.return_value = False
     order: list[str] = []
 
@@ -1082,7 +1073,8 @@ def test_saved_teardown_uses_4x_speed_for_large_return_then_restores() -> None:
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
 
 
-def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
+@pytest.mark.parametrize("save_error", [False, True])
+def test_saved_acquisition_teardown_uses_extended_return_timeout(save_error) -> None:
     """Extend the timeout for the upstream return after a saved acquisition."""
     engine = _isolated_engine()
     engine.simulate_hardware = False
@@ -1096,6 +1088,9 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
     engine.opmDAQ = MagicMock()
     engine.AOMirror = MagicMock()
     engine.AOMirror.output_path = None
+    if save_error:
+        engine.AOMirror.output_path = Path("acquisition")
+        engine.AOMirror.save_positions_array.side_effect = OSError("disk unavailable")
     engine._post_teardown = None
     mmcore.hasProperty.return_value = False
     mmcore.getXYStageDevice.return_value = "XYStage"
@@ -1110,6 +1105,7 @@ def test_saved_acquisition_teardown_uses_extended_return_timeout() -> None:
         engine.teardown_sequence(MDASequence())
 
     upstream_teardown.assert_called_once()
+    mmcore.clearCircularBuffer.assert_called_once()
     mmcore.setTimeoutMs.assert_not_called()
     mmcore.setDeviceTimeoutMs.assert_called_once_with("XYStage", 5000)
     mmcore.unsetDeviceTimeout.assert_called_once_with("XYStage")
@@ -1130,18 +1126,20 @@ def test_ao_position_sidecars_are_mode_neutral_and_always_saved(
 
     engine._save_ao_position_arrays()
 
-    engine.AOMirror.save_positions_array.assert_called_once_with(
-        prefix="ao_position"
-    )
+    engine.AOMirror.save_positions_array.assert_called_once_with(prefix="ao_position")
 
 
 def test_daq_exposure_validation_uses_only_enabled_channels() -> None:
     """Validate DAQ exposure arrays before any camera or laser operation."""
     payload = {
         "DAQ": {"channel_states": [True, False, True]},
-        "Camera": {"exposure_channels": [5.0, 0.0, 7.0]},
+        "Camera": {"exposure_channels": [5.0, 0.0, 5.0]},
     }
-    assert OPMEngineV2._active_daq_exposures(payload) == [5.0, 7.0]
+    assert OPMEngineV2._active_daq_exposures(payload) == [5.0, 5.0]
+
+    payload["Camera"]["exposure_channels"] = [20.0, 0.0, 5.0]
+    with pytest.raises(ValueError, match="Interleaved acquisition requires equal"):
+        OPMEngineV2._active_daq_exposures(payload)
 
     payload["DAQ"]["channel_states"] = [False, False, False]
     with pytest.raises(ValueError, match="no active acquisition channels"):

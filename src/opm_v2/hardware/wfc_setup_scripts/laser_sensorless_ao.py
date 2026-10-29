@@ -221,7 +221,7 @@ mode_names = [
 ]
 
 # -------------------------------------------------#
-# Hardare configuration paths
+# Hardware configuration paths
 # -------------------------------------------------#
 
 mm_configPath = Path(
@@ -482,7 +482,7 @@ def optimize_modes(
                              list is reset each iteration and appended after each mode. If no 
                              update is applied the previous optimal metric is appended. 
     current_coeffs: Mirror mode coefficients updated when new mode deltas are accepted. 
-                    If not update is applied, no chages are made. This list is reset at
+                    If not update is applied, no changes are made. This list is reset at
                     the start of each iteration.    
     optimal_coeffs: The mirror coefficients at the end of each iteration. Includes the
                     starting mode coefficients. Includes the starting coefficients.
@@ -605,7 +605,7 @@ def optimize_modes(
                 "\n-------------------------------------------------------------------"
                 "\n-------------------------------------------------------------------"
                 f"\nAO iteration: {k + 1} / {num_iterations}"
-                f"   Modal pertubation amplitude: {mode_deltas[k]:.3f}"
+                f"   Modal perturbation amplitude: {mode_deltas[k]:.3f}"
                 "\n-------------------------------------------------------------------"
                 "\n-------------------------------------------------------------------"
             )

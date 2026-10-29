@@ -90,9 +90,7 @@ def build_live_acquisition_manifest(
     opm = first_metadata.get("OPM", {})
     scan_step = daq.get("scan_axis_step_um", daq.get("image_mirror_step_um"))
     if scan_step is None:
-        scan_step = config.get("acq_config", {}).get("DAQ", {}).get(
-            "scan_axis_step_um"
-        )
+        scan_step = config.get("acq_config", {}).get("DAQ", {}).get("scan_axis_step_um")
     excess_start = int(opm.get("excess_scan_start_positions", 0))
     excess_end = int(opm.get("excess_scan_end_positions", 0))
     orientations = {
@@ -114,9 +112,7 @@ def build_live_acquisition_manifest(
         "pixel_size_um": float(pixel_size_um),
         "angle_deg": _required_float(opm.get("angle_deg"), "angle_deg"),
         "camera_offset": _required_float(camera.get("offset"), "camera_offset"),
-        "camera_e_to_adu": _required_float(
-            camera.get("e_to_ADU"), "camera_e_to_adu"
-        ),
+        "camera_e_to_adu": _required_float(camera.get("e_to_ADU"), "camera_e_to_adu"),
         "excess_scan_positions": excess_start + excess_end,
         "excess_scan_start_positions": excess_start,
         "excess_scan_end_positions": excess_end,
@@ -315,8 +311,38 @@ def _channel_records(
     states = list(daq.get("channel_states", ()))
     powers = list(daq.get("channel_powers", ()))
     exposures = list(daq.get("channel_exposures_ms", ()))
+    from opm_v2.utils.laser_modes import is_simultaneous, normalize_laser_mode
+
+    if is_simultaneous(daq.get("laser_mode")):
+        from opm_v2.utils.laser_modes import (
+            SIMULTANEOUS_PRESETS,
+            simultaneous_channel_indices,
+        )
+
+        mode = normalize_laser_mode(daq["laser_mode"])
+        indices = simultaneous_channel_indices(names, mode)
+        if count != 1:
+            raise ValueError("Simultaneous illumination must have one stored channel")
+        return [
+            {
+                "name": SIMULTANEOUS_PRESETS[mode],
+                "wavelength_nm": None,
+                "excitation_wavelengths_nm": [
+                    float(names[i].removesuffix("nm")) for i in indices
+                ],
+                "exposure_ms": _optional_float(
+                    image_events[0].metadata["Camera"]["exposure_ms"]
+                ),
+                "laser_power": None,
+                "laser_powers": {
+                    str(names[i]): _optional_float_at(powers, i) for i in indices
+                },
+            }
+        ]
     active_indices = [index for index, active in enumerate(states) if active]
-    if len(active_indices) == count and all(index < len(names) for index in active_indices):
+    if len(active_indices) == count and all(
+        index < len(names) for index in active_indices
+    ):
         return [
             {
                 "name": str(names[index]),
@@ -337,7 +363,9 @@ def _channel_records(
         records[channel_index] = {
             "name": name,
             "wavelength_nm": _wavelength(name),
-            "exposure_ms": _optional_float(metadata.get("Camera", {}).get("exposure_ms")),
+            "exposure_ms": _optional_float(
+                metadata.get("Camera", {}).get("exposure_ms")
+            ),
             "laser_power": None,
         }
     if any(record is None for record in records):

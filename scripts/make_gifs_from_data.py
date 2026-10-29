@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import imageio.v2 as imageio
 import numpy as np
 
 from opm_v2.utils.script_io import load_tensorstore
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def scale_to_uint8(

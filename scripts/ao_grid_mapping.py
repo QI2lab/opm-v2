@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
-from collections.abc import Sequence
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from opm_v2.utils.position_tools import map_stage_positions_to_ao
 from opm_v2.utils.script_io import load_json, save_json
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
 
 
 def build_parser() -> argparse.ArgumentParser:

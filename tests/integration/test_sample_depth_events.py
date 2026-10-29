@@ -5,7 +5,11 @@ from __future__ import annotations
 import pytest
 from useq import AbsolutePosition, CustomAction, GridFromEdges, MDASequence
 
-from opm_v2.engine.opm_custom_events import ACTION_AO_GRID, ACTION_ASI_SETUP_SCAN
+from opm_v2.engine.opm_custom_events import (
+    ACTION_AO_GRID,
+    ACTION_AO_OPTIMIZE,
+    ACTION_ASI_SETUP_SCAN,
+)
 from opm_v2.engine.setup_events import (
     setup_mirrorscan,
     setup_projection,
@@ -22,6 +26,7 @@ from opm_v2.utils.coverslip import COVERSLIP_METADATA_KEY, CoverslipPlane
         ("stage", setup_stagescan, "pzc"),
     ],
 )
+@pytest.mark.parametrize("ao_mode", ["none", "at xyz positions"])
 def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
     demo_core,
     workspace_tmp_path,
@@ -31,6 +36,7 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
     mode,
     setup,
     axis_order,
+    ao_mode,
 ) -> None:
     """Apply every depth as an offset from the fitted local coverslip Z."""
     config = opm_config_factory(
@@ -42,12 +48,13 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
         scan_axis_step_um=2.0,
         updates={
             "acq_config": {
+                "AO": {"ao_mode": ao_mode},
                 "Positions": {
                     "sample_depth_start_um": 0.0,
                     # This bound is slightly thicker than one simulated
                     # camera footprint in every parameterized OPM mode.
                     "sample_depth_end_um": 17.0,
-                }
+                },
             }
         },
     )
@@ -81,6 +88,18 @@ def test_opm_modes_repeat_coverslip_corrected_xy_at_sample_depths(
     position_count = handler.index_sizes["p"]
     assert position_count % 2 == 0
     base_count = position_count // 2
+    if ao_mode == "at xyz positions":
+        ao_payloads = [
+            event.action.data["AO"]
+            for event in events
+            if getattr(event.action, "name", None) == ACTION_AO_OPTIMIZE
+            and not event.action.data["AO"]["apply_existing"]
+        ]
+        assert [(p["z_idx"], p["logical_position_idx"]) for p in ao_payloads] == [
+            (z_idx, lateral_idx)
+            for z_idx in range(2)
+            for lateral_idx in range(base_count)
+        ]
     if mode == "stage":
         stage_scan_progress = [
             event.action.data["StageScan"]
@@ -240,9 +259,10 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
     assert first_grid_idx < min(
         image_event_indices_by_position[index][0] for index in first_indices
     )
-    assert max(
-        image_event_indices_by_position[index][-1] for index in first_indices
-    ) < second_grid_idx
+    assert (
+        max(image_event_indices_by_position[index][-1] for index in first_indices)
+        < second_grid_idx
+    )
     assert second_grid_idx < min(
         event_idx
         for event_idx, event in apply_events

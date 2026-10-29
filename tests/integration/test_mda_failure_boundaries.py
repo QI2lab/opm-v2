@@ -65,7 +65,9 @@ def _runner_engine(
     return engine
 
 
-def _acquisition_events(demo_core) -> tuple[
+def _acquisition_events(
+    demo_core,
+) -> tuple[
     MDAEvent,
     MDAEvent,
     SequencedEvent,
@@ -81,9 +83,7 @@ def _acquisition_events(demo_core) -> tuple[
     """
     current_x, current_y = demo_core.getXYPosition()
     current_z = demo_core.getZPosition()
-    initial_stage = create_stage_event(
-        {"x": current_x, "y": current_y, "z": current_z}
-    )
+    initial_stage = create_stage_event({"x": current_x, "y": current_y, "z": current_z})
     daq = create_daq_event(
         mode="stage",
         channel_states=(True, False, False, False, False),
@@ -212,9 +212,7 @@ def test_repeated_stage_scan_failure_aborts_before_move_or_autofocus(
         call(daq),
         call(tile),
     ]
-    engine._restart_hardware_tile.assert_called_once_with(
-        tile, 1, received_frames=1
-    )
+    engine._restart_hardware_tile.assert_called_once_with(tile, 1, received_frames=1)
     assert teardown_event.call_args_list == [
         call(initial_stage),
         call(daq),
@@ -275,9 +273,7 @@ def test_successful_tile_retry_allows_runner_to_reach_move_and_autofocus(
         ACTION_STAGE_MOVE,
         ACTION_O2O3_AUTOFOCUS,
     ]
-    engine._restart_hardware_tile.assert_called_once_with(
-        tile, 1, received_frames=1
-    )
+    engine._restart_hardware_tile.assert_called_once_with(tile, 1, received_frames=1)
 
 
 def test_real_runner_waits_for_lagging_writer_before_retry_snapshot(
@@ -368,9 +364,7 @@ def test_real_runner_waits_for_lagging_writer_before_retry_snapshot(
     assert runner.status.finish_reason is FinishReason.COMPLETED
     assert handler.next_frame_at_prepare is not None
     assert handler.next_frame_at_prepare < 2
-    engine._restart_hardware_tile.assert_called_once_with(
-        tile, 1, received_frames=2
-    )
+    engine._restart_hardware_tile.assert_called_once_with(tile, 1, received_frames=2)
 
     array = read_tensorstore_array(output / "0")
     for plane, value in enumerate((10, 20, 30)):

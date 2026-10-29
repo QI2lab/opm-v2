@@ -105,21 +105,23 @@ STAGE_ILLUMINATED_TRAVEL_UM = (
 
 def configure_matplotlib() -> None:
     """Apply journal-friendly typography and vector-output settings."""
-    mpl.rcParams.update({
-        "font.family": "DejaVu Sans",
-        "font.size": 8,
-        "axes.titlesize": 10,
-        "axes.labelsize": 8,
-        "xtick.labelsize": 7,
-        "ytick.labelsize": 7,
-        "axes.linewidth": 0.7,
-        "lines.linewidth": 1.4,
-        "pdf.fonttype": 42,
-        "ps.fonttype": 42,
-        "svg.fonttype": "none",
-        "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.04,
-    })
+    mpl.rcParams.update(
+        {
+            "font.family": "DejaVu Sans",
+            "font.size": 8,
+            "axes.titlesize": 10,
+            "axes.labelsize": 8,
+            "xtick.labelsize": 7,
+            "ytick.labelsize": 7,
+            "axes.linewidth": 0.7,
+            "lines.linewidth": 1.4,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "svg.fonttype": "none",
+            "savefig.bbox": "tight",
+            "savefig.pad_inches": 0.04,
+        }
+    )
 
 
 def build_waveforms() -> dict[str, dict[str, np.ndarray | float | int]]:
@@ -231,14 +233,18 @@ def _plot_discrete_mode(
         projection_galvo = np.full(samples + 1, analog[0, 1])
     stage = np.zeros(samples + 1)
     stage_label = "Stage scan axis position"
-    traces.extend([
-        (image_galvo, "Image galvo", COLORS["image"], "-"),
-        (projection_galvo, "Projection galvo", COLORS["projection"], "-"),
-        (stage, stage_label, COLORS["stage"], "--"),
-    ])
+    traces.extend(
+        [
+            (image_galvo, "Image galvo", COLORS["image"], "-"),
+            (projection_galvo, "Projection galvo", COLORS["projection"], "-"),
+            (stage, stage_label, COLORS["stage"], "--"),
+        ]
+    )
 
     lane_positions = np.arange(len(traces))[::-1]
-    for lane_position, (values, label, color, linestyle) in zip(lane_positions, traces):
+    for lane_position, (values, _label, color, linestyle) in zip(
+        lane_positions, traces, strict=False
+    ):
         ax.step(
             x,
             _lane(values, int(lane_position)),
@@ -293,10 +299,12 @@ def _plot_stage_mode(
         camera_points.extend([1.0, 0.0])
         active_channel = frame_index % STAGE_CHANNELS
         for channel_index in range(STAGE_CHANNELS):
-            laser_points[channel_index].extend([
-                float(channel_index == active_channel),
-                0.0,
-            ])
+            laser_points[channel_index].extend(
+                [
+                    float(channel_index == active_channel),
+                    0.0,
+                ]
+            )
 
     x = np.asarray([*x_points, scan_distance_um])
     camera = np.asarray([*camera_points, 0.0])
@@ -329,7 +337,9 @@ def _plot_stage_mode(
     ]
 
     lane_positions = np.arange(len(traces))[::-1]
-    for lane_position, (values, label, color, linestyle) in zip(lane_positions, traces):
+    for lane_position, (values, label, color, linestyle) in zip(
+        lane_positions, traces, strict=False
+    ):
         if label == "Stage position (constant speed)":
             ax.plot(
                 x,
@@ -422,7 +432,7 @@ def _plot_projection_mode(
     ]
     lane_positions = np.arange(len(traces))[::-1]
     for lane_position, (values, _label, color, linestyle) in zip(
-        lane_positions, traces
+        lane_positions, traces, strict=False
     ):
         ax.plot(
             x,
@@ -490,7 +500,7 @@ def make_waveform_figure(
             ),
         ),
     ]
-    for ax, (mode, letter, title, equation) in zip(axes, panel_specs):
+    for ax, (mode, letter, title, equation) in zip(axes, panel_specs, strict=False):
         if mode == "projection":
             _plot_projection_mode(ax, waveforms[mode])
         elif mode == "stage":
@@ -621,7 +631,7 @@ def make_mode_map_figure() -> plt.Figure:
         va="top",
     )
     headers = ("Mode", "Acquisition sequence", "DAQ behavior")
-    for x, header in zip((0.04, 0.355, 0.73), headers):
+    for x, header in zip((0.04, 0.355, 0.73), headers, strict=False):
         ax.text(x, 0.82, header, fontsize=7, color=COLORS["muted"], fontweight="bold")
 
     rows = [

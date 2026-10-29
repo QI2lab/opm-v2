@@ -3,15 +3,12 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+from typing import TYPE_CHECKING
 
 import imageio.v2 as imageio
 import numpy as np
-from useq import MDAEvent, MDASequence
-
-from opm_v2.handlers.opm_data_handler import OpmDataHandler
-from opm_v2.utils import sensorless_ao
-from opm_v2.utils.script_io import load_tensorstore
+import pytest
+import zarr
 from scripts.ao_grid_mapping import main as map_ao_grid
 from scripts.ao_positions import main as select_ao_grid
 from scripts.load_ao_optimization_results import (
@@ -26,6 +23,142 @@ from scripts.make_gifs_from_data import main as make_gif
 from scripts.parse_ao_results import plot_results
 from scripts.parse_grid_ao_results import main as plot_ao_grid
 from scripts.stage_positions import main as generate_positions
+from useq import MDAEvent, MDASequence
+
+from opm_v2.handlers.opm_data_handler import OpmDataHandler
+from opm_v2.hardware.AOMirror import AOMirror
+from opm_v2.utils import sensorless_ao
+from opm_v2.utils.script_io import load_tensorstore
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
+
+def test_aborted_ao_can_save_positions_before_output_directory_exists(
+    workspace_tmp_path,
+):
+    """Save teardown sidecars even when AO failed before creating its folder."""
+    mirror = AOMirror(simulate=True)
+    mirror.output_path = workspace_tmp_path / "not_created" / "ao_run"
+    mirror.save_positions_array(prefix="ao_position")
+    voltages = json.loads((mirror.output_path / "ao_position_voltage.json").read_text())
+    coefficients = json.loads(
+        (mirror.output_path / "ao_position_mode_amplitude.json").read_text()
+    )
+    np.testing.assert_array_equal(voltages, mirror.positions_voltage_array)
+    np.testing.assert_array_equal(coefficients, mirror.positions_modal_array)
+
+
+@pytest.mark.parametrize("per_mode", [True, False], ids=["current", "legacy"])
+def test_six_iteration_ao_save_load_and_plots(
+    workspace_tmp_path, monkeypatch, per_mode
+):
+    """Plot all six iterations and the actual final coefficients of each."""
+    import matplotlib.pyplot as plt
+    from matplotlib.figure import Figure
+
+    iterations, modes, samples = 6, 2, 3
+    count = iterations * modes
+    coefficients = np.arange(count * 32, dtype=float).reshape(count, 32) / 1000
+    iteration_coefficients = coefficients.reshape(iterations, modes, 32)[:, -1]
+    sensorless_ao.save_optimization_results(
+        all_images=np.zeros((1 + count * (samples + 1), 2, 2), dtype=np.uint16),
+        all_metrics=np.arange(1 + count * (samples + 1), dtype=float),
+        optimal_images=np.zeros((count, 2, 2), dtype=np.uint16),
+        optimal_metrics=np.arange(count, dtype=float),
+        optimal_coeffs=coefficients if per_mode else iteration_coefficients,
+        starting_coeffs=np.zeros(32),
+        starting_metric=0.0,
+        starting_image=np.zeros((2, 2), dtype=np.uint16),
+        update_status=np.ones(count, dtype=bool),
+        metadata={
+            "num_iterations": np.int64(iterations),
+            "num_mode_samples": samples,
+            "modes_to_optimize": [3, 7],
+            "metric_name": "gauss_2d",
+            "o3_stack": {
+                "measurements": [
+                    {
+                        "crop_y0_y1_x0_x1": [
+                            np.int64(50),
+                            np.int64(147),
+                            np.int64(52),
+                            np.int64(149),
+                        ],
+                        "valid": np.bool_(True),
+                        "metric": np.float32(1.25),
+                        "positions": np.array([8.0, 8.5, 9.0]),
+                    }
+                ]
+            },
+        },
+        save_dir_path=workspace_tmp_path,
+    )
+    results = sensorless_ao.load_optimization_results(
+        workspace_tmp_path / "ao_results.zarr"
+    )
+    assert results["metadata"]["o3_stack"]["measurements"][0] == {
+        "crop_y0_y1_x0_x1": [50, 147, 52, 149],
+        "valid": True,
+        "metric": 1.25,
+        "positions": [8.0, 8.5, 9.0],
+    }
+    closed_figures = []
+    real_close = plt.close
+
+    def record_close(fig=None):
+        if isinstance(fig, Figure):
+            closed_figures.append(fig)
+        real_close(fig)
+
+    monkeypatch.setattr(plt, "close", record_close)
+    sensorless_ao.plot_zernike_coeffs(
+        results, sensorless_ao.mode_names, workspace_tmp_path
+    )
+    sensorless_ao.plot_metric_progress(
+        results, sensorless_ao.mode_names, save_dir_path=workspace_tmp_path
+    )
+    assert (workspace_tmp_path / "ao_zernike_coeffs.png").is_file()
+    assert (workspace_tmp_path / "ao_metrics.png").is_file()
+    assert len(closed_figures) == 2
+    coefficient_ax = closed_figures[0].axes[0]
+    for mode in range(32):
+        for iteration in range(iterations):
+            point = coefficient_ax.collections[32 + mode * iterations + iteration]
+            assert point.get_offsets()[0, 0] == iteration_coefficients[iteration, mode]
+    metric_lines = closed_figures[1].axes[0].lines
+    assert len(metric_lines) == 2 * iterations
+    np.testing.assert_array_equal(metric_lines[-1].get_ydata(), [10, 11])
+
+
+def test_invalid_metadata_does_not_replace_existing_ao_results(workspace_tmp_path):
+    """Reject unsupported metadata before opening an existing store for overwrite."""
+    path = workspace_tmp_path / "ao_results.zarr"
+    original = zarr.open_group(str(path), mode="w", attributes={"preserved": True})
+    original.create_array("image", data=np.arange(4))
+    arrays = {
+        name: np.zeros(1)
+        for name in (
+            "all_images",
+            "all_metrics",
+            "optimal_images",
+            "optimal_metrics",
+            "optimal_coeffs",
+            "starting_coeffs",
+            "starting_metric",
+            "starting_image",
+            "update_status",
+        )
+    }
+    with pytest.raises(TypeError, match="not JSON serializable"):
+        sensorless_ao.save_optimization_results(
+            **arrays,
+            metadata={"unsupported": object()},
+            save_dir_path=workspace_tmp_path,
+        )
+    restored = zarr.open_group(str(path), mode="r")
+    assert restored.attrs["preserved"] is True
+    np.testing.assert_array_equal(restored["image"][:], np.arange(4))
 
 
 def test_position_scripts_share_one_configurable_pipeline(
