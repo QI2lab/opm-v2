@@ -143,8 +143,8 @@
         "signalid": 46
     },
     "acq_config": {
-        "opm_mode": "mirror",
-        "o2o3_mode": "once at start",
+        "opm_mode": "stage",
+        "o2o3_mode": "per xyz position",
         "fluidics": "none",
         "camera_roi": {
             "center_x": 1151.0,
@@ -161,9 +161,9 @@
             "num_mode_samples": 3,
             "image_mirror_range_um": 100.0,
             "channel_id": "488nm",
-            "channel_power": 50.0,
-            "exposure_ms": 300.0,
-            "ao_mode": "none",
+            "channel_power": 5.0,
+            "exposure_ms": 200.0,
+            "ao_mode": "grid at start",
             "num_scan_positions": 3,
             "num_tile_positions": 3,
             "save_dir_path": "f:/optimize_now",
@@ -177,7 +177,7 @@
             "mode_accept": "zero",
             "time_interval": 6,
             "active_channel_id": "488nm",
-            "active_channel_power": 50.0,
+            "active_channel_power": 5.0,
             "starting_correction": "last optimized",
             "sequential_correction": "corresponding position in previous Z layer",
             "o3_stack_range_um": 7.0,
@@ -188,24 +188,24 @@
         },
         "DAQ": {
             "channel_states": [
-                false,
                 true,
-                false,
-                false,
+                true,
+                true,
+                true,
                 false
             ],
             "channel_powers": [
-                4.0,
                 10.0,
-                5.0,
+                10.0,
+                10.0,
                 10.0,
                 6.0
             ],
             "channel_exposures_ms": [
                 10.0,
-                20.0,
-                1.5,
-                20.0,
+                10.0,
+                10.0,
+                10.0,
                 0.0
             ],
             "scan_axis_step_um": 0.4,
@@ -218,7 +218,7 @@
             "coverslip_slope_y": 0.0,
             "coverslip_max_dz": 2.0,
             "sample_depth_start_um": 0.0,
-            "sample_depth_end_um": 0.0,
+            "sample_depth_end_um": 35.0,
             "scan_axis_overlap_um": 30,
             "scan_axis_overlap": 0.15,
             "tile_axis_overlap": 0.15,
