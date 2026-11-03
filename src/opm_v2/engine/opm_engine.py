@@ -1545,6 +1545,13 @@ class OPMEngineV2(MDAEngine):
                         z_idx=z_idx,
                         stage_positions=data_dict["AO"]["stage_positions"],
                         position_indices=data_dict["AO"].get("position_indices"),
+                        grid_bounds_um=data_dict["AO"].get("grid_bounds_um"),
+                        tile_bounds_um=data_dict["AO"].get("tile_bounds_um"),
+                        angle_deg=data_dict["AO"].get("angle_deg"),
+                        camera_zstage_orientation=data_dict["AO"].get(
+                            "camera_zstage_orientation"
+                        ),
+                        spatial_geometry=data_dict["AO"].get("spatial_geometry"),
                         ao_dict=data_dict["AO"]["ao_dict"],
                         previous_grid_coefficients=(
                             None

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from itertools import pairwise
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -508,14 +509,18 @@ def ao_grid_positions(
     stage_positions: Sequence[dict[str, float]],
     num_scan_positions: int,
     num_tile_positions: int,
+    *,
+    bounds_um: dict[str, Sequence[float]],
+    angle_deg: float | None = None,
+    camera_zstage_orientation: str | None = None,
 ) -> list[dict[str, float]]:
-    """Generate AO sample positions on the acquisition's physical XYZ surface.
+    """Sample equal acquisition cells on the existing focus surface.
 
-    The supplied positions represent one logical sample-depth level. Their
-    physical Z values already include coverslip tilt, sample-depth offset, and
-    oblique-scan correction. Fitting in physical stage coordinates therefore
-    preserves the complete X/Y-dependent focus surface at intermediate AO
-    sample locations.
+    Bounds, cells and tile footprints use depth-normalized laboratory scan X
+    and stage Y, in micrometers. Physical Z already includes the depth offset.
+    Fit that Z surface in the declared lateral frame, then convert each center
+    to physical stage X once, using its fitted Z and scan reference. Requested
+    sampling density is independent of the number of acquisition tile origins.
 
     Parameters
     ----------
@@ -525,6 +530,13 @@ def ao_grid_positions(
         Requested number of AO samples along physical stage X.
     num_tile_positions : int
         Requested number of AO samples along physical stage Y.
+    bounds_um : dict[str, Sequence[float]]
+        Explicit overall grid bounds with ``x`` and ``y`` pairs. These must
+        come from the acquisition plan or declared acquired support.
+    angle_deg : float or None
+        Calibrated OPM angle; required for compensated source positions.
+    camera_zstage_orientation : str or None
+        Physical Z direction for depth; required for compensated positions.
 
     Returns
     -------
@@ -536,29 +548,27 @@ def ao_grid_positions(
     ValueError
         If the position list is empty or either requested count is invalid.
     """
-    if num_scan_positions < 1 or num_tile_positions < 1:
-        raise ValueError("AO grid dimensions must be positive")
-
     coordinates = positions_array(stage_positions)
-    z_values, y_values, x_values = coordinates.T
-    unique_x = np.unique(x_values)
-    unique_y = np.unique(y_values)
-
-    def _axis_targets(unique_values: FloatArray, count: int) -> FloatArray:
-        if len(unique_values) == 1:
-            return unique_values.copy()
-        count = min(int(count), len(unique_values) + 1)
-        if count == 1:
-            return np.asarray([np.mean(unique_values)], dtype=float)
-        return np.linspace(
-            float(unique_values[0]),
-            float(unique_values[-1]),
-            count + 2,
-            endpoint=True,
-        )[1:-1]
-
-    target_x = _axis_targets(unique_x, num_scan_positions)
-    target_y = _axis_targets(unique_y, num_tile_positions)
+    z_values, y_values, _ = coordinates.T
+    x_values = np.asarray(
+        [position.get("lab_scan_um", position["x"]) for position in stage_positions],
+        dtype=float,
+    )
+    if not np.all(np.isfinite(coordinates)) or not np.all(np.isfinite(x_values)):
+        raise ValueError("AO surface positions must be finite")
+    cells = ao_grid_cells(bounds_um, num_scan_positions, num_tile_positions)
+    compensated = any("lab_scan_um" in position for position in stage_positions)
+    if compensated and (
+        angle_deg is None
+        or camera_zstage_orientation is None
+        or not all(
+            "lab_scan_um" in position and "scan_reference_z_um" in position
+            for position in stage_positions
+        )
+    ):
+        raise ValueError(
+            "Compensated AO positions require angle, orientation and scan reference"
+        )
 
     # Center coordinates before fitting to keep the intercept well-conditioned
     # for the large absolute positions used by the microscope stages. Include
@@ -575,37 +585,233 @@ def ao_grid_positions(
         fit_columns.append(y_values - y_center)
     design = np.column_stack(fit_columns)
     coefficients, *_ = np.linalg.lstsq(design, z_values, rcond=None)
+    reference_coefficients = None
+    if compensated:
+        reference_coefficients, *_ = np.linalg.lstsq(
+            design,
+            [position["scan_reference_z_um"] for position in stage_positions],
+            rcond=None,
+        )
 
     targets: list[dict[str, float]] = []
-    for y_value in target_y:
-        for x_value in target_x:
-            prediction = [1.0]
-            if varying_x:
-                prediction.append(float(x_value) - x_center)
-            if varying_y:
-                prediction.append(float(y_value) - y_center)
-            z_value = float(np.dot(coefficients, prediction))
-            targets.append(
-                {
-                    "z": float(np.round(z_value, 2)),
-                    "y": float(np.round(y_value, 2)),
-                    "x": float(np.round(x_value, 2)),
-                }
+    for x_min, x_max, y_min, y_max in cells:
+        x_value, y_value = (x_min + x_max) / 2, (y_min + y_max) / 2
+        prediction = [1.0]
+        if varying_x:
+            prediction.append(float(x_value) - x_center)
+        if varying_y:
+            prediction.append(float(y_value) - y_center)
+        z_value = float(np.dot(coefficients, prediction))
+        # A long trajectory can have only one origin along an axis. Retain a
+        # known planner surface slope there instead of inventing a flat plane.
+        if not varying_x:
+            z_value += float(stage_positions[0].get("focus_surface_slope_x", 0.0)) * (
+                x_value - x_center
             )
+        if not varying_y:
+            z_value += float(stage_positions[0].get("focus_surface_slope_y", 0.0)) * (
+                y_value - y_center
+            )
+        target = {"z": z_value, "y": float(y_value), "x": float(x_value)}
+        if reference_coefficients is not None:
+            target["lab_scan_um"] = float(x_value)
+            target["scan_reference_z_um"] = float(
+                np.dot(reference_coefficients, prediction)
+            )
+            target = apply_oblique_scan_correction(
+                [target], angle_deg, camera_zstage_orientation
+            )[0]
+        for key in ("depth_index", "sample_depth_um", "stage_depth_offset_um"):
+            if key in stage_positions[0]:
+                target[key] = stage_positions[0][key]
+        targets.append(
+            {
+                key: float(np.round(value, 3)) if key != "depth_index" else int(value)
+                for key, value in target.items()
+            }
+        )
     return targets
+
+
+def ao_grid_cells(
+    bounds_um: dict[str, Sequence[float]],
+    num_scan_positions: int,
+    num_tile_positions: int,
+) -> FloatArray:
+    """Return equal cells as X-min/X-max/Y-min/Y-max, Y-major then X-minor.
+
+    Parameters
+    ----------
+    bounds_um : dict[str, Sequence[float]]
+        Explicit laboratory scan X and stage Y bounds in micrometers.
+    num_scan_positions, num_tile_positions : int
+        Positive sampling counts independent of the acquisition tile layout.
+
+    Returns
+    -------
+    numpy.ndarray
+        Cell rectangles in the same frame as tile footprints, without rounding.
+    """
+    edges = []
+    for axis, count in (("x", num_scan_positions), ("y", num_tile_positions)):
+        if not np.isfinite(count) or int(count) != count or count < 1:
+            raise ValueError("AO grid dimensions must be positive integers")
+        pair = np.asarray(bounds_um[axis], dtype=float)
+        if pair.shape != (2,) or not np.all(np.isfinite(pair)) or pair[1] <= pair[0]:
+            raise ValueError(
+                "AO grid bounds must be finite increasing nonzero intervals"
+            )
+        edges.append(np.linspace(pair[0], pair[1], int(count) + 1))
+    x_edges, y_edges = edges
+    return np.asarray(
+        [
+            (x0, x1, y0, y1)
+            for y0, y1 in pairwise(y_edges)
+            for x0, x1 in pairwise(x_edges)
+        ],
+        dtype=float,
+    )
+
+
+def tile_footprints_um(
+    stage_positions: Sequence[dict[str, float]],
+    *,
+    scan_displacements_um: ArrayLike,
+    camera_scan_extent_um: float,
+    tile_width_um: float,
+) -> FloatArray:
+    """Return camera-extended trajectory rectangles in laboratory scan X/Y.
+
+    Parameters
+    ----------
+    stage_positions : Sequence[dict[str, float]]
+        Commanded scan starts; ``lab_scan_um`` takes precedence over raw X.
+    scan_displacements_um : ArrayLike
+        Signed commanded endpoint minus start, scalar or one per position.
+    camera_scan_extent_um, tile_width_um : float
+        Calibrated centered camera extents along scan X and tile Y, in um.
+
+    Returns
+    -------
+    numpy.ndarray
+        X-min/X-max/Y-min/Y-max rectangles, including reverse trajectories.
+    """
+    positions_array(stage_positions)
+    if not np.isfinite(camera_scan_extent_um) or camera_scan_extent_um < 0:
+        raise ValueError("Camera scan extent must be finite and nonnegative")
+    if not np.isfinite(tile_width_um) or tile_width_um <= 0:
+        raise ValueError("Tile width must be finite and positive")
+    displacements = np.broadcast_to(
+        np.asarray(scan_displacements_um, dtype=float), (len(stage_positions),)
+    )
+    if not np.all(np.isfinite(displacements)):
+        raise ValueError("Scan displacements must be finite")
+    starts = np.asarray([p.get("lab_scan_um", p["x"]) for p in stage_positions])
+    ends = starts + displacements
+    ys = np.asarray([p["y"] for p in stage_positions])
+    return np.column_stack(
+        (
+            np.minimum(starts, ends) - camera_scan_extent_um / 2,
+            np.maximum(starts, ends) + camera_scan_extent_um / 2,
+            ys - tile_width_um / 2,
+            ys + tile_width_um / 2,
+        )
+    )
+
+
+def stage_coordinate_metadata(
+    position: dict[str, float],
+    *,
+    angle_deg: float,
+    camera_zstage_orientation: str,
+    scan_offset_um: float = 0.0,
+) -> dict[str, Any]:
+    """Describe commanded stage and depth-normalized laboratory coordinates.
+
+    Parameters
+    ----------
+    position : dict[str, float]
+        Commanded tile position with optional retained lab scan/reference Z.
+    angle_deg : float
+        OPM angle used for the oblique transform.
+    camera_zstage_orientation : str
+        Stage sign for increasing sample depth.
+    scan_offset_um : float
+        Signed displacement from the tile origin for the current scan plane.
+
+    Returns
+    -------
+    dict[str, Any]
+        Additional explicit metadata; legacy coordinate fields stay available.
+        Planned commands are never represented as measured stage readbacks.
+    """
+    sign = sample_depth_stage_sign(camera_zstage_orientation)
+    reference = float(position.get("scan_reference_z_um", position["z"]))
+    normalized_z = -sign * (float(position["z"]) - reference)
+    physical = {
+        axis: float(
+            np.round(position[axis] + (scan_offset_um if axis == "x" else 0), 3)
+        )
+        for axis in ("x", "y", "z")
+    }
+    lab = {
+        "x": float(
+            np.round(position.get("lab_scan_um", position["x"]) + scan_offset_um, 3)
+        ),
+        "y": physical["y"],
+        "z": float(np.round(normalized_z, 3)),
+    }
+    return {
+        "physical_stage_command_um": physical,
+        "laboratory_scan_um": lab,
+        "stage_readback_um": None,
+        "coordinate_transform": {
+            "units": "um",
+            "physical_frame": "physical_stage_xyz",
+            "laboratory_frame": "depth_normalized_laboratory_scan_x_stage_y",
+            "angle_deg": float(angle_deg),
+            "sample_depth_stage_sign": sign,
+            "scan_reference_z_um": float(np.round(reference, 3)),
+            "oblique_compensation_applied": "lab_scan_um" in position,
+            "equation": "lab_z = -stage_sign * (stage_z - reference_z); stage_x = lab_scan_x - lab_z * cot(angle)",
+        },
+    }
+
+
+def rounded_geometry_metadata(value: Any) -> Any:
+    """Copy a spatial geometry payload with micrometer coordinates rounded to 3.
+
+    Parameters
+    ----------
+    value : Any
+        Nested spatial bounds, footprints or positions already converted to um.
+        Calibration and surface coefficients must be kept outside this payload.
+
+    Returns
+    -------
+    Any
+        Rounded storage copy; the calculation inputs are left unchanged.
+    """
+    if isinstance(value, dict):
+        return {key: rounded_geometry_metadata(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [rounded_geometry_metadata(item) for item in value]
+    return float(np.round(value, 3)) if isinstance(value, float) else value
 
 
 def nearest_ao_grid_indices(
     stage_positions: Sequence[dict[str, float]],
     ao_stage_positions: Sequence[dict[str, float]],
+    *,
+    cell_bounds_um: ArrayLike,
+    tile_bounds_um: ArrayLike,
 ) -> np.ndarray:
-    """Assign each acquisition position to its nearest lateral AO sample.
+    """Assign each entire tile to the AO cell of largest physical overlap.
 
-    AO grids are generated on one logical depth surface, where physical Z is a
-    dependent function of XY due to coverslip tilt and oblique acquisition
-    geometry.  Quantizing Z independently can construct an XYZ combination that
-    does not exist in the AO grid.  Lateral XY distance therefore defines the
-    AO prediction region.
+    The legacy helper name is retained for import compatibility. Both rectangle
+    collections must use the same declared laboratory scan X/stage Y frame,
+    in micrometers. Numerically tied areas choose the first cell in stable
+    Y-major/X-minor grid order. No constraint is imposed on tile counts per cell.
 
     Parameters
     ----------
@@ -613,6 +819,8 @@ def nearest_ao_grid_indices(
         Acquisition positions on one logical depth surface.
     ao_stage_positions : Sequence[dict[str, float]]
         AO optimization positions on the same surface.
+    cell_bounds_um, tile_bounds_um : ArrayLike
+        AO-cell and full tile rectangles as X-min/X-max/Y-min/Y-max, in um.
 
     Returns
     -------
@@ -628,15 +836,37 @@ def nearest_ao_grid_indices(
         raise ValueError("At least one acquisition position is required")
     if not ao_stage_positions:
         raise ValueError("At least one AO-grid position is required")
-    stage_coordinates = positions_array(stage_positions)
-    ao_coordinates = positions_array(ao_stage_positions)
-    stage_xy = stage_coordinates[:, (2, 1)]
-    ao_xy = ao_coordinates[:, (2, 1)]
-    squared_distances = np.sum(
-        (stage_xy[:, np.newaxis, :] - ao_xy[np.newaxis, :, :]) ** 2,
-        axis=2,
+    cells = np.asarray(cell_bounds_um, dtype=float)
+    tiles = np.asarray(tile_bounds_um, dtype=float)
+    for rectangles, count in (
+        (cells, len(ao_stage_positions)),
+        (tiles, len(stage_positions)),
+    ):
+        if (
+            rectangles.shape != (count, 4)
+            or not np.all(np.isfinite(rectangles))
+            or np.any(rectangles[:, 1] <= rectangles[:, 0])
+            or np.any(rectangles[:, 3] <= rectangles[:, 2])
+        ):
+            raise ValueError(
+                "Cell and tile bounds must be finite nonzero rectangles matching their positions"
+            )
+    x_overlap = np.maximum(
+        0,
+        np.minimum(tiles[:, None, 1], cells[None, :, 1])
+        - np.maximum(tiles[:, None, 0], cells[None, :, 0]),
     )
-    return np.argmin(squared_distances, axis=1).astype(int, copy=False)
+    y_overlap = np.maximum(
+        0,
+        np.minimum(tiles[:, None, 3], cells[None, :, 3])
+        - np.maximum(tiles[:, None, 2], cells[None, :, 2]),
+    )
+    areas = x_overlap * y_overlap
+    maximum = np.max(areas, axis=1, keepdims=True)
+    if np.any(maximum <= 0):
+        raise ValueError("Every tile must have positive overlap with the AO grid")
+    ties = (areas > 0) & np.isclose(areas, maximum, rtol=1e-12, atol=1e-9)
+    return np.argmax(ties, axis=1).astype(int, copy=False)
 
 
 def select_ao_positions(
@@ -746,9 +976,9 @@ def compose_stage_positions(
             # ASI scan origins are calculated in millimetres to six decimal
             # places. Preserve that sub-micrometre precision after converting
             # back to micrometres.
-            "x": float(np.round(scan_position, 6)),
-            "y": float(np.round(tile_position, 2)),
-            "z": float(np.round(z_position + z_offset_per_scan_um * scan_index, 2)),
+            "x": float(np.round(scan_position, 3)),
+            "y": float(np.round(tile_position, 3)),
+            "z": float(np.round(z_position + z_offset_per_scan_um * scan_index, 3)),
         }
         for z_position in z_positions_um
         for scan_index, scan_position in enumerate(scan_positions_um)

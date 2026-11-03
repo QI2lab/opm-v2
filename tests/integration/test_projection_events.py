@@ -229,4 +229,4 @@ def test_projection_applies_exported_coverslip_plane(
 
     assert [
         event.metadata["Stage"]["z_pos"] for event in image_events
-    ] == pytest.approx([7.0, 7.27, 7.53])
+    ] == pytest.approx([7.0, 7.267, 7.534])

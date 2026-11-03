@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from useq import CustomAction, MDAEvent
 
@@ -9,7 +10,65 @@ from opm_v2.engine.setup_events import (
     apply_timepoint_timing,
     clone_event,
     iter_planned_image_events,
+    resolve_ao_spatial_geometry,
 )
+
+
+def test_ao_geometry_uses_requested_bounds_separately_from_camera_support() -> None:
+    positions = [{"x": 100.0, "y": 200.0, "z": 0.0}]
+    geometry = resolve_ao_spatial_geometry(
+        stage_positions=positions,
+        mda_positions_plan=None,
+        mda_grid_plan={"bottom": 100.0, "top": 1000.0, "left": 180.0, "right": 220.0},
+        opm_mode="stage",
+        scan_displacement_um=900.0,
+        camera_scan_extent_um=20.0,
+        tile_width_um=80.0,
+    )
+
+    assert geometry["grid_bounds_um"] == {"x": [100.0, 1000.0], "y": [180.0, 220.0]}
+    assert geometry["requested_region_bounds_um"] == geometry["grid_bounds_um"]
+    assert geometry["commanded_acquired_support_bounds_um"] == {
+        "x": [90.0, 1010.0],
+        "y": [160.0, 240.0],
+    }
+    assert geometry["grid_bounds_source"] == "requested_mda_grid_bounds"
+    np.testing.assert_allclose(
+        geometry["tile_bounds_um"], [[90.0, 1010.0, 160.0, 240.0]]
+    )
+
+
+def test_ao_geometry_declares_degenerate_requested_axis_expansion() -> None:
+    geometry = resolve_ao_spatial_geometry(
+        stage_positions=[{"x": 100.0, "y": 200.0, "z": 0.0}],
+        mda_positions_plan=None,
+        mda_grid_plan={"bottom": 100.0, "top": 1000.0, "left": 200.0, "right": 200.0},
+        opm_mode="stage",
+        scan_displacement_um=900.0,
+        camera_scan_extent_um=20.0,
+        tile_width_um=80.0,
+    )
+
+    assert geometry["requested_region_bounds_um"]["y"] == [200.0, 200.0]
+    assert geometry["grid_bounds_um"]["y"] == [160.0, 240.0]
+    assert geometry["degenerate_requested_axes_expanded_to_acquired_support"] == ["y"]
+
+
+def test_literal_position_ao_geometry_uses_declared_full_footprint_fallback() -> None:
+    geometry = resolve_ao_spatial_geometry(
+        stage_positions=[{"x": 100.0, "lab_scan_um": 50.0, "y": 200.0, "z": 30.0}],
+        mda_positions_plan=None,
+        mda_grid_plan=None,
+        opm_mode="mirror",
+        scan_displacement_um=100.0,
+        camera_scan_extent_um=20.0,
+        tile_width_um=80.0,
+    )
+
+    assert geometry["grid_bounds_um"] == {"x": [-10.0, 110.0], "y": [160.0, 240.0]}
+    assert geometry["requested_region_bounds_um"] is None
+    assert geometry["grid_bounds_source"] == "acquired_support_for_literal_positions"
+    assert geometry["coordinate_frame"] == "depth_normalized_laboratory_scan_x_stage_y"
 
 
 @pytest.mark.parametrize(

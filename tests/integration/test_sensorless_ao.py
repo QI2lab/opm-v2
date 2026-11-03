@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import TYPE_CHECKING
 from unittest.mock import MagicMock, call
@@ -11,7 +12,7 @@ import pytest
 
 from opm_v2.engine.opm_custom_events import create_ao_grid_event
 from opm_v2.utils import sensorless_ao
-from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
+from opm_v2.utils.position_tools import ao_grid_positions, tile_footprints_um
 
 if TYPE_CHECKING:
     from pymmcore_plus import CMMCorePlus
@@ -213,9 +214,23 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
         num_scan_positions=3,
         save_dir_path=workspace_tmp_path,
         verbose=False,
+        grid_bounds_um={"x": [-0.5, 2.5], "y": [-0.5, 2.5]},
+        tile_bounds_um=tile_footprints_um(
+            stage_positions,
+            scan_displacements_um=0,
+            camera_scan_extent_um=1,
+            tile_width_um=1,
+        ),
+        angle_deg=30,
+        camera_zstage_orientation="positive",
     )
 
-    ao_positions = ao_grid_positions(stage_positions, 3, 3)
+    ao_positions = ao_grid_positions(
+        stage_positions,
+        3,
+        3,
+        bounds_um={"x": [-0.5, 2.5], "y": [-0.5, 2.5]},
+    )
     expected_grid_indices = np.asarray([0, 3, 6, 1, 4, 7, 2, 5, 8])
     expected_first_coefficients = expected_grid_indices.astype(float) + 1.0
     assert completed
@@ -248,6 +263,15 @@ def test_ao_grid_mapping_distributes_results_by_xy_region(
         mirror.positions_voltage_array[:, 2],
         expected_first_coefficients + 0.2,
     )
+    geometry = json.loads((workspace_tmp_path / "ao_grid_geometry.json").read_text())
+    assert geometry["tile_ao_indices"] == expected_grid_indices.tolist()
+    assert geometry["correction_scope"] == "entire_tile"
+    assert geometry["ao_positions"][0]["physical_stage_command_um"] == {
+        "x": 0.0,
+        "y": 0.0,
+        "z": 45.0,
+    }
+    assert geometry["ao_positions"][0]["stage_readback_um"] is not None
 
 
 def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
@@ -324,6 +348,15 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
         num_scan_positions=2,
         save_dir_path=z0_dir,
         verbose=False,
+        grid_bounds_um={"x": [-5, 45], "y": [-5, 35]},
+        tile_bounds_um=tile_footprints_um(
+            stage_positions,
+            scan_displacements_um=0,
+            camera_scan_extent_um=10,
+            tile_width_um=10,
+        ),
+        angle_deg=30,
+        camera_zstage_orientation="positive",
     )
     z1_result = sensorless_ao.run_ao_grid_mapping(
         ao_dict=ao_dict,
@@ -335,6 +368,15 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
         num_scan_positions=2,
         save_dir_path=z1_dir,
         verbose=False,
+        grid_bounds_um={"x": [-5, 45], "y": [-5, 35]},
+        tile_bounds_um=tile_footprints_um(
+            stage_positions,
+            scan_displacements_um=0,
+            camera_scan_extent_um=10,
+            tile_width_um=10,
+        ),
+        angle_deg=30,
+        camera_zstage_orientation="positive",
     )
 
     coarse_grid_size = len(z0_result.modal_coefficients)
@@ -348,8 +390,31 @@ def test_ao_grid_inherits_matching_coarse_grid_point_from_previous_z(
         np.stack(starts[coarse_grid_size:]),
         z0_result.modal_coefficients,
     )
-    coarse_positions = ao_grid_positions(stage_positions, 2, 2)
-    acquisition_to_ao = nearest_ao_grid_indices(stage_positions, coarse_positions)
+    # X=20 straddles the two X cells equally; stable grid order selects the left.
+    acquisition_to_ao = np.asarray(
+        [
+            0,
+            0,
+            2,
+            2,
+            0,
+            0,
+            2,
+            2,
+            0,
+            0,
+            2,
+            2,
+            1,
+            1,
+            3,
+            3,
+            1,
+            1,
+            3,
+            3,
+        ]
+    )
     np.testing.assert_allclose(
         mirror.positions_modal_array[:acquisition_grid_size],
         z0_result.modal_coefficients[acquisition_to_ao],
@@ -427,6 +492,15 @@ def test_grid_uses_acquisition_correction_policy(
                 time_idx=time_idx,
                 z_idx=z_idx,
                 verbose=False,
+                grid_bounds_um={"x": [z_idx - 5, z_idx + 15], "y": [-5, 5]},
+                tile_bounds_um=np.asarray(
+                    [
+                        [z_idx - 5, z_idx + 5, -5, 5],
+                        [z_idx + 5, z_idx + 15, -5, 5],
+                    ]
+                ),
+                angle_deg=30,
+                camera_zstage_orientation="positive",
             )
     expected = (
         list(range(8))

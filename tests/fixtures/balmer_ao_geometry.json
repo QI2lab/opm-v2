@@ -1,0 +1,107 @@
+{
+  "provenance": {
+    "dataset": "E:/Balmer_mouse/stage",
+    "requested_bounds_source": "balmer_tissue_stage.ome.zarr/zarr.json: attributes.opm_v2.configuration.resolved_spatial_plan.regions[0]",
+    "calibration_source": "balmer_tissue_stage.ome.zarr/zarr.json: attributes.opm_v2.configuration",
+    "depth_positions_source": "balmer_tissue_stage.ome_ao_grid_results/time_0_z_{0,1,2,3}_ao_grid_results/exp_stage_positions.json",
+    "legacy_ao_source": "balmer_tissue_stage.ome_ao_grid_results/time_0_z_{0,1,2,3}_ao_grid_results/ao_stage_positions.json",
+    "sampled_positions_source": "balmer_tissue_stage.ome.zarr/{0,7,14,21,28,35,42,49}/zarr.json: attributes.ome_writers.frame_metadata",
+    "inspection": "Read-only JSON metadata inspection. No image data or fused AO overlay was used.",
+    "position_semantics": "exp_stage_positions are planned physical stage commands. Legacy image Stage.x_pos is a depth-normalized laboratory scan position generated from frame index, not a measured stage readback. Commanded trajectory endpoints below are independently reconstructed from requested bounds and the calibrated scan splitter; they are not measured readbacks."
+  },
+  "units": "micrometer",
+  "region_name": "ROI_b4f3",
+  "requested_bounds_um": {
+    "x": [4622.8955078125, 5962.9521484375],
+    "y": [-91.3197021484375, 1011.993408203125]
+  },
+  "calibration": {
+    "angle_deg": 30.0,
+    "pixel_size_um": 0.115,
+    "camera_crop_x": 1900,
+    "camera_crop_y": 256,
+    "camera_Zstage_orientation": "positive",
+    "scan_axis_step_um": 0.4,
+    "configured_scan_overlap_um": 30.0,
+    "max_stage_scan_range_um": 1000.0,
+    "tile_axis_overlap": 0.15,
+    "z_axis_overlap": 0.15
+  },
+  "surface": {
+    "source": "flat_parent_z",
+    "parent_z_um": 2409.36,
+    "scan_reference_z_um": 2409.36,
+    "coverslip_slope_x": 0.0,
+    "coverslip_slope_y": 0.0
+  },
+  "grid_shape": [3, 3],
+  "recorded_lab_scan_starts_um": [4622.896, 5265.176],
+  "reconstructed_commanded_lab_scan_ends_um": [5320.672, 5962.952],
+  "recorded_lab_scan_last_frame_centers_um": [5320.096, 5962.376],
+  "recorded_scan_plane_count": 1744,
+  "recorded_channel_count": 3,
+  "recorded_excess_start_frames": 0,
+  "recorded_excess_end_frames": 0,
+  "recorded_tile_y_um": [-91.32, 92.57, 276.45, 460.34, 644.22, 828.11, 1011.99],
+  "depths": [
+    {
+      "depth_index": 0,
+      "sample_depth_um": 0.0,
+      "physical_stage_z_um": 2409.36,
+      "stage_depth_offset_um": 0.0,
+      "recorded_physical_stage_x_starts_um": [4622.896, 5265.176],
+      "recorded_legacy_ao_x_um": [4783.47, 4944.04, 5104.61],
+      "recorded_tile_count": 14,
+      "recorded_ao_measurement_count": 9
+    },
+    {
+      "depth_index": 1,
+      "sample_depth_um": 11.76,
+      "physical_stage_z_um": 2421.1200000000003,
+      "stage_depth_offset_um": 11.76,
+      "recorded_physical_stage_x_starts_um": [4643.26491749701, 5285.544917497011],
+      "recorded_legacy_ao_x_um": [4803.83, 4964.4, 5124.97],
+      "recorded_tile_count": 14,
+      "recorded_ao_measurement_count": 9
+    },
+    {
+      "depth_index": 2,
+      "sample_depth_um": 23.52,
+      "physical_stage_z_um": 2432.88,
+      "stage_depth_offset_um": 23.52,
+      "recorded_physical_stage_x_starts_um": [4663.63383499402, 5305.91383499402],
+      "recorded_legacy_ao_x_um": [4824.2, 4984.77, 5145.34],
+      "recorded_tile_count": 14,
+      "recorded_ao_measurement_count": 9
+    },
+    {
+      "depth_index": 3,
+      "sample_depth_um": 35.28,
+      "physical_stage_z_um": 2444.6400000000003,
+      "stage_depth_offset_um": 35.28,
+      "recorded_physical_stage_x_starts_um": [4684.00275249103, 5326.282752491031],
+      "recorded_legacy_ao_x_um": [4844.57, 5005.14, 5165.71],
+      "recorded_tile_count": 14,
+      "recorded_ao_measurement_count": 9
+    }
+  ],
+  "recorded_legacy_ao_y_um": [184.51, 460.34, 736.16],
+  "independent_expectations": {
+    "requested_grid_x_edges_um": [4622.8955078125, 5069.5810546875, 5516.2666015625, 5962.9521484375],
+    "requested_grid_y_edges_um": [-91.3197021484375, 276.4513346354167, 644.2223714192709, 1011.993408203125],
+    "requested_grid_lab_scan_centers_um": [4846.23828125, 5292.923828125, 5739.609375],
+    "requested_grid_y_centers_um": [92.56581624348959, 460.33685302734375, 828.1078898111979],
+    "camera_scan_extent_um": 25.495787887413876,
+    "camera_z_extent_um": 14.719999999999999,
+    "camera_tile_extent_um": 218.5,
+    "reconstructed_commanded_support_lab_scan_um": [4610.148106056293, 5975.699893943706],
+    "recorded_frame_center_support_lab_scan_um": [4610.148106056293, 5975.123893943707],
+    "support_y_um": [-200.57, 1121.24],
+    "physical_stage_x_grid_centers_rounded_um_by_depth": [
+      [4846.238, 5292.924, 5739.609],
+      [4866.607, 5313.293, 5759.978],
+      [4886.976, 5333.662, 5780.347],
+      [4907.345, 5354.031, 5800.716]
+    ]
+  }
+}

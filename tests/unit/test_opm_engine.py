@@ -516,6 +516,10 @@ def test_ao_grid_engine_passes_previous_z_coarse_grid_result() -> None:
                         "z_idx": z_idx,
                         "stage_positions": [{"x": 0.0, "y": 0.0, "z": z_idx}],
                         "position_indices": [z_idx],
+                        "grid_bounds_um": {"x": [0.0, 100.0], "y": [-10.0, 10.0]},
+                        "tile_bounds_um": [[0.0, 100.0, -10.0, 10.0]],
+                        "angle_deg": 30.0,
+                        "camera_zstage_orientation": "positive",
                         "ao_dict": {},
                         "num_tile_positions": 1,
                         "num_scan_positions": 2,
@@ -534,6 +538,15 @@ def test_ao_grid_engine_passes_previous_z_coarse_grid_result() -> None:
 
     assert run_grid.call_count == 2
     assert run_grid.call_args_list[0].kwargs["previous_grid_coefficients"] is None
+    assert run_grid.call_args_list[0].kwargs["grid_bounds_um"] == {
+        "x": [0.0, 100.0],
+        "y": [-10.0, 10.0],
+    }
+    assert run_grid.call_args_list[0].kwargs["tile_bounds_um"] == [
+        [0.0, 100.0, -10.0, 10.0]
+    ]
+    assert run_grid.call_args_list[0].kwargs["angle_deg"] == 30.0
+    assert run_grid.call_args_list[0].kwargs["camera_zstage_orientation"] == "positive"
     np.testing.assert_array_equal(
         run_grid.call_args_list[1].kwargs["previous_grid_coefficients"],
         z0_coefficients,
