@@ -412,6 +412,42 @@ def test_stage_scan_logs_planned_progress_only_after_scan_starts() -> None:
     assert engine._pending_stage_scan_progress is None
 
 
+@pytest.mark.parametrize(
+    "raw_x_um,command_mm,stored_x_um",
+    [(107.79422863405995, 0.107794, 107.794), (99.36087325200708, 0.099361, 99.361)],
+)
+def test_asi_progress_matches_command_precision_without_mutating_plan(
+    raw_x_um, command_mm, stored_x_um
+) -> None:
+    """Keep compensated trajectory metadata consistent across um/mm units."""
+    progress = {
+        "x_um": raw_x_um,
+        "y_um": -15.123456,
+        "z_um": 2409.360987,
+        "position_index": 2,
+        "position_count": 14,
+    }
+    original = progress.copy()
+    event = create_asi_scan_setup_event(
+        start_mm=raw_x_um / 1000.0,
+        end_mm=(raw_x_um + 697.776) / 1000.0,
+        speed_mm_s=0.0123456789,
+        progress=progress,
+    )
+    payload = event.action.data
+    assert payload["ASI"]["scan_axis_start_mm"] == command_mm
+    assert payload["StageScan"] == {
+        "x_um": stored_x_um,
+        "y_um": -15.123,
+        "z_um": 2409.361,
+        "position_index": 2,
+        "position_count": 14,
+    }
+    assert payload["StageScan"]["x_um"] / 1000 == pytest.approx(command_mm, abs=1e-12)
+    assert payload["ASI"]["scan_axis_speed_mm_s"] == 0.0123456789
+    assert progress == original
+
+
 def test_stage_scan_does_not_log_when_driver_rejects_start() -> None:
     """Do not report a scan start before Micro-Manager accepts the command."""
     engine = object.__new__(OPMEngineV2)

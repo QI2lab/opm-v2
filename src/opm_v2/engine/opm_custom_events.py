@@ -640,5 +640,10 @@ def create_asi_scan_setup_event(
         }
     }
     if progress is not None:
-        data["StageScan"] = dict(progress)
+        # Commands are stored in mm to six places. Convert/round the copied
+        # micrometer progress coordinates to the equivalent precision too.
+        data["StageScan"] = {
+            key: round(float(value), 3) if key in {"x_um", "y_um", "z_um"} else value
+            for key, value in progress.items()
+        }
     return _custom_event(ACTION_ASI_SETUP_SCAN, data)
