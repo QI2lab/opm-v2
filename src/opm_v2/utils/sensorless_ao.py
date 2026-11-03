@@ -26,7 +26,13 @@ from opm_v2.utils.ao_cancel import AOCancelled, check_ao_stop
 from opm_v2.utils.ao_o3_stack import METRIC_NAME as O3_STACK_METRIC
 from opm_v2.utils.ao_o3_stack import O3StackMetric, O3StackSettings
 from opm_v2.utils.metadata_serialization import json_metadata
-from opm_v2.utils.position_tools import ao_grid_positions, nearest_ao_grid_indices
+from opm_v2.utils.position_tools import (
+    ao_grid_cells,
+    ao_grid_positions,
+    nearest_ao_grid_indices,
+    rounded_geometry_metadata,
+    stage_coordinate_metadata,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
@@ -753,9 +759,9 @@ def run_ao_optimization(
 
     # get the current stage position
     stage_position = {
-        "z": mmc.getZPosition(),
-        "y": mmc.getYPosition(),
-        "x": mmc.getXPosition(),
+        "z": float(np.round(mmc.getZPosition(), 3)),
+        "y": float(np.round(mmc.getYPosition(), 3)),
+        "x": float(np.round(mmc.getXPosition(), 3)),
     }
 
     # ---------------------------------------------#
@@ -893,6 +899,11 @@ def run_ao_optimization(
         "starting_mirror_state": starting_state_label,
         "starting_coeffs": starting_coeffs.tolist(),
         "stage_position": stage_position,
+        "stage_position_kind": "measured_readback",
+        "stage_coordinate_units": "um",
+        "physical_stage_readback_um": {
+            axis: float(np.round(value, 3)) for axis, value in stage_position.items()
+        },
         "opm_mode": daq_mode,
         "metric_name": metric_to_use,
         "num_averaged_frames": num_averaged_frames,
@@ -2832,8 +2843,14 @@ def run_ao_grid_mapping(
     time_idx: int = 0,
     z_idx: int = 0,
     stop_requested: Callable[[], bool] | None = None,
+    *,
+    grid_bounds_um: dict,
+    tile_bounds_um: NDArray,
+    angle_deg: float,
+    camera_zstage_orientation: str,
+    spatial_geometry: dict | None = None,
 ) -> AOGridResult | None:
-    """Run adaptive optics on a grid and interpolate across stage positions.
+    """Measure equal spatial cells and assign one correction to each whole tile.
 
     Parameters
     ----------
@@ -2867,6 +2884,16 @@ def run_ao_grid_mapping(
 
     stop_requested : callable or None
         Cooperative cancellation predicate checked between grid positions.
+    grid_bounds_um : dict
+        Explicit overall acquisition bounds in laboratory scan X/stage Y, um.
+    tile_bounds_um : numpy.ndarray
+        Camera-extended tile footprints in that same frame, as xmin/xmax/ymin/ymax.
+    angle_deg : float
+        Calibrated OPM angle for the laboratory-to-stage transform.
+    camera_zstage_orientation : str
+        Configured sign of physical Z for increasing sample depth.
+    spatial_geometry : dict or None
+        Planner's explicit requested-bound provenance and commanded support.
 
     Returns
     -------
@@ -2939,9 +2966,18 @@ def run_ao_grid_mapping(
         stage_positions,
         num_scan_positions=num_scan_positions,
         num_tile_positions=num_tile_positions,
+        bounds_um=grid_bounds_um,
+        angle_deg=angle_deg,
+        camera_zstage_orientation=camera_zstage_orientation,
     )
-    num_scan_positions = len({position["x"] for position in ao_stage_positions})
-    num_tile_positions = len({position["y"] for position in ao_stage_positions})
+    cells = ao_grid_cells(grid_bounds_um, num_scan_positions, num_tile_positions)
+    # Validate the complete mapping before moving or optimizing any grid point.
+    ao_grid_indices = nearest_ao_grid_indices(
+        stage_positions,
+        ao_stage_positions,
+        cell_bounds_um=cells,
+        tile_bounds_um=tile_bounds_um,
+    )
 
     # Save AO optimization results here
     num_ao_pos = len(ao_stage_positions)
@@ -3016,7 +3052,59 @@ def run_ao_grid_mapping(
     with open(ao_positions_path, "w") as file:
         json.dump(ao_stage_positions, file, indent=4)
     with open(exp_positions_path, "w") as file:
-        json.dump(stage_positions, file, indent=4)
+        json.dump(
+            [
+                {
+                    key: (
+                        float(np.round(value, 3))
+                        if key
+                        in {
+                            "x",
+                            "y",
+                            "z",
+                            "lab_scan_um",
+                            "scan_reference_z_um",
+                            "sample_depth_um",
+                            "stage_depth_offset_um",
+                        }
+                        else value
+                    )
+                    for key, value in position.items()
+                }
+                for position in stage_positions
+            ],
+            file,
+            indent=4,
+        )
+
+    geometry_path = save_dir_path / "ao_grid_geometry.json"
+    geometry_metadata = {
+        "schema_version": 1,
+        "units": "um",
+        "coordinate_frame": "depth_normalized_laboratory_scan_x_stage_y",
+        "grid_bounds_um": {
+            axis: np.round(values, 3).tolist()
+            for axis, values in grid_bounds_um.items()
+        },
+        "cell_bounds_um": np.round(cells, 3).tolist(),
+        "tile_bounds_um": np.round(tile_bounds_um, 3).tolist(),
+        "position_indices": list(position_indices),
+        "tile_ao_indices": ao_grid_indices.tolist(),
+        "assignment": "largest_xy_overlap_area",
+        "tie_break": "lowest_grid_index_y_major_x_minor",
+        "correction_scope": "entire_tile",
+        "spatial_geometry": rounded_geometry_metadata(spatial_geometry),
+        "ao_positions": [
+            stage_coordinate_metadata(
+                position,
+                angle_deg=angle_deg,
+                camera_zstage_orientation=camera_zstage_orientation,
+            )
+            for position in ao_stage_positions
+        ],
+    }
+    with open(geometry_path, "w") as file:
+        json.dump(geometry_metadata, file, indent=4)
 
     # Visit AO stage positions and measure best WFC positions
     if verbose:
@@ -3033,9 +3121,9 @@ def run_ao_grid_mapping(
         target_y = ao_stage_positions[ao_pos_idx]["y"]
         target_z = ao_stage_positions[ao_pos_idx]["z"]
 
-        mmc.setPosition(np.round(target_z, 2))
+        mmc.setPosition(np.round(target_z, 3))
         mmc.waitForDevice(mmc.getFocusDevice())
-        mmc.setXYPosition(np.round(float(target_x), 2), np.round(float(target_y), 2))
+        mmc.setXYPosition(np.round(float(target_x), 3), np.round(float(target_y), 3))
         current_x, current_y = mmc.getXYPosition()
 
         while not (np.isclose(current_x, target_x, 0.0, 1.0)) or not (
@@ -3043,6 +3131,14 @@ def run_ao_grid_mapping(
         ):
             current_x, current_y = mmc.getXYPosition()
             sleep(0.5)
+
+        geometry_metadata["ao_positions"][ao_pos_idx]["stage_readback_um"] = {
+            "x": float(np.round(current_x, 3)),
+            "y": float(np.round(current_y, 3)),
+            "z": float(np.round(mmc.getZPosition(), 3)),
+        }
+        with open(geometry_path, "w") as file:
+            json.dump(geometry_metadata, file, indent=4)
 
         current_save_dir = save_dir_path / Path(f"grid_pos_{int(ao_pos_idx)}")
         current_save_dir.mkdir(exist_ok=True)
@@ -3104,10 +3200,6 @@ def run_ao_grid_mapping(
     # Map ao_grid_wfc_coeffs to experiment stage positions.
     position_wfc_coeffs = AOMirror_local.positions_modal_array.copy()
     position_wfc_positions = AOMirror_local.positions_voltage_array.copy()
-    ao_grid_indices = nearest_ao_grid_indices(
-        stage_positions,
-        ao_stage_positions,
-    )
     for local_pos_idx, ao_grid_idx in enumerate(ao_grid_indices):
         # Assign AO data
         pos_idx = int(position_indices[local_pos_idx])

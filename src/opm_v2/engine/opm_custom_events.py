@@ -584,9 +584,9 @@ def create_stage_event(stage_position: Mapping[str, float]) -> MDAEvent:
     MDAEvent
         Stage-move event.
     """
-    x_pos = float(stage_position["x"])
-    y_pos = float(stage_position["y"])
-    z_pos = float(stage_position["z"])
+    x_pos = round(float(stage_position["x"]), 3)
+    y_pos = round(float(stage_position["y"]), 3)
+    z_pos = round(float(stage_position["z"]), 3)
     return MDAEvent(
         x_pos=x_pos,
         y_pos=y_pos,
@@ -634,11 +634,16 @@ def create_asi_scan_setup_event(
     data: dict[str, object] = {
         "ASI": {
             "mode": "scan",
-            "scan_axis_start_mm": float(start_mm),
-            "scan_axis_end_mm": float(end_mm),
+            "scan_axis_start_mm": round(float(start_mm), 6),
+            "scan_axis_end_mm": round(float(end_mm), 6),
             "scan_axis_speed_mm_s": float(speed_mm_s),
         }
     }
     if progress is not None:
-        data["StageScan"] = dict(progress)
+        # Commands are stored in mm to six places. Convert/round the copied
+        # micrometer progress coordinates to the equivalent precision too.
+        data["StageScan"] = {
+            key: round(float(value), 3) if key in {"x_um", "y_um", "z_um"} else value
+            for key, value in progress.items()
+        }
     return _custom_event(ACTION_ASI_SETUP_SCAN, data)

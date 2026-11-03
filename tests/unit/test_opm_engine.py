@@ -412,6 +412,42 @@ def test_stage_scan_logs_planned_progress_only_after_scan_starts() -> None:
     assert engine._pending_stage_scan_progress is None
 
 
+@pytest.mark.parametrize(
+    "raw_x_um,command_mm,stored_x_um",
+    [(107.79422863405995, 0.107794, 107.794), (99.36087325200708, 0.099361, 99.361)],
+)
+def test_asi_progress_matches_command_precision_without_mutating_plan(
+    raw_x_um, command_mm, stored_x_um
+) -> None:
+    """Keep compensated trajectory metadata consistent across um/mm units."""
+    progress = {
+        "x_um": raw_x_um,
+        "y_um": -15.123456,
+        "z_um": 2409.360987,
+        "position_index": 2,
+        "position_count": 14,
+    }
+    original = progress.copy()
+    event = create_asi_scan_setup_event(
+        start_mm=raw_x_um / 1000.0,
+        end_mm=(raw_x_um + 697.776) / 1000.0,
+        speed_mm_s=0.0123456789,
+        progress=progress,
+    )
+    payload = event.action.data
+    assert payload["ASI"]["scan_axis_start_mm"] == command_mm
+    assert payload["StageScan"] == {
+        "x_um": stored_x_um,
+        "y_um": -15.123,
+        "z_um": 2409.361,
+        "position_index": 2,
+        "position_count": 14,
+    }
+    assert payload["StageScan"]["x_um"] / 1000 == pytest.approx(command_mm, abs=1e-12)
+    assert payload["ASI"]["scan_axis_speed_mm_s"] == 0.0123456789
+    assert progress == original
+
+
 def test_stage_scan_does_not_log_when_driver_rejects_start() -> None:
     """Do not report a scan start before Micro-Manager accepts the command."""
     engine = object.__new__(OPMEngineV2)
@@ -516,6 +552,10 @@ def test_ao_grid_engine_passes_previous_z_coarse_grid_result() -> None:
                         "z_idx": z_idx,
                         "stage_positions": [{"x": 0.0, "y": 0.0, "z": z_idx}],
                         "position_indices": [z_idx],
+                        "grid_bounds_um": {"x": [0.0, 100.0], "y": [-10.0, 10.0]},
+                        "tile_bounds_um": [[0.0, 100.0, -10.0, 10.0]],
+                        "angle_deg": 30.0,
+                        "camera_zstage_orientation": "positive",
                         "ao_dict": {},
                         "num_tile_positions": 1,
                         "num_scan_positions": 2,
@@ -534,6 +574,15 @@ def test_ao_grid_engine_passes_previous_z_coarse_grid_result() -> None:
 
     assert run_grid.call_count == 2
     assert run_grid.call_args_list[0].kwargs["previous_grid_coefficients"] is None
+    assert run_grid.call_args_list[0].kwargs["grid_bounds_um"] == {
+        "x": [0.0, 100.0],
+        "y": [-10.0, 10.0],
+    }
+    assert run_grid.call_args_list[0].kwargs["tile_bounds_um"] == [
+        [0.0, 100.0, -10.0, 10.0]
+    ]
+    assert run_grid.call_args_list[0].kwargs["angle_deg"] == 30.0
+    assert run_grid.call_args_list[0].kwargs["camera_zstage_orientation"] == "positive"
     np.testing.assert_array_equal(
         run_grid.call_args_list[1].kwargs["previous_grid_coefficients"],
         z0_coefficients,

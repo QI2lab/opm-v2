@@ -266,7 +266,7 @@ def test_mirror_applies_exported_coverslip_plane(
         stage = event.metadata["Stage"]
         position_z.setdefault(stage["x_pos"], stage["z_pos"])
 
-    assert position_z == pytest.approx({100.0: 9.0, 102.67: 9.27, 105.34: 9.53})
+    assert position_z == pytest.approx({100.0: 9.0, 102.67: 9.267, 105.34: 9.534})
     stage_events = [
         event
         for event in events
@@ -355,7 +355,8 @@ def test_tilted_mirror_tiles_overlap_in_both_lab_axes(
         stage = event.metadata["Stage"]
         lab_z_offset = -(stage["z_pos"] - reference_z)
         expected_raw_scan = stage["x_pos"] - lab_z_offset / np.tan(np.pi / 6)
-        assert move.x_pos == pytest.approx(expected_raw_scan)
+        assert move.x_pos == round(float(expected_raw_scan), 3)
+        assert move.x_pos == stage["physical_stage_command_um"]["x"]
 
 
 def test_timelapse_writer_uses_camera_event_order(
@@ -404,7 +405,8 @@ def test_timelapse_writer_uses_camera_event_order(
         for event in image_events
     )
     assert all(
-        event.metadata["Stage"] == {"x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0}
+        {key: event.metadata["Stage"][key] for key in ("x_pos", "y_pos", "z_pos")}
+        == {"x_pos": 0.0, "y_pos": 0.0, "z_pos": 0.0}
         for event in image_events
     )
     assert ACTION_ASI_SETUP_SCAN not in custom_actions
@@ -444,9 +446,16 @@ def test_timelapse_without_spatial_plan_uses_current_stage_without_command(
         for event in image_events
     )
     assert all(
-        event.metadata["Stage"]
-        == {"x_pos": current_x, "y_pos": current_y, "z_pos": current_z}
+        {key: event.metadata["Stage"][key] for key in ("x_pos", "y_pos", "z_pos")}
+        == {
+            "x_pos": round(current_x, 3),
+            "y_pos": round(current_y, 3),
+            "z_pos": round(current_z, 3),
+        }
         for event in image_events
+    )
+    assert all(
+        event.metadata["Stage"]["stage_readback_um"] is None for event in image_events
     )
 
 

@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import numpy as np
 import pytest
 from useq import AbsolutePosition, CustomAction, GridFromEdges, MDASequence
 
 from opm_v2.engine.opm_custom_events import (
     ACTION_AO_GRID,
+    ACTION_AO_MIRROR_UPDATE,
     ACTION_AO_OPTIMIZE,
     ACTION_ASI_SETUP_SCAN,
 )
@@ -249,6 +251,20 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
     for apply_event_idx, apply_event in apply_events:
         pos_idx = apply_event.action.data["AO"]["pos_idx"]
         assert apply_event_idx < image_event_indices_by_position[pos_idx][0]
+        first_frame, last_frame = (
+            image_event_indices_by_position[pos_idx][0],
+            image_event_indices_by_position[pos_idx][-1],
+        )
+        assert not any(
+            getattr(event.action, "name", None)
+            in {ACTION_AO_GRID, ACTION_AO_OPTIMIZE, ACTION_AO_MIRROR_UPDATE}
+            for event in events[first_frame : last_frame + 1]
+        )
+        payload = apply_event.action.data["AO"]
+        assert (
+            payload["grid_bounds_um"]
+            == grid_events[0][1].action.data["AO"]["grid_bounds_um"]
+        )
 
     first_grid_idx, second_grid_idx = grid_events[0][0], grid_events[1][0]
     assert first_grid_idx < min(
@@ -272,3 +288,82 @@ def test_grid_ao_runs_before_tiles_at_each_sample_depth(
         image_event_indices_by_position[index][0] for index in second_indices
     )
     assert handler.index_sizes["p"] == len(first_indices) + len(second_indices)
+
+
+def test_single_long_trajectory_retains_full_three_by_three_grid_at_four_depths(
+    demo_core,
+    workspace_tmp_path,
+    opm_config_factory,
+    simulated_acquisition_hardware,
+) -> None:
+    """Plan nine cell measurements per slab despite only one scan origin."""
+    config = opm_config_factory(
+        mode="stage",
+        active_channels=(0,),
+        channel_powers=(10.0,),
+        channel_exposures_ms=(10.0,),
+        scan_axis_step_um=50.0,
+        updates={
+            "acq_config": {
+                "AO": {
+                    "ao_mode": "grid at start",
+                    "num_scan_positions": 3,
+                    "num_tile_positions": 3,
+                }
+            }
+        },
+    )
+    axial_extent = (
+        32 * demo_core.getPixelSizeUm() * np.sin(np.deg2rad(config["OPM"]["angle_deg"]))
+    )
+    config["acq_config"]["Positions"]["sample_depth_end_um"] = float(axial_extent * 3.4)
+    bounds = {"bottom": 100.123, "top": 1000.456, "left": 200.0, "right": 240.0}
+    events, handler = setup_stagescan(
+        demo_core,
+        config,
+        MDASequence(grid_plan=bounds),
+        workspace_tmp_path / "long-trajectory-depth-grid.ome.zarr",
+    )
+    grids = [
+        event.action.data["AO"]
+        for event in events
+        if getattr(event.action, "name", None) == ACTION_AO_GRID
+        and not event.action.data["AO"]["apply_ao_map"]
+    ]
+    assert len(grids) == 4
+    assert [item["z_idx"] for item in grids] == [0, 1, 2, 3]
+    expected_bounds = {"x": [100.123, 1000.456], "y": [200.0, 240.0]}
+    for payload in grids:
+        assert payload["grid_bounds_um"] == expected_bounds
+        assert payload["num_scan_positions"] == payload["num_tile_positions"] == 3
+        assert len({p["lab_scan_um"] for p in payload["stage_positions"]}) == 1
+        assert len(payload["tile_bounds_um"]) == len(payload["position_indices"])
+        np.testing.assert_allclose(
+            payload["tile_bounds_um"], grids[0]["tile_bounds_um"]
+        )
+    summary = handler.acquisition_metadata["resolved_spatial_plan"]
+    assert summary["resolved_ao_grid_positions"]["count"] == 36
+    assert summary["ao_spatial_geometry"]["grid_bounds_um"] == expected_bounds
+    assert (
+        summary["ao_spatial_geometry"]["commanded_acquired_support_bounds_um"]["x"][1]
+        > 1000.456
+    )
+    assert (
+        summary["ao_spatial_geometry"]["planned_retained_sampled_support_bounds_um"][
+            "x"
+        ][1]
+        < summary["ao_spatial_geometry"]["commanded_acquired_support_bounds_um"]["x"][1]
+    )
+    first_frames = [
+        event for event in events if event.index.get("z") == 0 and "p" in event.index
+    ]
+    for frame in first_frames:
+        stage = frame.metadata["Stage"]
+        assert stage["stage_readback_um"] is None
+        assert stage["laboratory_scan_um"]["x"] == pytest.approx(100.123)
+        assert stage["physical_stage_command_um"]["x"] == pytest.approx(
+            stage["laboratory_scan_um"]["x"]
+            + stage["stage_depth_offset_um"]
+            / np.tan(np.deg2rad(config["OPM"]["angle_deg"])),
+            abs=0.001,
+        )

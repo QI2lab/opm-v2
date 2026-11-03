@@ -78,13 +78,17 @@ from opm_v2.utils.laser_modes import (
     validate_simultaneous_exposures,
 )
 from opm_v2.utils.position_tools import (
+    ao_grid_cells,
     ao_grid_positions,
     apply_oblique_scan_correction,
     compose_stage_positions,
     expand_stage_positions_for_depth,
     oblique_camera_extents_um,
+    rounded_geometry_metadata,
     sample_depth_levels_um,
     split_stage_scan_bounds,
+    stage_coordinate_metadata,
+    tile_footprints_um,
 )
 
 DEBUGGING = True
@@ -299,6 +303,10 @@ def stage_positions_from_grid(
                         + jj * dz_per_y_tile,
                     }
                 )
+    if coverslip_slope_x or coverslip_slope_y:
+        for position in stage_positions:
+            position["focus_surface_slope_x"] = float(coverslip_slope_x)
+            position["focus_surface_slope_y"] = float(coverslip_slope_y)
     debug(
         "XYZ STAGE POSITIONS",
         f"x start: {min_x_pos}",
@@ -544,9 +552,11 @@ def stage_positions_from_position_plan(
             scan_reference_z_um = item.coverslip_plane.z_at(item.x_min, item.y_min)
             for position in region_positions:
                 position["z"] = float(
-                    np.round(item.coverslip_plane.z_at(position["x"], position["y"]), 2)
+                    np.round(item.coverslip_plane.z_at(position["x"], position["y"]), 3)
                 )
                 position["scan_reference_z_um"] = float(scan_reference_z_um)
+                position["focus_surface_slope_x"] = float(item.coverslip_plane.slope_x)
+                position["focus_surface_slope_y"] = float(item.coverslip_plane.slope_y)
         stage_positions.extend(region_positions)
     return stage_positions
 
@@ -566,7 +576,112 @@ def _coordinate_range(
         for position in positions
         if key in position and np.isfinite(position[key])
     ]
-    return [min(values), max(values)] if values else None
+    return (
+        [float(np.round(min(values), 3)), float(np.round(max(values), 3))]
+        if values
+        else None
+    )
+
+
+def resolve_ao_spatial_geometry(
+    *,
+    stage_positions: list[dict[str, float]],
+    mda_positions_plan: list[dict] | tuple[dict, ...] | None,
+    mda_grid_plan: dict | None,
+    opm_mode: str,
+    scan_displacement_um: float,
+    camera_scan_extent_um: float,
+    tile_width_um: float,
+) -> dict:
+    """Resolve requested grid bounds and acquired tile support in lab XY.
+
+    Stage scans begin at each position; mirror and projection sweeps are
+    centered there. Camera support extends half its calibrated scan extent
+    beyond both ends. Requested bounds remain distinct from that support.
+    """
+    footprint_origins = stage_positions
+    if opm_mode != "stage":
+        footprint_origins = [
+            {
+                **position,
+                "lab_scan_um": float(position.get("lab_scan_um", position["x"]))
+                - float(scan_displacement_um) / 2.0,
+            }
+            for position in stage_positions
+        ]
+    footprints = tile_footprints_um(
+        footprint_origins,
+        scan_displacements_um=scan_displacement_um,
+        camera_scan_extent_um=camera_scan_extent_um,
+        tile_width_um=tile_width_um,
+    )
+    support = {
+        "x": [float(np.min(footprints[:, 0])), float(np.max(footprints[:, 1]))],
+        "y": [float(np.min(footprints[:, 2])), float(np.max(footprints[:, 3]))],
+    }
+    items = parse_mda_position_plan(mda_positions_plan) if mda_positions_plan else []
+    regions = [item for item in items if isinstance(item, StageExplorerRegion)]
+    requested = None
+    if regions:
+        requested = {
+            "x": [
+                min(item.x_min for item in regions),
+                max(item.x_max for item in regions),
+            ],
+            "y": [
+                min(item.y_min for item in regions),
+                max(item.y_max for item in regions),
+            ],
+        }
+        source = "requested_stage_explorer_region_bounds"
+    elif mda_grid_plan is not None:
+        x_keys, y_keys = (
+            (("bottom", "top"), ("left", "right"))
+            if opm_mode == "stage"
+            else (("left", "right"), ("bottom", "top"))
+        )
+        requested = {
+            "x": sorted(float(mda_grid_plan[key]) for key in x_keys),
+            "y": sorted(float(mda_grid_plan[key]) for key in y_keys),
+        }
+        source = "requested_mda_grid_bounds"
+    else:
+        source = "acquired_support_for_literal_positions"
+    bounds = deepcopy(requested if requested is not None else support)
+    expanded_axes = []
+    for axis in ("x", "y"):
+        if np.isclose(bounds[axis][0], bounds[axis][1], rtol=0.0, atol=1e-9):
+            bounds[axis] = support[axis].copy()
+            expanded_axes.append(axis)
+    return {
+        "coordinate_frame": "depth_normalized_laboratory_scan_x_stage_y",
+        "units": "um",
+        "grid_bounds_source": source,
+        "requested_region_bounds_um": requested,
+        "grid_bounds_um": bounds,
+        "degenerate_requested_axes_expanded_to_acquired_support": expanded_axes,
+        "commanded_acquired_support_bounds_um": support,
+        "tile_bounds_um": footprints.tolist(),
+        "tile_support_definition": "commanded trajectory endpoints plus centered camera support",
+        "camera_scan_extent_um": float(camera_scan_extent_um),
+        "tile_width_um": float(tile_width_um),
+        "scan_displacement_um": float(scan_displacement_um),
+    }
+
+
+def configure_ao_grid_geometry(event: MDAEvent, geometry: dict, config: dict) -> None:
+    """Attach the same resolved spatial geometry used by preflight metadata."""
+    event.action.data["AO"].update(
+        {
+            "grid_bounds_um": geometry["grid_bounds_um"],
+            "tile_bounds_um": geometry["tile_bounds_um"],
+            "spatial_geometry": geometry,
+            "angle_deg": float(config["OPM"]["angle_deg"]),
+            "camera_zstage_orientation": str(
+                config["OPM"]["camera_Zstage_orientation"]
+            ),
+        }
+    )
 
 
 def resolved_spatial_plan_summary(
@@ -577,6 +692,7 @@ def resolved_spatial_plan_summary(
     coverslip_slope_y: float,
     ao_mode: str,
     config: dict,
+    ao_geometry: dict | None = None,
 ) -> dict:
     """Describe the persisted input plane and the resolved acquisition positions.
 
@@ -607,6 +723,8 @@ def resolved_spatial_plan_summary(
                 for y_um in (region.y_min, region.y_max)
             ]
             plane_metadata = plane.to_metadata()
+            for key in ("origin_um", "fit_points_um"):
+                plane_metadata[key] = rounded_geometry_metadata(plane_metadata[key])
             predicted_z_range = [min(corner_z), max(corner_z)]
         elif fallback_is_sloped:
             source = "opm_settings_fallback"
@@ -621,13 +739,15 @@ def resolved_spatial_plan_summary(
             {
                 "name": region.name,
                 "bounds_um": {
-                    "x": [region.x_min, region.x_max],
-                    "y": [region.y_min, region.y_max],
+                    "x": [round(region.x_min, 3), round(region.x_max, 3)],
+                    "y": [round(region.y_min, 3), round(region.y_max, 3)],
                 },
-                "parent_z_um": region.z,
+                "parent_z_um": round(region.z, 3),
                 "source": source,
                 "coverslip_plane": plane_metadata,
-                "predicted_coverslip_z_range_um": predicted_z_range,
+                "predicted_coverslip_z_range_um": rounded_geometry_metadata(
+                    predicted_z_range
+                ),
                 **(
                     {"polygon": region.polygon.model_dump(mode="json")}
                     if region.polygon is not None
@@ -659,6 +779,8 @@ def resolved_spatial_plan_summary(
 
     ao_summary = None
     if "grid" in ao_mode and stage_positions:
+        if ao_geometry is None:
+            raise ValueError("AO grid summary requires explicit acquisition geometry")
         ao_config = config["acq_config"]["AO"]
         n_scan = int(ao_config["num_scan_positions"])
         n_tile = int(ao_config["num_tile_positions"])
@@ -669,6 +791,11 @@ def resolved_spatial_plan_summary(
                     [stage_positions[index] for index in indices],
                     num_scan_positions=n_scan,
                     num_tile_positions=n_tile,
+                    bounds_um=ao_geometry["grid_bounds_um"],
+                    angle_deg=float(config["OPM"]["angle_deg"]),
+                    camera_zstage_orientation=str(
+                        config["OPM"]["camera_Zstage_orientation"]
+                    ),
                 )
             )
         ao_summary = {
@@ -678,6 +805,14 @@ def resolved_spatial_plan_summary(
             "z_range_um": _coordinate_range(ao_targets, "z"),
         }
         summary["resolved_ao_grid_positions"] = ao_summary
+        summary["ao_spatial_geometry"] = rounded_geometry_metadata(
+            {
+                **ao_geometry,
+                "cell_bounds_um": ao_grid_cells(
+                    ao_geometry["grid_bounds_um"], n_scan, n_tile
+                ).tolist(),
+            }
+        )
 
     diagnostic_lines: list[object] = [
         f"source: {source}",
@@ -807,16 +942,27 @@ def populate_opm_metadata(
     )
     ao_mirror_volts = ao_mirror_volts.tolist() if ao_mirror_volts is not None else None
     stage_metadata = {
-        "x_pos": float(stage_position.get("lab_scan_um", stage_position["x"])),
-        "y_pos": float(stage_position["y"]),
-        "z_pos": float(stage_position["z"]),
+        "x_pos": float(
+            np.round(stage_position.get("lab_scan_um", stage_position["x"]), 3)
+        ),
+        "y_pos": float(np.round(stage_position["y"], 3)),
+        "z_pos": float(np.round(stage_position["z"], 3)),
+        **stage_coordinate_metadata(
+            stage_position,
+            angle_deg=float(angle_deg),
+            camera_zstage_orientation=str(camera_Zstage_orientation),
+        ),
     }
     if "depth_index" in stage_position:
         stage_metadata.update(
             {
                 "depth_index": int(stage_position["depth_index"]),
-                "sample_depth_um": float(stage_position["sample_depth_um"]),
-                "stage_depth_offset_um": float(stage_position["stage_depth_offset_um"]),
+                "sample_depth_um": float(
+                    np.round(stage_position["sample_depth_um"], 3)
+                ),
+                "stage_depth_offset_um": float(
+                    np.round(stage_position["stage_depth_offset_um"], 3)
+                ),
             }
         )
     metadata = {
@@ -1595,6 +1741,11 @@ def append_ao_grid_z_event(
         stage_positions[index] for index in position_indices
     ]
     current_event.action.data["AO"]["position_indices"] = position_indices
+    if ao_grid_event.action.data["AO"].get("tile_bounds_um") is not None:
+        current_event.action.data["AO"]["tile_bounds_um"] = [
+            ao_grid_event.action.data["AO"]["tile_bounds_um"][index]
+            for index in position_indices
+        ]
     current_event.action.data["AO"]["output_path"] = current_output_dir
     current_event.action.data["AO"]["time_idx"] = int(time_idx)
     current_event.action.data["AO"]["z_idx"] = int(z_idx)
@@ -1833,16 +1984,31 @@ def create_stage_scan_image_event(
                 "excess_scan_start_positions": int(excess_start_images),
             },
             "Stage": {
-                "x_pos": stage_position.get("lab_scan_um", stage_position["x"])
-                + (scan_axis_idx * scan_axis_step_um),
-                "y_pos": stage_position["y"],
-                "z_pos": stage_position["z"],
+                **stage_coordinate_metadata(
+                    stage_position,
+                    angle_deg=float(config["OPM"]["angle_deg"]),
+                    camera_zstage_orientation=str(
+                        config["OPM"]["camera_Zstage_orientation"]
+                    ),
+                    scan_offset_um=scan_axis_idx * scan_axis_step_um,
+                ),
+                "x_pos": float(
+                    np.round(
+                        stage_position.get("lab_scan_um", stage_position["x"])
+                        + (scan_axis_idx * scan_axis_step_um),
+                        3,
+                    )
+                ),
+                "y_pos": float(np.round(stage_position["y"], 3)),
+                "z_pos": float(np.round(stage_position["z"], 3)),
                 **(
                     {
                         "depth_index": int(stage_position["depth_index"]),
-                        "sample_depth_um": float(stage_position["sample_depth_um"]),
+                        "sample_depth_um": float(
+                            np.round(stage_position["sample_depth_um"], 3)
+                        ),
                         "stage_depth_offset_um": float(
-                            stage_position["stage_depth_offset_um"]
+                            np.round(stage_position["stage_depth_offset_um"], 3)
                         ),
                     }
                     if "depth_index" in stage_position
@@ -2457,6 +2623,17 @@ def setup_projection(
         mda_z_plan=mda_z_plan,
     )
     n_stage_positions = len(stage_positions)
+    ao_geometry = resolve_ao_spatial_geometry(
+        stage_positions=stage_positions,
+        mda_positions_plan=mda_positions_plan,
+        mda_grid_plan=mda_grid_plan,
+        opm_mode=opm_mode,
+        scan_displacement_um=scan_range_um,
+        camera_scan_extent_um=oblique_camera_extents_um(
+            camera_crop_y, pixel_size_um, float(config["OPM"]["angle_deg"])
+        )[0],
+        tile_width_um=camera_crop_x * pixel_size_um,
+    )
     spatial_plan = resolved_spatial_plan_summary(
         mda_positions_plan=mda_positions_plan,
         stage_positions=stage_positions,
@@ -2464,6 +2641,7 @@ def setup_projection(
         coverslip_slope_y=coverslip_slope_y,
         ao_mode=ao_mode,
         config=config,
+        ao_geometry=ao_geometry,
     )
 
     # ----------------------------------------------------------------#
@@ -2515,6 +2693,7 @@ def setup_projection(
             ao_output_dir.mkdir(exist_ok=True)
             ao_grid_event = create_ao_grid_event(config, ao_output_dir)
             ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
+            configure_ao_grid_geometry(ao_grid_event, ao_geometry, config)
 
         else:
             ao_output_dir = output.parent / Path("ao_optimized_results")
@@ -3019,6 +3198,19 @@ def setup_mirrorscan(
         mda_z_plan=mda_z_plan,
     )
     n_stage_positions = len(stage_positions)
+    ao_geometry = resolve_ao_spatial_geometry(
+        stage_positions=stage_positions,
+        mda_positions_plan=mda_positions_plan,
+        mda_grid_plan=mda_grid_plan,
+        opm_mode=opm_mode,
+        scan_displacement_um=scan_range_um,
+        camera_scan_extent_um=oblique_camera_extents_um(
+            camera_crop_y,
+            float(mmc.getPixelSizeUm()),
+            float(config["OPM"]["angle_deg"]),
+        )[0],
+        tile_width_um=camera_crop_x * float(mmc.getPixelSizeUm()),
+    )
     spatial_plan = resolved_spatial_plan_summary(
         mda_positions_plan=mda_positions_plan,
         stage_positions=stage_positions,
@@ -3026,11 +3218,13 @@ def setup_mirrorscan(
         coverslip_slope_y=coverslip_slope_y,
         ao_mode=ao_mode,
         config=config,
+        ao_geometry=ao_geometry,
     )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
         ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
+        configure_ao_grid_geometry(ao_grid_event, ao_geometry, config)
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
     ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
@@ -3647,7 +3841,7 @@ def setup_stagescan(
     # Generate tile axis positions
     n_tile_positions = int(np.ceil(range_y_um / tile_axis_step_max)) + 1
     tile_axis_positions = np.round(
-        np.linspace(min_y_pos, max_y_pos, n_tile_positions), 2
+        np.linspace(min_y_pos, max_y_pos, n_tile_positions), 3
     )
     if n_tile_positions == 1:
         tile_axis_step = 0
@@ -3665,7 +3859,7 @@ def setup_stagescan(
     # --------------------------------------------------------------------#
     # Generate z axis positions, ignoring coverslip slope
     n_z_positions = int(np.ceil(np.abs(range_z_um / z_axis_step_max))) + 1
-    z_positions = np.round(np.linspace(min_z_pos, max_z_pos, n_z_positions), 2)
+    z_positions = np.round(np.linspace(min_z_pos, max_z_pos, n_z_positions), 3)
     if n_z_positions == 1:
         z_axis_step_um = 0.0
     else:
@@ -3724,17 +3918,24 @@ def setup_stagescan(
         scan_reference_z_um = region_coverslip_plane.z_at(min_x_pos, min_y_pos)
         for position in stage_positions:
             position["z"] = float(
-                np.round(region_coverslip_plane.z_at(position["x"], position["y"]), 2)
+                np.round(region_coverslip_plane.z_at(position["x"], position["y"]), 3)
             )
             position["scan_reference_z_um"] = float(scan_reference_z_um)
+            position["focus_surface_slope_x"] = float(region_coverslip_plane.slope_x)
+            position["focus_surface_slope_y"] = float(region_coverslip_plane.slope_y)
     elif coverslip_slope_y != 0:
         for position in stage_positions:
             position["z"] = float(
                 np.round(
                     position["z"] + coverslip_slope_y * (position["y"] - min_y_pos),
-                    2,
+                    3,
                 )
             )
+
+    if region_coverslip_plane is None and (coverslip_slope or coverslip_slope_y):
+        for position in stage_positions:
+            position["focus_surface_slope_x"] = float(coverslip_slope)
+            position["focus_surface_slope_y"] = float(coverslip_slope_y)
 
     stage_positions, sample_depths_um = apply_opm_sample_depth_plan(
         stage_positions,
@@ -3744,6 +3945,44 @@ def setup_stagescan(
         mda_z_plan=sequence_plans["z"],
     )
     n_stage_positions = len(stage_positions)
+    ao_geometry = resolve_ao_spatial_geometry(
+        stage_positions=stage_positions,
+        mda_positions_plan=mda_positions_plan,
+        mda_grid_plan=mda_grid_plan,
+        opm_mode="stage",
+        scan_displacement_um=float(scan_axis_end_pos_mm[0] - scan_axis_start_pos_mm[0])
+        * 1000.0,
+        camera_scan_extent_um=camera_scan_overlap_um,
+        tile_width_um=camera_crop_x * pixel_size_um,
+    )
+    if scan_axis_positions > 0:
+        retained_starts = [
+            {
+                **position,
+                "lab_scan_um": float(position.get("lab_scan_um", position["x"]))
+                + excess_start_images * scan_axis_step_um,
+            }
+            for position in stage_positions
+        ]
+        retained_support = tile_footprints_um(
+            retained_starts,
+            scan_displacements_um=(int(scan_axis_positions) - 1) * scan_axis_step_um,
+            camera_scan_extent_um=camera_scan_overlap_um,
+            tile_width_um=camera_crop_x * pixel_size_um,
+        )
+        ao_geometry["planned_retained_sampled_support_bounds_um"] = {
+            "x": [
+                float(np.min(retained_support[:, 0])),
+                float(np.max(retained_support[:, 1])),
+            ],
+            "y": [
+                float(np.min(retained_support[:, 2])),
+                float(np.max(retained_support[:, 3])),
+            ],
+        }
+        ao_geometry["retained_sampled_support_source"] = (
+            "planned retained frame centers with camera support; not measured readbacks"
+        )
     spatial_plan = resolved_spatial_plan_summary(
         mda_positions_plan=mda_positions_plan,
         stage_positions=stage_positions,
@@ -3751,11 +3990,13 @@ def setup_stagescan(
         coverslip_slope_y=float(positions_config["coverslip_slope_y"]),
         ao_mode=ao_mode,
         config=config,
+        ao_geometry=ao_geometry,
     )
 
     # update AO grid event with stage positions
     if "grid" in ao_mode:
         ao_grid_event.action.data["AO"]["stage_positions"] = stage_positions
+        configure_ao_grid_geometry(ao_grid_event, ao_geometry, config)
     if ao_mode != "none":
         AOmirror_setup.n_positions = n_stage_positions
     ao_scheduler = AOEventScheduler(ao_mode, ao_optimize_event, ao_grid_event)
